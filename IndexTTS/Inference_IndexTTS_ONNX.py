@@ -692,6 +692,9 @@ repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_sessi
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
 
+# Start to Run IndexTTS
+start_time = time.time()
+
 all_outputs_A = ort_session_A.run_with_ort_values(
     out_name_A,
     {
@@ -721,8 +724,6 @@ total_sentences = len(sentences)
 save_generated_wav = []
 
 
-# Start to Run IndexTTS
-start_time = time.time()
 for i in range(total_sentences):
     sent = sentences[i]
     split_text = "".join(sent).replace("▁", " ")
