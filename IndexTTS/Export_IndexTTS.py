@@ -30,7 +30,10 @@ generated_audio_path = r"generated.wav"                                         
 reference_audio      = r"./example/zh.wav"                                          # The reference audio path.
 gen_text             = "大家好，我现在正在大可奇奇体验 ai 科技。"                          # The target speech.
 
-
+def normalize_to_int16(audio):
+    max_val = np.max(np.abs(audio))
+    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
+    return (audio * float(scaling_factor)).astype(np.int16)
 # Model Parameters
 SAMPLE_RATE = 24000                     # IndexTTS model setting
 STOP_TOKEN = [8193]                     # IndexTTS model setting
@@ -1069,7 +1072,7 @@ init_past_values_E = np.zeros((ort_session_E._inputs_meta[num_layers].shape[0], 
 repeat_penality = np.ones((1, ort_session_E._inputs_meta[num_layers_2_plus_1].shape[1]), dtype=np.float32)
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
-
+input_feed_F = {}
 input_feed_E = {
     in_names_E[last_input_indices_E]: init_attention_mask_1,
     in_names_E[num_layers_2]: init_history_len,
@@ -1095,7 +1098,6 @@ all_outputs_A = ort_session_A.run(
         in_name_A0: audio
     })
 
-input_feed_F = {}
 for i in range(last_output_indices_A):
     input_feed_F[in_name_F[i]] = all_outputs_A[i]
 
