@@ -1049,6 +1049,11 @@ init_past_values_E = np.zeros((ort_session_E._inputs_meta[num_layers].shape[0], 
 repeat_penality = np.ones((1, ort_session_E._inputs_meta[num_layers_2_plus_1].shape[1]), dtype=np.float32)
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
+
+# Start to Run IndexTTS
+print("\nStart to run the IndexTTS by ONNX Runtime.")
+start_time = time.time()
+
 all_outputs_A = ort_session_A.run(
     out_name_A,
     {
@@ -1074,9 +1079,6 @@ sentences = tokenizer.split_sentences(text_tokens_list)
 total_sentences = len(sentences)
 save_generated_wav = []
 
-# Start to Run IndexTTS
-print("\nStart to run the IndexTTS by ONNX Runtime.")
-start_time = time.time()
 for i in range(total_sentences):
     sent = sentences[i]
     split_text = "".join(sent).replace("▁", " ")
