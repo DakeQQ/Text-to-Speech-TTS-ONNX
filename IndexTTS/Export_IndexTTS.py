@@ -113,7 +113,7 @@ class IndexTTS_A(torch.nn.Module):
     def forward(self, audio: torch.ShortTensor):
         audio = audio.float() * self.inv_int16
         audio = torch.cat([self.audio_pad, audio], dim=-1)
-        real_part, imag_part = self.custom_stft(audio, 'reflect')
+        real_part, imag_part = self.custom_stft(audio, 'constant')
         mel_signal = torch.matmul(self.fbank, torch.sqrt(real_part * real_part + imag_part * imag_part)).clamp(min=1e-5).log()
         x = self.indexTTS.conditioning_encoder.embed.conv(mel_signal.transpose(1, 2).unsqueeze(1))
         enc_len = x.shape[2].unsqueeze(0)
