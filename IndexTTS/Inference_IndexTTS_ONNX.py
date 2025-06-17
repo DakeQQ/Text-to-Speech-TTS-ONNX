@@ -796,7 +796,7 @@ for i in range(total_sentences):
     print(f"\n\nDecode Speed: {num_decode / (time.time() - decode_time):.3f} tokens/s")
 
     for i in range(num_decode):
-         save_last_hidden_state[i] = onnxruntime.OrtValue.numpy(save_last_hidden_state[i] )
+         save_last_hidden_state[i] = onnxruntime.OrtValue.numpy(save_last_hidden_state[i])
     input_feed_F[in_name_F[last_output_indices_A]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.concatenate(save_last_hidden_state, axis=0), device_type, DEVICE_ID)
     
     generated_wav = ort_session_F.run_with_ort_values(
