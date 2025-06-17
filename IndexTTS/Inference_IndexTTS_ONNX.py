@@ -285,7 +285,58 @@ class TextNormalizer:
 
         repl = r"\g<1>v\g<2>\g<3>"
         pinyin = self.jqx_pinyin_pattern.sub(repl, pinyin)
-        return pinyin.upper()
+        return pinyin.uppeOthers
+DEVICE_ID = 0
+MAX_THREADS = 4
+
+
+def normalize_to_int16(audio):
+    max_val = np.max(np.abs(audio))
+    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
+    return (audio * float(scaling_factor)).astype(np.int16)
+
+
+# ONNX Runtime settings
+if "OpenVINOExecutionProvider" in ORT_Accelerate_Providers:
+    provider_options = [
+        {
+            'device_type': 'CPU',                         # [CPU, NPU, GPU, GPU.0, GPU.1]]
+            'precision': 'ACCURACY',                      # [FP32, FP16, ACCURACY]
+            'num_of_threads': MAX_THREADS,
+            'num_streams': 1,
+            'enable_opencl_throttling': True,
+            'enable_qdq_optimizer': False,                # Enable it carefully
+            'disable_dynamic_shapes': False
+        }
+    ]
+    device_type = 'cpu'
+elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
+    provider_options = [
+        {
+            'device_id': DEVICE_ID,
+            'gpu_mem_limit': 24 * 1024 * 1024 * 1024,     # 24 GB
+            'arena_extend_strategy': 'kNextPowerOfTwo',   # ["kNextPowerOfTwo", "kSameAsRequested"]
+            'cudnn_conv_algo_search': 'EXHAUSTIVE',       # ["DEFAULT", "HEURISTIC", "EXHAUSTIVE"]
+            'sdpa_kernel': '2',                           # ["0", "1", "2"]
+            'use_tf32': '1',
+            'fuse_conv_bias': '1',
+            'cudnn_conv_use_max_workspace': '1',
+            'cudnn_conv1d_pad_to_nc1d': '1',
+            'tunable_op_enable': '1',
+            'tunable_op_tuning_enable': '1',
+            'tunable_op_max_tuning_duration_ms': 10000,
+            'do_copy_in_default_stream': '0',
+            'enable_cuda_graph': '0',                     # Set to '0' to avoid potential errors when enabled.
+            'prefer_nhwc': '0',
+            'enable_skip_layer_norm_strict_mode': '0',
+            'use_ep_level_unified_stream': '0',
+        }
+    ]
+    device_type = 'cuda'
+elif "DmlExecutionProvider" in ORT_Accelerate_Providers:
+    provider_options = [
+Use Control + Shift + m to toggle the tab key moving focus. Alternatively, use esc then tab to move to the next interactive element on the page.
+r()
 
     def save_names(self, original_text):
         """Optimized name saving with early returns"""
@@ -692,16 +743,6 @@ repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_sessi
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
 
-# Start to Run IndexTTS
-start_time = time.time()
-
-all_outputs_A = ort_session_A.run_with_ort_values(
-    out_name_A,
-    {
-        in_name_A0: audio
-    })
-
-
 input_feed_E = {
     in_names_E[last_input_indices_E]: init_attention_mask_1,
     in_names_E[num_layers_2]: init_history_len,
@@ -713,16 +754,23 @@ for i in range(num_layers, num_layers_2):
     input_feed_E[in_names_E[i]] = init_past_values_E
 
 
-input_feed_F = {}
-for i in range(last_output_indices_A):
-    input_feed_F[in_name_F[i]] = all_outputs_A[i]
-
-
 text_tokens_list = tokenizer.tokenize(gen_text)
 sentences = tokenizer.split_sentences(text_tokens_list)
 total_sentences = len(sentences)
 save_generated_wav = []
 
+# Start to Run IndexTTS
+start_time = time.time()
+
+all_outputs_A = ort_session_A.run_with_ort_values(
+    out_name_A,
+    {
+        in_name_A0: audio
+    })
+
+input_feed_F = {}
+for i in range(last_output_indices_A):
+    input_feed_F[in_name_F[i]] = all_outputs_A[i]
 
 for i in range(total_sentences):
     sent = sentences[i]
