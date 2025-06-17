@@ -281,7 +281,7 @@ class IndexTTS_F(torch.nn.Module):
 print("\n\nStart to Export the part_A...\n")
 with torch.inference_mode():
     from indextts.infer import IndexTTS
-    indexTTS = IndexTTS(model_dir=models_path, cfg_path=models_path + "/config.yaml")
+    indexTTS = IndexTTS(model_dir=models_path, cfg_path=models_path + "/config.yaml", is_fp16=False, device='cpu')
     for para in indexTTS.gpt.parameters():
         para.requires_grad = False
     for para in indexTTS.bigvgan.parameters():
