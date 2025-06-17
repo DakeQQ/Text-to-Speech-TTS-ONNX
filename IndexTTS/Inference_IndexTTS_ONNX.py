@@ -22,7 +22,7 @@ onnx_model_F         = r"/home/DakeQQ/Downloads/IndexTTS_Optimized/IndexTTS_F.on
 tokenizer_path       = r"/home/DakeQQ/Downloads/IndexTTS-1.5/bpe.model"
 generated_audio_path = r"generated.wav"                                            # The generated audio path.
 reference_audio      = r"./example/zh.wav"                                         # The reference audio path.
-gen_text             = "大家好，我现在正在大可奇奇体验 ai 科技。"                         # The target speech.
+gen_text             = "大家好，我现在正在大可奇奇体验 ai 科技。"                        # The target speech.
 
 
 # ONNX Runtime Settings
@@ -32,7 +32,7 @@ ORT_Accelerate_Providers = []           # If you have accelerate devices for : [
 SAMPLE_RATE = 24000                     # IndexTTS model setting
 STOP_TOKEN = [8193]                     # IndexTTS model setting
 MAX_GENERATE_LENGTH = 800               # IndexTTS model setting
-REPEAT_PENALITY = 0.7                   # Range from 0.0 to 1.0; "1.0" means no penality.
+REPEAT_PENALITY = 0.9                   # Range from 0.0 to 1.0; "1.0" means no penality.
 PENALITY_RANGE = 10                     # Penalizes the most recent output. "10" means the last 10 mel tokens.
 
 # Others
