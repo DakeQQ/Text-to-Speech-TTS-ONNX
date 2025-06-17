@@ -92,7 +92,7 @@ class IndexTTS_A(torch.nn.Module):
         self.perceiver_encoder_head = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].heads
         self.perceiver_encoder_head_dim = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.out_features // self.perceiver_encoder_head
         self.latents = self.indexTTS.perceiver_encoder.latents.data.unsqueeze(0)
-        self.audio_pad = torch.zeros((1, 1, int(sample_rate * 0.1)), dtype=torch.float32)
+        self.audio_pad = torch.randn((1, 1, int(sample_rate * 0.1)), dtype=torch.float32)
 
         scaling = float(self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.d_k ** -0.25)
         for layer in self.indexTTS.conditioning_encoder.encoders:
