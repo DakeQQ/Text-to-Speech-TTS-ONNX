@@ -119,7 +119,7 @@ def tokenize_by_CJK_char(line: str, do_upper_case=True) -> str:
     # Pre-compiled regex pattern for better performance
     if not hasattr(tokenize_by_CJK_char, '_pattern'):
         tokenize_by_CJK_char._pattern = re.compile(
-            r"([\u1100-\u11ff\u2e80-text = text.replace("嗯", "恩").replace("呣", "母")\ua4cf\ua840-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
+            r"([\u1100-\u11ff\u2e80-\ua4cf\ua840-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
         )
 
     line = line.strip()
@@ -200,7 +200,7 @@ class TextNormalizer:
         self.zh_char_rep_map = {"$": ".", **self.char_rep_map}
 
         # Pre-compile regex patterns for better performance
-        self._compile_patterns()text = text.replace("嗯", "恩").replace("呣", "母")
+        self._compile_patterns()
 
     def _compile_patterns(self):
         """Pre-compile all regex patterns used in the class"""
@@ -286,58 +286,7 @@ class TextNormalizer:
 
         repl = r"\g<1>v\g<2>\g<3>"
         pinyin = self.jqx_pinyin_pattern.sub(repl, pinyin)
-        return pinyin.uppeOthers
-DEVICE_ID = 0
-MAX_THREADS = 4
-
-
-def normalize_to_int16(audio):
-    max_val = np.max(np.abs(audio))
-    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
-    return (audio * float(scaling_factor)).astype(np.int16)
-
-
-# ONNX Runtime settings
-if "OpenVINOExecutionProvider" in ORT_Accelerate_Providers:
-    provider_options = [
-        {
-            'device_type': 'CPU',                         # [CPU, NPU, GPU, GPU.0, GPU.1]]
-            'precision': 'ACCURACY',                      # [FP32, FP16, ACCURACY]
-            'num_of_threads': MAX_THREADS,
-            'num_streams': 1,
-            'enable_opencl_throttling': True,
-            'enable_qdq_optimizer': False,                # Enable it carefully
-            'disable_dynamic_shapes': False
-        }
-    ]
-    device_type = 'cpu'
-elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
-    provider_options = [
-        {
-            'device_id': DEVICE_ID,
-            'gpu_mem_limit': 24 * 1024 * 1024 * 1024,     # 24 GB
-            'arena_extend_strategy': 'kNextPowerOfTwo',   # ["kNextPowerOfTwo", "kSameAsRequested"]
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',       # ["DEFAULT", "HEURISTIC", "EXHAUSTIVE"]
-            'sdpa_kernel': '2',                           # ["0", "1", "2"]
-            'use_tf32': '1',
-            'fuse_conv_bias': '1',
-            'cudnn_conv_use_max_workspace': '1',
-            'cudnn_conv1d_pad_to_nc1d': '1',
-            'tunable_op_enable': '1',
-            'tunable_op_tuning_enable': '1',
-            'tunable_op_max_tuning_duration_ms': 10000,
-            'do_copy_in_default_stream': '0',
-            'enable_cuda_graph': '0',                     # Set to '0' to avoid potential errors when enabled.
-            'prefer_nhwc': '0',
-            'enable_skip_layer_norm_strict_mode': '0',
-            'use_ep_level_unified_stream': '0',
-        }
-    ]
-    device_type = 'cuda'
-elif "DmlExecutionProvider" in ORT_Accelerate_Providers:
-    provider_options = [
-Use Control + Shift + m to toggle the tab key moving focus. Alternatively, use esc then tab to move to the next interactive element on the page.
-r()text = text.replace("嗯", "恩").replace("呣", "母")
+        return pinyin.upper()
 
     def save_names(self, original_text):
         """Optimized name saving with early returns"""
@@ -744,6 +693,13 @@ repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_sessi
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
 
+all_outputs_A = ort_session_A.run_with_ort_values(
+    out_name_A,
+    {
+        in_name_A0: audio
+    })
+
+
 input_feed_E = {
     in_names_E[last_input_indices_E]: init_attention_mask_1,
     in_names_E[num_layers_2]: init_history_len,
@@ -755,24 +711,19 @@ for i in range(num_layers, num_layers_2):
     input_feed_E[in_names_E[i]] = init_past_values_E
 
 
+input_feed_F = {}
+for i in range(last_output_indices_A):
+    input_feed_F[in_name_F[i]] = all_outputs_A[i]
+
+
 text_tokens_list = tokenizer.tokenize(gen_text)
 sentences = tokenizer.split_sentences(text_tokens_list)
 total_sentences = len(sentences)
 save_generated_wav = []
 
+
 # Start to Run IndexTTS
 start_time = time.time()
-
-all_outputs_A = ort_session_A.run_with_ort_values(
-    out_name_A,
-    {
-        in_name_A0: audio
-    })
-
-input_feed_F = {}
-for i in range(last_output_indices_A):
-    input_feed_F[in_name_F[i]] = all_outputs_A[i]
-
 for i in range(total_sentences):
     sent = sentences[i]
     split_text = "".join(sent).replace("▁", " ")
@@ -815,7 +766,7 @@ for i in range(total_sentences):
     save_max_logits_ids = []
     reset_penality = 0
     num_decode = 0
-  
+
     decode_time = time.time()
     while num_decode < generate_limit:
         input_feed_E[in_names_E[num_layers_2_plus_3]] = gpt_hidden_state
@@ -848,7 +799,7 @@ for i in range(total_sentences):
     for i in range(num_decode):
          save_last_hidden_state[i] = onnxruntime.OrtValue.numpy(save_last_hidden_state[i])
     input_feed_F[in_name_F[last_output_indices_A]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.concatenate(save_last_hidden_state, axis=0), device_type, DEVICE_ID)
-    
+
     generated_wav = ort_session_F.run_with_ort_values(
         [out_name_F0],
         input_feed_F
