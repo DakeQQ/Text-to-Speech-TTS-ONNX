@@ -692,14 +692,7 @@ else:
 repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_E._inputs_meta[num_layers_2_plus_1].shape[1]), dtype=np.float32), device_type, DEVICE_ID)
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
-
-all_outputs_A = ort_session_A.run_with_ort_values(
-    out_name_A,
-    {
-        in_name_A0: audio
-    })
-
-
+input_feed_F = {}
 input_feed_E = {
     in_names_E[last_input_indices_E]: init_attention_mask_1,
     in_names_E[num_layers_2]: init_history_len,
@@ -710,20 +703,23 @@ for i in range(num_layers):
 for i in range(num_layers, num_layers_2):
     input_feed_E[in_names_E[i]] = init_past_values_E
 
+# Start to Run IndexTTS
+start_time = time.time()
 
-input_feed_F = {}
+all_outputs_A = ort_session_A.run_with_ort_values(
+    out_name_A,
+    {
+        in_name_A0: audio
+    })
+
 for i in range(last_output_indices_A):
     input_feed_F[in_name_F[i]] = all_outputs_A[i]
-
 
 text_tokens_list = tokenizer.tokenize(gen_text)
 sentences = tokenizer.split_sentences(text_tokens_list)
 total_sentences = len(sentences)
 save_generated_wav = []
 
-
-# Start to Run IndexTTS
-start_time = time.time()
 for i in range(total_sentences):
     sent = sentences[i]
     split_text = "".join(sent).replace("▁", " ")
