@@ -19,7 +19,7 @@
 ---
 
 ### 性能 Performance  
-| OS           | Device       | Backend           | Model        | Time Cost in Seconds <br> (reference audio: 6s / generate about 15 words) |
+| OS           | Device       | Backend           | Model        | Time Cost in Seconds <br> (reference audio: 6s / generates approximately 15 words of speech) |
 |:------------:|:------------:|:-----------------:|:------------:|:-------------------------------------------------------------------------:|
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | F5-TTS      |        180 (NFE=32)                                                       |
 | Ubuntu-24.04 | Laptop       | GPU <br> MX150     | F5-TTS      |        62 (NFE=32)                                                        |
