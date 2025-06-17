@@ -40,12 +40,6 @@ DEVICE_ID = 0
 MAX_THREADS = 4
 
 
-def normalize_to_int16(audio):
-    max_val = np.max(np.abs(audio))
-    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
-    return (audio * float(scaling_factor)).astype(np.int16)
-
-
 # ONNX Runtime settings
 if "OpenVINOExecutionProvider" in ORT_Accelerate_Providers:
     provider_options = [
@@ -96,6 +90,12 @@ else:
     # Please config by yourself for others providers.
     device_type = 'cpu'
     provider_options = None
+
+
+def normalize_to_int16(audio):
+    max_val = np.max(np.abs(audio))
+    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
+    return (audio * float(scaling_factor)).astype(np.int16)
 
 
 # Optimized version
