@@ -781,10 +781,10 @@ for i in range(total_sentences):
         for i in range(second_last_output_indices_E):
             input_feed_E[in_names_E[i]] = all_outputs_E[i]
         repeat_penality = onnxruntime.OrtValue.numpy(repeat_penality)
-        if num_decode > PENALITY_RANGE:
+        repeat_penality[:, max_logit_ids] = REPEAT_PENALITY
+        if num_decode > PENALITY_RANGE and save_max_logits_ids[reset_penality] != max_logit_ids:
             repeat_penality[:, save_max_logits_ids[reset_penality]] = 1.0
             reset_penality += 1
-        repeat_penality[:, max_logit_ids] = REPEAT_PENALITY
         repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(repeat_penality, device_type, DEVICE_ID)
         gpt_hidden_state, gen_len = ort_session_C.run_with_ort_values(
             [out_name_C0, out_name_C1],
