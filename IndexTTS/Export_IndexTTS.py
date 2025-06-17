@@ -262,9 +262,7 @@ class IndexTTS_F(torch.nn.Module):
 
     def forward(self, *all_inputs):
         latent = self.indexTTS.gpt.final_norm(all_inputs[-1][:-2]).unsqueeze(0)
-        latent = latent.transpose(1, 2)
-        latent = self.indexTTS.bigvgan.conv_pre(latent)
-        latent = latent + all_inputs[-2]
+        latent = self.indexTTS.bigvgan.conv_pre(latent.transpose(1, 2)) + all_inputs[-2]
         for i in range(self.indexTTS.bigvgan.num_upsamples):
             for i_up in range(len(self.indexTTS.bigvgan.ups[i])):
                 latent = self.indexTTS.bigvgan.ups[i][i_up](latent)
@@ -274,8 +272,7 @@ class IndexTTS_F(torch.nn.Module):
             for j in range(1, self.indexTTS.bigvgan.num_kernels):
                 x = x + self.indexTTS.bigvgan.resblocks[i * self.indexTTS.bigvgan.num_kernels + j](latent, i)
             latent = x * self.inv_num_kernels
-        latent = self.indexTTS.bigvgan.activation_post(latent, -1)
-        latent = self.indexTTS.bigvgan.conv_post(latent)
+        latent = self.indexTTS.bigvgan.conv_post(self.indexTTS.bigvgan.activation_post(latent, -1))
         generated_wav = torch.tanh(latent)
         return (generated_wav * 32768.0).clamp(min=-32768.0, max=32767.0).to(torch.int16)
 
