@@ -771,6 +771,7 @@ for i in range(total_sentences):
         input_feed_E[in_names_E[num_layers_2_plus_3]] = gpt_hidden_state
         all_outputs_E = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
         max_logit_ids = onnxruntime.OrtValue.numpy(all_outputs_E[last_output_indices_E])
+        save_max_logits_ids.append(max_logit_ids)
         save_last_hidden_state.append(all_outputs_E[second_last_output_indices_E])
         num_decode += 1
         if max_logit_ids in STOP_TOKEN:
