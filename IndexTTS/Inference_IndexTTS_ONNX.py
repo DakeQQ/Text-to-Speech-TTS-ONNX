@@ -783,7 +783,7 @@ for i in range(total_sentences):
             input_feed_E[in_names_E[i]] = all_outputs_E[i]
         repeat_penality = onnxruntime.OrtValue.numpy(repeat_penality)
         repeat_penality[:, max_logit_ids] = REPEAT_PENALITY
-        if num_decode > PENALITY_RANGE and save_max_logits_ids[reset_penality] != max_logit_ids:
+        if (num_decode > PENALITY_RANGE) and (save_max_logits_ids[reset_penality] != max_logit_ids):
             repeat_penality[:, save_max_logits_ids[reset_penality]] = 1.0
             reset_penality += 1
         repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(repeat_penality, device_type, DEVICE_ID)
