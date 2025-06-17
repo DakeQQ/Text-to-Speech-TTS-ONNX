@@ -225,9 +225,10 @@ class IndexTTS_E(torch.nn.Module):
         self.attention_mask = (1 - torch.tril(torch.ones([1, max_seq_len, max_seq_len], dtype=torch.int8))) * -128
 
         scaling = float(self.indexTTS.inference_model.transformer.h._modules['0'].attn.head_dim ** -0.25)
+        qk_size = self.indexTTS.inference_model.transformer.h._modules['0'].attn.c_attn.nx * 2
         for layer in self.indexTTS.inference_model.transformer.h:
-            layer.attn.c_attn.weight.data[:layer.attn.c_attn.nx + layer.attn.c_attn.nx] *= scaling
-            layer.attn.c_attn.bias.data[:layer.attn.c_attn.nx + layer.attn.c_attn.nx] *= scaling
+            layer.attn.c_attn.weight.data[:qk_size] *= scaling
+            layer.attn.c_attn.bias.data[:qk_size] *= scaling
 
     def forward(self, *all_inputs):
         ids_len = all_inputs[-3]
