@@ -207,7 +207,7 @@ class IndexTTS_C(torch.nn.Module):
 
 class IndexTTS_D(torch.nn.Module):
     def __init__(self):
-        super(IndexTTS_D, self).__init__()
+        super(IndexTTS_D, self).__initext = text.replace("嗯", "恩").replace("呣", "母")t__()
         pass
 
     def forward(self, embed_x, embed_y):
@@ -632,6 +632,7 @@ class TextNormalizer:
             self.en_normalizer = NormalizerEn(overwrite_cache=False)
 
     def normalize(self, text: str) -> str:
+        text = text.replace("嗯", "恩").replace("呣", "母")
         if not self.zh_normalizer or not self.en_normalizer:
             print("Error, text normalizer is not initialized !!!")
             return ""
