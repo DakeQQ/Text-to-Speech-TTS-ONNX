@@ -119,7 +119,7 @@ def tokenize_by_CJK_char(line: str, do_upper_case=True) -> str:
     # Pre-compiled regex pattern for better performance
     if not hasattr(tokenize_by_CJK_char, '_pattern'):
         tokenize_by_CJK_char._pattern = re.compile(
-            r"([\u1100-\u11ff\u2e80-\ua4cf\ua840-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
+            r"([\u1100-\u11ff\u2e80-text = text.replace("嗯", "恩").replace("呣", "母")\ua4cf\ua840-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
         )
 
     line = line.strip()
@@ -200,7 +200,7 @@ class TextNormalizer:
         self.zh_char_rep_map = {"$": ".", **self.char_rep_map}
 
         # Pre-compile regex patterns for better performance
-        self._compile_patterns()
+        self._compile_patterns()text = text.replace("嗯", "恩").replace("呣", "母")
 
     def _compile_patterns(self):
         """Pre-compile all regex patterns used in the class"""
@@ -248,6 +248,7 @@ class TextNormalizer:
             self.en_normalizer = NormalizerEn(overwrite_cache=False)
 
     def normalize(self, text: str) -> str:
+        text = text.replace("嗯", "恩").replace("呣", "母")
         if not self.zh_normalizer or not self.en_normalizer:
             print("Error, text normalizer is not initialized !!!")
             return ""
@@ -336,7 +337,7 @@ elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
 elif "DmlExecutionProvider" in ORT_Accelerate_Providers:
     provider_options = [
 Use Control + Shift + m to toggle the tab key moving focus. Alternatively, use esc then tab to move to the next interactive element on the page.
-r()
+r()text = text.replace("嗯", "恩").replace("呣", "母")
 
     def save_names(self, original_text):
         """Optimized name saving with early returns"""
