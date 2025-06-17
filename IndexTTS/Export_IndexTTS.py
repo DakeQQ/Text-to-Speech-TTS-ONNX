@@ -35,7 +35,8 @@ gen_text             = "大家好，我现在正在大可奇奇体验 ai 科技�
 SAMPLE_RATE = 24000                     # IndexTTS model setting
 STOP_TOKEN = [8193]                     # IndexTTS model setting
 MAX_GENERATE_LENGTH = 800               # IndexTTS model setting
-REPEAT_PENALITY = 0.7                   # Range from 0.0 to 1.0; "1.0" means no penality.
+REPEAT_PENALITY = 0.9                   # Range from 0.0 to 1.0; "1.0" means no penality.
+PENALITY_RANGE = 10                     # Penalizes the most recent output. "10" means the last 10 mel tokens.
 
 # STFT/ISTFT Settings
 AUDIO_LENGTH = 320000                   # Maximum input audio length: the length of the audio input signal (in samples).
@@ -1081,7 +1082,6 @@ for i in range(total_sentences):
     split_text = "".join(sent).replace("▁", " ")
     print(f"\nGenerate the Voice for '{split_text}'")
 
-    num_decode = 0
     text_tokens = tokenizer.convert_tokens_to_ids(sent)
     text_ids = np.array([text_tokens], dtype=np.int32)
 
@@ -1114,13 +1114,18 @@ for i in range(total_sentences):
 
     generate_limit = MAX_GENERATE_LENGTH - concat_len
     input_feed_E[in_names_E[num_layers_2_plus_2]] = concat_len
+
     save_last_hidden_state = []
+    save_max_logits_ids = []
+    reset_penality = 0
+    num_decode = 0
 
     decode_time = time.time()
     while num_decode < generate_limit:
         input_feed_E[in_names_E[num_layers_2_plus_3]] = gpt_hidden_state
         all_outputs_E = ort_session_E.run(out_name_E, input_feed_E)
         max_logit_ids = all_outputs_E[last_output_indices_E]
+        save_max_logits_ids.append(max_logit_ids)
         save_last_hidden_state.append(all_outputs_E[second_last_output_indices_E])
         num_decode += 1
         if max_logit_ids in STOP_TOKEN:
@@ -1131,6 +1136,9 @@ for i in range(total_sentences):
         for i in range(second_last_output_indices_E):
             input_feed_E[in_names_E[i]] = all_outputs_E[i]
         repeat_penality[:, max_logit_ids] = REPEAT_PENALITY
+        if num_decode > PENALITY_RANGE and save_max_logits_ids[reset_penality] != max_logit_ids:
+            repeat_penality[:, save_max_logits_ids[reset_penality]] = 1.0
+            reset_penality += 1
         gpt_hidden_state, gen_len = ort_session_C.run(
             [out_name_C0, out_name_C1],
             {
