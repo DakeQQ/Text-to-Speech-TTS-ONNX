@@ -91,7 +91,7 @@ class IndexTTS_A(torch.nn.Module):
         self.zero_pad = torch.zeros(( self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.h, 2048, 1), dtype=torch.int8)  # 2048 is about 30 seconds audio input.
         self.perceiver_encoder_head = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].heads
         self.perceiver_encoder_head_dim = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.out_features // self.perceiver_encoder_head
-        self.latents = self.indexTTS.perceiver_encoder.latents.data.unsqueeze(0)
+        self.latents = self.indexTTS.perceiver_encoder.latents.data
         self.audio_pad = torch.randn((1, 1, int(sample_rate * 0.1)), dtype=torch.float32)
 
         scaling = float(self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.d_k ** -0.25)
@@ -142,17 +142,17 @@ class IndexTTS_A(torch.nn.Module):
             x = x + encoder_layer.feed_forward(encoder_layer.norm_ff(x))
             x = encoder_layer.norm_final(x)
         x = self.indexTTS.conditioning_encoder.after_norm(x)
-        x = self.indexTTS.perceiver_encoder.proj_context(x)
+        x = self.indexTTS.perceiver_encoder.proj_context(x).squeeze(0)
         for attn, ff in self.indexTTS.perceiver_encoder.layers:
             q = attn.to_q(self.latents)
-            k, v = attn.to_kv(torch.cat([self.latents, x], dim=-2)).chunk(2, dim=-1)
+            k, v = attn.to_kv(torch.cat([self.latents, x], dim=0)).chunk(2, dim=-1)
             q = q.view(-1, attn.heads, self.perceiver_encoder_head_dim).transpose(0, 1)
             k = k.view(-1, attn.heads, self.perceiver_encoder_head_dim).permute(1, 2, 0)
             v = v.view(-1, attn.heads, self.perceiver_encoder_head_dim).transpose(0, 1)
-            attn_out = attn.to_out(torch.matmul(torch.softmax(torch.matmul(q, k), dim=-1), v).transpose(0, 1).contiguous().view(1, -1, attn.to_out.in_features))
+            attn_out = attn.to_out(torch.matmul(torch.softmax(torch.matmul(q, k), dim=-1), v).transpose(0, 1).contiguous().view(-1, attn.to_out.in_features))
             self.latents = attn_out + self.latents
             self.latents = ff(self.latents) + self.latents
-        conds_latent = self.indexTTS.perceiver_encoder.norm(self.latents)
+        conds_latent = self.indexTTS.perceiver_encoder.norm(self.latents).unsqueeze(0)
 
         # bigvgan part
         ref_signal_len = mel_signal.shape[-1].unsqueeze(0)
