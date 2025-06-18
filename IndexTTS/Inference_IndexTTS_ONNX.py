@@ -32,7 +32,7 @@ ORT_Accelerate_Providers = []           # If you have accelerate devices for : [
 SAMPLE_RATE = 24000                     # IndexTTS model setting
 STOP_TOKEN = [8193]                     # IndexTTS model setting
 MAX_GENERATE_LENGTH = 800               # IndexTTS model setting
-REPEAT_PENALITY = 0.9                   # Range from 0.0 to 1.0; "1.0" means no penality.
+REPEAT_PENALITY = 0.7                   # Range from 0.0 to 1.0; "1.0" means no penality.
 PENALITY_RANGE = 10                     # Penalizes the most recent output. "10" means the last 10 mel tokens.
 
 # Others
