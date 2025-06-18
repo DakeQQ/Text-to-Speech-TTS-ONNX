@@ -39,10 +39,8 @@ target_platform = "amd64"                                                       
 use_low_memory_mode_in_Android = False                                           # If you need to use low memory mode on Android, please set it to True.
 upgrade_opset = 17                                                               # Optional process. Set 0 for close.
 
-specific_setting = True if ("IndexTTS_A" in model_path) or ("IndexTTS_F" in model_path) else False   # Error out if set False for IndexTTS_A.onnx & IndexTTS_F.onnx
-
 # Start Quantize
-if int8_quant and not specific_setting:  # A & F are not recommend
+if int8_quant and (("IndexTTS_A" not in model_path) or ("IndexTTS_F" not in model_path)):  # A & F are not recommend
     quantize_dynamic(
         model_input=model_path,
         model_output=quanted_model_path,
@@ -61,7 +59,7 @@ if int8_quant and not specific_setting:  # A & F are not recommend
     slim(
         model=quanted_model_path,
         output_model=quanted_model_path,
-        no_shape_infer=specific_setting,                   # False for more optimize but may get errors.
+        no_shape_infer=True if ("IndexTTS_F" in model_path) else False,                 # False for more optimize but may get errors.
         skip_fusion_patterns=False,
         no_constant_folding=False,
         save_as_external_data=use_low_memory_mode_in_Android,
@@ -71,29 +69,28 @@ else:
     slim(
         model=model_path,
         output_model=quanted_model_path,
-        no_shape_infer=specific_setting,                   # False for more optimize but may get errors.
+        no_shape_infer=True if ("IndexTTS_F" in model_path) else False,                 # False for more optimize but may get errors.
         skip_fusion_patterns=False,
         no_constant_folding=False,
         save_as_external_data=use_low_memory_mode_in_Android,
         verbose=False,
-        dtype='fp16' if ("IndexTTS_A" in model_path) and fp16_quant else 'fp32'
     )
 
 
 # transformers.optimizer
 model = optimize_model(quanted_model_path,
                        use_gpu=use_gpu,
-                       opt_level=1 if specific_setting and fp16_quant else 2,
+                       opt_level=1 if (("IndexTTS_A" in model_path) or ("IndexTTS_F" in model_path)) and fp16_quant else 2,
                        num_heads=8,
                        hidden_size=1280,
                        provider=provider,
                        verbose=False,
                        model_type='bert')
-if fp16_quant and ("IndexTTS_A" not in model_path):
+if fp16_quant:
     model.convert_float_to_float16(
         keep_io_types=False,
         force_fp16_initializers=True,
-        use_symbolic_shape_infer=(not specific_setting),       # True for more optimize but may get errors.
+        use_symbolic_shape_infer=True if ("IndexTTS_F" in model_path) else False,       # True for more optimize but may get errors.
         max_finite_val=65504.0,
         op_block_list=['DynamicQuantizeLinear', 'DequantizeLinear', 'DynamicQuantizeMatMul', 'Range', 'MatMulIntegerToFloat']
     )
@@ -103,11 +100,11 @@ gc.collect()
 
 
 # onnxslim 2nd
-if not specific_setting:
+if "IndexTTS_F" not in model_path:
     slim(
         model=quanted_model_path,
         output_model=quanted_model_path,
-        no_shape_infer=specific_setting,                        # False for more optimize but may get errors.
+        no_shape_infer=True if ("IndexTTS_F" in model_path) else False,                 # False for more optimize but may get errors.
         skip_fusion_patterns=False,
         no_constant_folding=False,
         save_as_external_data=use_low_memory_mode_in_Android,
