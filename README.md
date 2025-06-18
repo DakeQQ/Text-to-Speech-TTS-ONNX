@@ -2,8 +2,8 @@
    Utilizes ONNX Runtime for TTS model. 
 ### Features  
 1. **Supported Models**:  
-   - [IndexTTS](https://github.com/index-tts/index-tts)  
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
+   - [IndexTTS](https://github.com/index-tts/index-tts)
 
 2. **End-to-End Processing**:  
    - The solution includes internal `STFT/ISTFT` processing.  
@@ -31,13 +31,13 @@
 - [ ] Beam Search
 ---
 
-## Audio-Denoiser-ONNX  
-通过 ONNX Runtime 实现音频降噪，提升音质清晰度。
+## Text-to-Speech-TTS-ONNX
+通过 ONNX Runtime 实现运行 TTS 模型。
 
 ### 功能  
 1. **支持的模型**：  
-   - [IndexTTS](https://github.com/index-tts/index-tts)  
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
+   - [IndexTTS](https://github.com/index-tts/index-tts)  
 
 2. **端到端处理**：  
    - 解决方案内置 `STFT/ISTFT` 处理。  
