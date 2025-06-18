@@ -30,10 +30,7 @@ generated_audio_path = r"generated.wav"                                         
 reference_audio      = r"./example/zh.wav"                                          # The reference audio path.
 gen_text             = "大家好，我现在正在大可奇奇体验 ai 科技。"                          # The target speech.
 
-def normalize_to_int16(audio):
-    max_val = np.max(np.abs(audio))
-    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
-    return (audio * float(scaling_factor)).astype(np.int16)
+
 # Model Parameters
 SAMPLE_RATE = 24000                     # IndexTTS model setting
 STOP_TOKEN = [8193]                     # IndexTTS model setting
