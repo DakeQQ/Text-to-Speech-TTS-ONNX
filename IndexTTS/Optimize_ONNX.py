@@ -13,7 +13,7 @@ from onnxruntime.transformers.optimizer import optimize_model
 original_folder_path = r"/home/DakeQQ/Downloads/IndexTTS_ONNX"                     # The original folder.
 quanted_folder_path = r"/home/DakeQQ/Downloads/IndexTTS_Optimized"                 # The optimized folder.
 
-model_path = os.path.join(original_folder_path, "IndexTTS_A.onnx")               # The original fp32 model path. The IndexTTS_A.onnx can not quant both int8 and fp16.
+model_path = os.path.join(original_folder_path, "IndexTTS_A.onnx")               # The original fp32 model path.
 quanted_model_path = os.path.join(quanted_folder_path, "IndexTTS_A.onnx")        # The optimized model stored path.
 
 # model_path = os.path.join(original_folder_path, "IndexTTS_B.onnx")               # The original fp32 model path.
