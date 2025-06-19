@@ -4,6 +4,7 @@
 1. **Supported Models**:  
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
+   - [BigVGAN](https://github.com/NVIDIA/BigVGAN)
 
 2. **End-to-End Processing**:  
    - The solution includes internal `STFT/ISTFT` processing.  
@@ -21,9 +22,10 @@
 ### 性能 Performance  
 | OS           | Device       | Backend           | Model               | Time Cost in Seconds <br> (reference audio: 6s / generates approximately 15 words of speech) |
 |:------------:|:------------:|:-----------------:|:-------------------:|:-------------------------------------------------------------------------:|
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | F5-TTS<br>F32      |        180 (NFE=32)                                                       |
-| Ubuntu-24.04 | Laptop       | GPU <br> MX150     | F5-TTS<br>F32      |        62 (NFE=32)                                                        |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | F5-TTS<br>F32      |        180 <br> (NFE=32)                                                  |
+| Ubuntu-24.04 | Laptop       | GPU <br> MX150     | F5-TTS<br>F32      |        62 <br> (NFE=32)                                                   |
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | IndexTTS<br>F32    |        18                                                                 |
+| Ubuntu-24.04 | Laptop       | GPU <br> MX150     | BigVGAN V2 24khz_100band_256x <br>F16    |        4.6 <br> input mel = (1, 100, 512)           |
 
 ---
 
@@ -37,7 +39,8 @@
 ### 功能  
 1. **支持的模型**：  
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
-   - [IndexTTS](https://github.com/index-tts/index-tts)  
+   - [IndexTTS](https://github.com/index-tts/index-tts)
+   - [BigVGAN](https://github.com/NVIDIA/BigVGAN)
 
 2. **端到端处理**：  
    - 解决方案内置 `STFT/ISTFT` 处理。  
