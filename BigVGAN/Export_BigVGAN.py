@@ -43,7 +43,7 @@ class BIGVGAN(torch.nn.Module):
 
     def forward(self, mel_features):
         generated_wav = self.bigvgan(mel_features)
-        generated_wav = (generated_wav * 32767.0)
+        generated_wav = generated_wav * 32767.0
         if self.use_tanh:
             generated_wav = generated_wav.clamp(min=-32768.0, max=32767.0)
         return generated_wav.to(torch.int16)
