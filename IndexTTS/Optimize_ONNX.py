@@ -81,8 +81,8 @@ else:
 model = optimize_model(quanted_model_path,
                        use_gpu=use_gpu,
                        opt_level=1 if (("IndexTTS_A" in model_path) or ("IndexTTS_F" in model_path)) and fp16_quant else 2,
-                       num_heads=8,
-                       hidden_size=1280,
+                       num_heads=8 if (("IndexTTS_A" in model_path) or ("IndexTTS_E" in model_path)) else 0,
+                       hidden_size=1280 if (("IndexTTS_A" in model_path) or ("IndexTTS_E" in model_path)) else 0,
                        provider=provider,
                        verbose=False,
                        model_type='bert')
