@@ -18,7 +18,7 @@ DEVICE_ID = 0                           # The GPU id, default to 0.
 
 # Model Parameters
 DYNAMIC_AXIS = True                     # The default dynamic axis is mel feature length.
-USE_TANH = True                         # Set for using tanh(x) at the final output or not.
+USE_TANH = True                         # Option to apply tanh(x) at the final output.
 MAX_SIGNAL_LENGTH = 512                 # Max frames for audio length after STFT processed. For static axis setting.
 
 shutil.copy("./modeling_modified/bigvgan.py", model_path + "/bigvgan.py")
@@ -161,7 +161,7 @@ out_name_A = ort_session_A.get_outputs()
 in_name_A0 = in_name_A[0].name
 out_name_A0 = out_name_A[0].name
 
-test_dummy = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_A._inputs_meta[0].shape[1], 100), dtype=model_A_dtype), device_type, DEVICE_ID)
+test_dummy = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_A._inputs_meta[0].shape[1], 512), dtype=model_A_dtype), device_type, DEVICE_ID)
 
 try:
     print("\nStart to Run the BigVGAN by ONNX Runtime\n")
