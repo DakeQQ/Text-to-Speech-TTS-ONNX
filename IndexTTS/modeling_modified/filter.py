@@ -83,7 +83,7 @@ class LowPassFilter1d(nn.Module):
         filter = kaiser_sinc_filter1d(cutoff, half_width, kernel_size)
         self.register_buffer("filter", filter)
         self.x_shape = [768, 384, 192, 96, 48, 24]
-        self.filter_pad = [self.filter.expand(768, -1, -1)]
+        self.filter_pad = [filter.expand(768, -1, -1)]
         self.filter_pad.append(filter.expand(384, -1, -1))
         self.filter_pad.append(filter.expand(192, -1, -1))
         self.filter_pad.append(filter.expand(96, -1, -1))
