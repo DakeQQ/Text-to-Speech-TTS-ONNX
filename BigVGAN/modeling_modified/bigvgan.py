@@ -366,7 +366,7 @@ class BigVGAN(
             shape = self.ups._modules[f"{i}"]._modules["0"].out_channels
             self.x_shape.append(shape)
             self.up_filter_pad.append(up_filter.expand(shape, -1, -1))
-            self.up_pad_zeros.append(torch.zeros((1, shape, 5), dtype=torch.float32))
+            self.up_pad_zeros.append(torch.zeros((1, shape, self.activation_post.upsample.pad), dtype=torch.float32))
         self.up_pad_zeros.append(torch.zeros((1, 24, 15), dtype=torch.float32))
 
         down_filter = self.activation_post.downsample.lowpass.filter
