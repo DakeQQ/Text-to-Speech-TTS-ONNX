@@ -13,7 +13,7 @@ onnx_model_A        = r"/home/DakeQQ/Downloads/BigVGAN_ONNX/BigVGAN.onnx"       
 DYNAMIC_AXIS = True                     # The default dynamic axis is mel feature length.
 USE_TANH = True                         # Set for using tanh(x) at the final output or not.
 N_MELS = 100                            # Number of Mel bands to generate in the Mel-spectrogram
-MAX_SIGNAL_LENGTH = 1024                # Max frames for audio length after STFT processed. Set an appropriate larger value for long audio input, such as 2048.
+MAX_SIGNAL_LENGTH = 1024                # Max frames for audio length after STFT processed. For static axis setting.
 
 shutil.copy("./modeling_modified/bigvgan.py", model_path + "/bigvgan.py")
 shutil.copy("./modeling_modified/resample.py", model_path + "/alias_free_activation/torch/resample.py")
