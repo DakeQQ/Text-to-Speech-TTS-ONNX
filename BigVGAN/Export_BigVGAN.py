@@ -9,6 +9,10 @@ import numpy as np
 model_path          = r"/home/DakeQQ/Downloads/bigvgan_v2_24khz_100band_256x"      # The BigVGAN project path.    URL: https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x / https://github.com/NVIDIA/BigVGAN
 onnx_model_A        = r"/home/DakeQQ/Downloads/BigVGAN_ONNX/BigVGAN.onnx"          # The exported onnx model path.
 
+
+# ONNX Runtime Settings
+ORT_Accelerate_Providers = []           # If you have accelerate devices for : ['CUDAExecutionProvider', 'TensorrtExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'AzureExecutionProvider']
+                                        # else keep empty.
 # Model Parameters
 DYNAMIC_AXIS = True                     # The default dynamic axis is mel feature length.
 USE_TANH = True                         # Set for using tanh(x) at the final output or not.
@@ -92,8 +96,58 @@ session_opts.add_session_config_entry("disable_synchronize_execution_providers",
 session_opts.add_session_config_entry("optimization.minimal_build_optimizations", "")
 session_opts.add_session_config_entry("session.use_device_allocator_for_initializers", "1")
 
+if "OpenVINOExecutionProvider" in ORT_Accelerate_Providers:
+    provider_options = [
+        {
+            'device_type': 'CPU',                         # [CPU, NPU, GPU, GPU.0, GPU.1]]
+            'precision': 'ACCURACY',                      # [FP32, FP16, ACCURACY]
+            'num_of_threads': MAX_THREADS,
+            'num_streams': 1,
+            'enable_opencl_throttling': True,
+            'enable_qdq_optimizer': False,                # Enable it carefully
+            'disable_dynamic_shapes': False
+        }
+    ]
+    device_type = 'cpu'
+elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
+    provider_options = [
+        {
+            'device_id': DEVICE_ID,
+            'gpu_mem_limit': 24 * 1024 * 1024 * 1024,     # 24 GB
+            'arena_extend_strategy': 'kNextPowerOfTwo',   # ["kNextPowerOfTwo", "kSameAsRequested"]
+            'cudnn_conv_algo_search': 'EXHAUSTIVE',       # ["DEFAULT", "HEURISTIC", "EXHAUSTIVE"]
+            'sdpa_kernel': '2',                           # ["0", "1", "2"]
+            'use_tf32': '1',
+            'fuse_conv_bias': '0',
+            'cudnn_conv_use_max_workspace': '1',
+            'cudnn_conv1d_pad_to_nc1d': '1',
+            'tunable_op_enable': '1',
+            'tunable_op_tuning_enable': '1',
+            'tunable_op_max_tuning_duration_ms': 10000,
+            'do_copy_in_default_stream': '0',
+            'enable_cuda_graph': '0',                     # Set to '0' to avoid potential errors when enabled.
+            'prefer_nhwc': '0',
+            'enable_skip_layer_norm_strict_mode': '0',
+            'use_ep_level_unified_stream': '0',
+        }
+    ]
+    device_type = 'cuda'
+elif "DmlExecutionProvider" in ORT_Accelerate_Providers:
+    provider_options = [
+        {
+            'device_id': DEVICE_ID,
+            'performance_preference': 'high_performance',  # [high_performance, default, minimum_power]
+            'device_filter': 'npu'                         # [any, npu, gpu]
+        }
+    ]
+    device_type = 'dml'
+else:
+    # Please config by yourself for others providers.
+    device_type = 'cpu'
+    provider_options = None
 
-ort_session_A = onnxruntime.InferenceSession(onnx_model_A, sess_options=session_opts, providers=['CPUExecutionProvider'], provider_options=None)
+ort_session_A = onnxruntime.InferenceSession(onnx_model_A, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+print(f"\nUsable Providers: {ort_session_A.get_providers()[0]}")
 model_A_dtype = ort_session_A._inputs_meta[0].type
 if 'float16' in model_A_dtype:
     model_A_dtype = np.float16
@@ -104,7 +158,7 @@ out_name_A = ort_session_A.get_outputs()
 in_name_A0 = in_name_A[0].name
 out_name_A0 = out_name_A[0].name
 
-test_dummy = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_A._inputs_meta[0].shape[1], 100), dtype=model_A_dtype), 'cpu', 0)
+test_dummy = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_A._inputs_meta[0].shape[1], 100), dtype=model_A_dtype), device_type', DEVICE_ID)
 
 try:
     print("\nStart to Run the BigVGAN by ONNX Runtime\n")
