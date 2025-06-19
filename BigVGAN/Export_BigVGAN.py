@@ -172,5 +172,5 @@ try:
             in_name_A0: test_dummy
         })
     print(f"\nBigVGAN ran successfully on ONNX Runtime.\n\nONNXRuntime Time Cost in Seconds: {time.time() - start_time:.3f}")
-except:
-    print("\nBigVGAN encountered errors when running on ONNX Runtime.")
+except Exception as e:
+    print(f"\nBigVGAN encountered errors when running on ONNX Runtime. \n{e}")
