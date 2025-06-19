@@ -82,11 +82,11 @@ if model_path in sys.path:
 
 # ONNX Runtime settings
 session_opts = onnxruntime.SessionOptions()
-session_opts.log_severity_level = 4         # Fatal level = 4, it an adjustable value.
-session_opts.log_verbosity_level = 4        # Fatal level = 4, it an adjustable value.
-session_opts.inter_op_num_threads = 0       # Run different nodes with num_threads. Set 0 for auto.
-session_opts.intra_op_num_threads = 0       # Under the node, execute the operators with num_threads. Set 0 for auto.
-session_opts.enable_cpu_mem_arena = True    # True for execute speed; False for less memory usage.
+session_opts.log_severity_level = 4                   # Fatal level = 4, it an adjustable value.
+session_opts.log_verbosity_level = 4                  # Fatal level = 4, it an adjustable value.
+session_opts.inter_op_num_threads = MAX_THREADS       # Run different nodes with num_threads. Set 0 for auto.
+session_opts.intra_op_num_threads = MAX_THREADS       # Under the node, execute the operators with num_threads. Set 0 for auto.
+session_opts.enable_cpu_mem_arena = True              # True for execute speed; False for less memory usage.
 session_opts.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
 session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
 session_opts.add_session_config_entry("session.set_denormal_as_zero", "1")
