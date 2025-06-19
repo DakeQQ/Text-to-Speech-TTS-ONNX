@@ -28,16 +28,15 @@ gen_text             = "大家好，我现在正在大可奇奇体验 ai 科技�
 # ONNX Runtime Settings
 ORT_Accelerate_Providers = []           # If you have accelerate devices for : ['CUDAExecutionProvider', 'TensorrtExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'AzureExecutionProvider']
                                         # else keep empty.
+MAX_THREADS = 8                         # Max CPU parallel threads.
+DEVICE_ID = 0                           # The GPU id, default to 0.
+
 # Model Parameters
 SAMPLE_RATE = 24000                     # IndexTTS model setting
 STOP_TOKEN = [8193]                     # IndexTTS model setting
 MAX_GENERATE_LENGTH = 800               # IndexTTS model setting
 REPEAT_PENALITY = 0.7                   # Range from 0.0 to 1.0; "1.0" means no penality.
 PENALITY_RANGE = 10                     # Penalizes the most recent output. "10" means the last 10 mel tokens.
-
-# Others
-DEVICE_ID = 0
-MAX_THREADS = 4
 
 
 # ONNX Runtime settings
