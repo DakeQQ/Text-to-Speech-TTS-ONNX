@@ -161,7 +161,7 @@ out_name_A = ort_session_A.get_outputs()
 in_name_A0 = in_name_A[0].name
 out_name_A0 = out_name_A[0].name
 
-test_dummy = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_A._inputs_meta[0].shape[1], 100), dtype=model_A_dtype), device_type', DEVICE_ID)
+test_dummy = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_A._inputs_meta[0].shape[1], 100), dtype=model_A_dtype), device_type, DEVICE_ID)
 
 try:
     print("\nStart to Run the BigVGAN by ONNX Runtime\n")
