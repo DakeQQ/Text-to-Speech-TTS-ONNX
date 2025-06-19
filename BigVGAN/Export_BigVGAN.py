@@ -13,6 +13,9 @@ onnx_model_A        = r"/home/DakeQQ/Downloads/BigVGAN_ONNX/BigVGAN.onnx"       
 # ONNX Runtime Settings
 ORT_Accelerate_Providers = []           # If you have accelerate devices for : ['CUDAExecutionProvider', 'TensorrtExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'AzureExecutionProvider']
                                         # else keep empty.
+MAX_THREADS = 4
+DEVICE_ID = 0
+
 # Model Parameters
 DYNAMIC_AXIS = True                     # The default dynamic axis is mel feature length.
 USE_TANH = True                         # Set for using tanh(x) at the final output or not.
