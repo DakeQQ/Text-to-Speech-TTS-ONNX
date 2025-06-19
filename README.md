@@ -4,7 +4,7 @@
 1. **Supported Models**:  
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
-   - [BigVGAN](https://github.com/NVIDIA/BigVGAN)
+   - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (It is part of the TTS module.)
 
 2. **End-to-End Processing**:  
    - The solution includes internal `STFT/ISTFT` processing.  
@@ -40,7 +40,7 @@
 1. **支持的模型**：  
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
-   - [BigVGAN](https://github.com/NVIDIA/BigVGAN)
+   - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (它是TTS模块的一部分)
 
 2. **端到端处理**：  
    - 解决方案内置 `STFT/ISTFT` 处理。  
