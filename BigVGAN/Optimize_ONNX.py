@@ -16,7 +16,7 @@ model_path = os.path.join(original_folder_path, "BigVGAN.onnx")               # 
 quanted_model_path = os.path.join(quanted_folder_path, "BigVGAN.onnx")        # The optimized model stored path.
 
 int8_quant = False                                                            # Quantization to INT8 is not recommended.
-fp16_quant = True
+fp16_quant = False
 use_cuda_gpu = False                                                          # If true, the transformers.optimizer will remain the FP16 processes.
 target_platform = "amd64"                                                     # ['arm', 'amd64']; The 'amd64' means x86_64 desktop, not means the AMD chip.
 use_low_memory_mode_in_Android = False                                        # If you need to use low memory mode on Android, please set it to True.
