@@ -688,7 +688,7 @@ if device_type != 'dml':
 else:
     init_past_keys_E = onnxruntime.OrtValue.ortvalue_from_numpy(np.zeros((ort_session_E._inputs_meta[0].shape[0], ort_session_E._inputs_meta[0].shape[1], 0), dtype=model_E_dtype), 'cpu', DEVICE_ID)
     init_past_values_E = onnxruntime.OrtValue.ortvalue_from_numpy(np.zeros((ort_session_E._inputs_meta[num_layers].shape[0], 0, ort_session_E._inputs_meta[num_layers].shape[2]), dtype=model_E_dtype), 'cpu', DEVICE_ID)
-repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_E._inputs_meta[num_layers_2_plus_1].shape[1]), dtype=np.float32), device_type, DEVICE_ID)
+repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((1, ort_session_E._inputs_meta[num_layers_2_plus_1].shape[1]), dtype=model_E_dtype), device_type, DEVICE_ID)
 split_pad = np.zeros((1, 1, int(SAMPLE_RATE * 0.2)), dtype=np.int16)  # Default to 200ms split padding.
 
 input_feed_F = {}
