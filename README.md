@@ -31,6 +31,7 @@
 
 ### To-Do List  
 - [ ] Beam Search
+- [ ] [MOSS-TTSD](https://github.com/OpenMOSS/MOSS-TTSD)
 ---
 
 # Text-to-Speech-TTS-ONNX
