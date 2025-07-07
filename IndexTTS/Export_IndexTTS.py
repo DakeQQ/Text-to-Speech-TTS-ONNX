@@ -276,7 +276,7 @@ class IndexTTS_F(torch.nn.Module):
             latent = x * self.inv_num_kernels
         latent = self.indexTTS.bigvgan.conv_post(self.indexTTS.bigvgan.activation_post(latent, -1))
         generated_wav = torch.tanh(latent)
-        return (generated_wav * 32768.0).clamp(min=-32768.0, max=32767.0).to(torch.int16)
+        return (generated_wav.clamp(min=-1.0, max=1.0) * 32767.0).to(torch.int16)
 
 
 print("\n\nStart to Export the part_A...\n")
