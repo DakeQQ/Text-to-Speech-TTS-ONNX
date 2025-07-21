@@ -91,10 +91,12 @@ class IndexTTS_A(torch.nn.Module):
         self.zero_pad = torch.zeros(( self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.h, 2048, 1), dtype=torch.int8)  # 2048 is about 30 seconds audio input.
         self.perceiver_encoder_head = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].heads
         self.perceiver_encoder_head_dim = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.out_features // self.perceiver_encoder_head
-        self.latents = self.indexTTS.perceiver_encoder.latents.data
+        self.latents = self.indexTTS.perceiver_encoder.latents.data.unsqueeze(0)
         self.audio_pad = torch.randn((1, 1, int(sample_rate * 0.1)), dtype=torch.float32)
-
-        scaling = float(self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.d_k ** -0.25)
+        num_heads = self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.h
+        head_dim = self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.d_k
+        hidden_size = self.indexTTS.conditioning_encoder.encoders._modules['0'].self_attn.linear_q.in_features
+        scaling = float(head_dim ** -0.25)
         for layer in self.indexTTS.conditioning_encoder.encoders:
             layer.self_attn.linear_q.weight.data *= scaling
             layer.self_attn.linear_q.bias.data *= scaling
@@ -104,11 +106,33 @@ class IndexTTS_A(torch.nn.Module):
             layer.self_attn.pos_bias_u.data = layer.self_attn.pos_bias_u.data.unsqueeze(1) * scaling
             layer.self_attn.pos_bias_v.data = layer.self_attn.pos_bias_v.data.unsqueeze(1) * scaling
 
-        scaling = float(self.perceiver_encoder_head_dim ** -0.25)
+            layer.self_attn.linear_q.weight.data = layer.self_attn.linear_q.weight.data.view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.self_attn.linear_q.bias.data = layer.self_attn.linear_q.bias.data.view(num_heads, 1, head_dim).contiguous()
+            layer.self_attn.linear_k.weight.data = layer.self_attn.linear_k.weight.data.view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.self_attn.linear_k.bias.data = layer.self_attn.linear_k.bias.data.view(num_heads, 1, head_dim).contiguous()
+            layer.self_attn.linear_v.weight.data = layer.self_attn.linear_v.weight.data.view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.self_attn.linear_v.bias.data = layer.self_attn.linear_v.bias.data.view(num_heads, 1, head_dim).contiguous()
+            layer.self_attn.linear_pos.weight.data = layer.self_attn.linear_pos.weight.data.view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.self_attn.linear_out.weight.data = layer.self_attn.linear_out.weight.data.view(hidden_size, num_heads, head_dim).permute(1, 2, 0).contiguous()
+            layer.self_attn.linear_out.bias.data = layer.self_attn.linear_out.bias.data.view(1, 1, -1).contiguous()
+
+        num_heads = self.perceiver_encoder_head
+        head_dim = self.perceiver_encoder_head_dim
+        hidden_size = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.in_features
+        scaling = float(head_dim ** -0.25)
         self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.weight.data *= scaling
         self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_kv.weight.data[:self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.out_features] *= scaling
         self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_q.weight.data *= scaling
         self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_kv.weight.data[:self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_q.out_features] *= scaling
+
+        self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.weight.data = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.weight.data.view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_k = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_kv.weight.data[:self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.out_features].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_v = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_kv.weight.data[self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_q.out_features:].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_out.weight.data = self.indexTTS.perceiver_encoder.layers._modules['0']._modules['0'].to_out.weight.data.view(hidden_size, num_heads, head_dim).permute(1, 2, 0).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_q.weight.data = self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_q.weight.data.view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_k = self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_kv.weight.data[:self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_q.out_features].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_v = self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_kv.weight.data[self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_q.out_features:].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+        self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_out.weight.data = self.indexTTS.perceiver_encoder.layers._modules['1']._modules['0'].to_out.weight.data.view(hidden_size, num_heads, head_dim).permute(1, 2, 0).contiguous()
 
     def forward(self, audio: torch.ShortTensor):
         audio = audio.float() * self.inv_int16
@@ -121,16 +145,18 @@ class IndexTTS_A(torch.nn.Module):
         pos_emb = self.indexTTS.conditioning_encoder.embed.pos_enc.pe[:, :enc_len].float()
         for encoder_layer in self.indexTTS.conditioning_encoder.encoders:
             x1 = encoder_layer.norm_mha(x)
-            q = encoder_layer.self_attn.linear_q(x1).view(-1, encoder_layer.self_attn.h, encoder_layer.self_attn.d_k).transpose(0, 1)
-            k = encoder_layer.self_attn.linear_k(x1).view(-1, encoder_layer.self_attn.h, encoder_layer.self_attn.d_k).permute(1, 2, 0)
-            v = encoder_layer.self_attn.linear_v(x1).view(-1, encoder_layer.self_attn.h, encoder_layer.self_attn.d_k).transpose(0, 1)
-            p = encoder_layer.self_attn.linear_pos(pos_emb).view(-1, encoder_layer.self_attn.h, encoder_layer.self_attn.d_k).permute(1, 2, 0)
+            q = torch.matmul(x1, encoder_layer.self_attn.linear_q.weight) + encoder_layer.self_attn.linear_q.bias
+            k = (torch.matmul(x1, encoder_layer.self_attn.linear_k.weight) + encoder_layer.self_attn.linear_k.bias).transpose(1, 2)
+            v = torch.matmul(x1, encoder_layer.self_attn.linear_v.weight) + encoder_layer.self_attn.linear_v.bias
+            p = torch.matmul(pos_emb, encoder_layer.self_attn.linear_pos.weight).transpose(1, 2)
             q_with_bias_u = q + encoder_layer.self_attn.pos_bias_u
             q_with_bias_v = q + encoder_layer.self_attn.pos_bias_v
             matrix_ac = torch.matmul(q_with_bias_u, k)
             matrix_bd = torch.matmul(q_with_bias_v, p)
             matrix_bd = rel_shift(matrix_bd, enc_len, self.zero_pad, encoder_layer.self_attn.h)
-            x += encoder_layer.self_attn.linear_out(torch.matmul(torch.softmax(matrix_ac + matrix_bd, dim=-1), v).transpose(0, 1).contiguous().view(1, -1, encoder_layer.self_attn.linear_out.in_features))
+            attn_out = torch.matmul(torch.softmax(matrix_ac + matrix_bd, dim=-1), v)
+            attn_out = torch.matmul(attn_out, encoder_layer.self_attn.linear_out.weight).sum(dim=0, keepdim=True) + encoder_layer.self_attn.linear_out.bias
+            x += attn_out
             residual = x
             x = encoder_layer.norm_conv(x).transpose(1, 2)
             x = encoder_layer.conv_module.pointwise_conv1(x)
@@ -142,17 +168,17 @@ class IndexTTS_A(torch.nn.Module):
             x = x + encoder_layer.feed_forward(encoder_layer.norm_ff(x))
             x = encoder_layer.norm_final(x)
         x = self.indexTTS.conditioning_encoder.after_norm(x)
-        x = self.indexTTS.perceiver_encoder.proj_context(x).squeeze(0)
+        x = self.indexTTS.perceiver_encoder.proj_context(x)
         for attn, ff in self.indexTTS.perceiver_encoder.layers:
-            q = attn.to_q(self.latents)
-            k, v = attn.to_kv(torch.cat([self.latents, x], dim=0)).chunk(2, dim=-1)
-            q = q.view(-1, attn.heads, self.perceiver_encoder_head_dim).transpose(0, 1)
-            k = k.view(-1, attn.heads, self.perceiver_encoder_head_dim).permute(1, 2, 0)
-            v = v.view(-1, attn.heads, self.perceiver_encoder_head_dim).transpose(0, 1)
-            attn_out = attn.to_out(torch.matmul(torch.softmax(torch.matmul(q, k), dim=-1), v).transpose(0, 1).contiguous().view(-1, attn.to_out.in_features))
+            q = torch.matmul(self.latents, attn.to_q.weight)
+            cat_latent_x = torch.cat([self.latents, x], dim=1)
+            k = torch.matmul(cat_latent_x, attn.to_k).transpose(1, 2)
+            v = torch.matmul(cat_latent_x, attn.to_v)
+            attn_out = torch.matmul(torch.softmax(torch.matmul(q, k), dim=-1), v)
+            attn_out = torch.matmul(attn_out, attn.to_out.weight).sum(dim=0, keepdim=True)
             self.latents = attn_out + self.latents
             self.latents = ff(self.latents) + self.latents
-        conds_latent = self.indexTTS.perceiver_encoder.norm(self.latents).unsqueeze(0)
+        conds_latent = self.indexTTS.perceiver_encoder.norm(self.latents)
 
         # bigvgan part
         ref_signal_len = mel_signal.shape[-1].unsqueeze(0)
@@ -224,11 +250,26 @@ class IndexTTS_E(torch.nn.Module):
         self.save_value = [None] * num_layers
         self.attention_mask = (1 - torch.tril(torch.ones([1, max_seq_len, max_seq_len], dtype=torch.int8))) * -128
 
-        scaling = float(self.indexTTS.inference_model.transformer.h._modules['0'].attn.head_dim ** -0.25)
-        qk_size = self.indexTTS.inference_model.transformer.h._modules['0'].attn.c_attn.nx * 2
+        num_heads = self.indexTTS.inference_model.transformer.h._modules['0'].attn.num_heads
+        head_dim = self.indexTTS.inference_model.transformer.h._modules['0'].attn.head_dim
+        hidden_size = self.indexTTS.inference_model.transformer.h._modules['0'].attn.embed_dim
+        scaling = float(head_dim ** -0.25)
+        qk_size = hidden_size + hidden_size
         for layer in self.indexTTS.inference_model.transformer.h:
+            layer.attn.c_attn.weight.data = layer.attn.c_attn.weight.data.transpose(0, 1)
+            layer.attn.c_proj.weight.data = layer.attn.c_proj.weight.data.transpose(0, 1)
+            
             layer.attn.c_attn.weight.data[:qk_size] *= scaling
             layer.attn.c_attn.bias.data[:qk_size] *= scaling
+            
+            layer.attn.to_q_weight = layer.attn.c_attn.weight.data[:hidden_size].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.attn.to_q_bias = layer.attn.c_attn.bias.data[:hidden_size].view(num_heads, 1, head_dim).contiguous()
+            layer.attn.to_k_weight = layer.attn.c_attn.weight.data[hidden_size:qk_size].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.attn.to_k_bias = layer.attn.c_attn.bias.data[hidden_size:qk_size].view(num_heads, 1, head_dim).contiguous()
+            layer.attn.to_v_weight = layer.attn.c_attn.weight.data[qk_size:].view(num_heads, head_dim, hidden_size).transpose(1, 2).contiguous()
+            layer.attn.to_v_bias = layer.attn.c_attn.bias.data[qk_size:].view(num_heads, 1, head_dim).contiguous()
+            layer.attn.c_proj.weight.data = layer.attn.c_proj.weight.data.view(hidden_size, num_heads, head_dim).permute(1, 2, 0).contiguous()
+            layer.attn.c_proj.bias.data = layer.attn.c_proj.bias.data.view(1, 1, -1).contiguous()
 
     def forward(self, *all_inputs):
         ids_len = all_inputs[-3]
@@ -237,20 +278,20 @@ class IndexTTS_E(torch.nn.Module):
         attention_mask = (self.attention_mask[:, :ids_len, :kv_seq_len] * all_inputs[-1]).float()  # attention_mask
         for i, layer in enumerate(self.indexTTS.inference_model.transformer.h):
             hidden_states_norm = layer.ln_1(hidden_state)
-            q, k, v = layer.attn.c_attn(hidden_states_norm).split(layer.attn.split_size, dim=2)
-            q = q.view(-1, layer.attn.num_heads, layer.attn.head_dim).transpose(0, 1)
-            k = k.view(-1, layer.attn.num_heads, layer.attn.head_dim).permute(1, 2, 0)
-            v = v.view(-1, layer.attn.num_heads, layer.attn.head_dim).transpose(0, 1)
+            q = torch.matmul(hidden_states_norm, layer.attn.to_q_weight) + layer.attn.to_q_bias
+            k = (torch.matmul(hidden_states_norm, layer.attn.to_k_weight) + layer.attn.to_k_bias).transpose(1, 2)
+            v = torch.matmul(hidden_states_norm, layer.attn.to_v_weight) + layer.attn.to_v_bias
             k = torch.cat((all_inputs[i], k), dim=2)
             v = torch.cat((all_inputs[i + self.num_layers], v), dim=1)
             self.save_key[i] = k
             self.save_value[i] = v
-            hidden_state_attn = layer.attn.c_proj(torch.matmul(torch.softmax(torch.matmul(q, k) + attention_mask, dim=-1), v).transpose(0, 1).contiguous().view(1, -1, layer.attn.c_proj.nf))
+            hidden_state_attn = torch.matmul(torch.softmax(torch.matmul(q, k) + attention_mask, dim=-1), v)
+            hidden_state_attn = torch.matmul(hidden_state_attn, layer.attn.c_proj.weight).sum(dim=0, keepdim=True) + layer.attn.c_proj.bias
             hidden_state += hidden_state_attn
             hidden_state = hidden_state + layer.mlp.c_proj(layer.mlp.act(layer.mlp.c_fc(layer.ln_2(hidden_state))))
         last_hidden_state = self.indexTTS.inference_model.transformer.ln_f(hidden_state)[:, -1]
-        logits = self.indexTTS.inference_model.lm_head(last_hidden_state) * all_inputs[-4]  # repeat_penality
-        max_logit_ids = torch.argmax(logits, dim=-1, keepdim=True).int()                    # Greedy Search
+        logits = self.indexTTS.inference_model.lm_head(last_hidden_state) * all_inputs[-4]   # repeat_penality
+        max_logit_ids = torch.argmax(logits, dim=-1, keepdim=True).int()                     # Greedy Search
         return *self.save_key, *self.save_value, kv_seq_len, last_hidden_state, max_logit_ids
 
 
