@@ -59,7 +59,7 @@ if int8_quant and (("IndexTTS_A" not in model_path) or ("IndexTTS_F" not in mode
     slim(
         model=quanted_model_path,
         output_model=quanted_model_path,
-        no_shape_infer=True if ("IndexTTS_F" in model_path) else False,                 # False for more optimize but may get errors.
+        no_shape_infer=True,                 # False for more optimize but may get errors.
         skip_fusion_patterns=False,
         no_constant_folding=False,
         save_as_external_data=use_low_memory_mode_in_Android,
@@ -69,7 +69,7 @@ else:
     slim(
         model=model_path,
         output_model=quanted_model_path,
-        no_shape_infer=True if ("IndexTTS_F" in model_path) else False,                 # False for more optimize but may get errors.
+        no_shape_infer=True,                 # False for more optimize but may get errors.
         skip_fusion_patterns=False,
         no_constant_folding=False,
         save_as_external_data=use_low_memory_mode_in_Android,
