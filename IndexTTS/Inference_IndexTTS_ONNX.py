@@ -637,6 +637,7 @@ in_name_D = ort_session_D.get_inputs()
 out_name_D = ort_session_D.get_outputs()
 in_name_D0 = in_name_D[0].name
 in_name_D1 = in_name_D[1].name
+in_name_D2 = in_name_D[2].name
 out_name_D0 = out_name_D[0].name
 out_name_D1 = out_name_D[1].name
 
@@ -733,13 +734,6 @@ for i in range(total_sentences):
             in_name_B0: text_ids,
         })[0]
 
-    mel_emb = ort_session_D.run_with_ort_values(
-        [out_name_D0],
-        {
-            in_name_D0: all_outputs_A[last_output_indices_A],
-            in_name_D1: text_hidden_state
-        })[0]
-
     gpt_hidden_state, gen_len = ort_session_C.run_with_ort_values(
         [out_name_C0, out_name_C1],
         {
@@ -750,8 +744,9 @@ for i in range(total_sentences):
     gpt_hidden_state, concat_len = ort_session_D.run_with_ort_values(
         [out_name_D0, out_name_D1],
         {
-            in_name_D0: mel_emb,
-            in_name_D1: gpt_hidden_state
+            in_name_D0: all_outputs_A[last_output_indices_A],
+            in_name_D1: text_hidden_state,
+            in_name_D2: gpt_hidden_state
         })
 
     generate_limit = MAX_GENERATE_LENGTH - onnxruntime.OrtValue.numpy(concat_len)
@@ -783,6 +778,7 @@ for i in range(total_sentences):
             repeat_penality[:, save_max_logits_ids[reset_penality]] = 1.0
             reset_penality += 1
         repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(repeat_penality, device_type, DEVICE_ID)
+        input_feed_E[in_names_E[num_layers_2_plus_1]] = repeat_penality
         gpt_hidden_state, gen_len = ort_session_C.run_with_ort_values(
             [out_name_C0, out_name_C1],
             {
