@@ -236,8 +236,8 @@ class IndexTTS_D(torch.nn.Module):
         super(IndexTTS_D, self).__init__()
         pass
 
-    def forward(self, embed_x, embed_y):
-        concat_hidden_state = torch.cat([embed_x, embed_y], dim=1)
+    def forward(self, embed_x, embed_y, embed_z):
+        concat_hidden_state = torch.cat([embed_x, embed_y, embed_z], dim=1)
         return concat_hidden_state, concat_hidden_state.shape[1].unsqueeze(0)
 
 
@@ -402,16 +402,18 @@ with torch.inference_mode():
 
     embed_x = torch.ones((1, 10, HIDDEN_SIZE), dtype=torch.float32)
     embed_y = torch.ones((1, 1, HIDDEN_SIZE), dtype=torch.float32)
+    embed_z = torch.ones((1, 1, HIDDEN_SIZE), dtype=torch.float32)
     part_D = IndexTTS_D()
     torch.onnx.export(
         part_D,
-        (embed_x, embed_y),
+        (embed_x, embed_y, embed_z),
         onnx_model_D,
-        input_names=['embed_x', 'embed_y'],
+        input_names=['embed_x', 'embed_y', 'embed_z'],
         output_names=['concat_hidden_state', 'concat_len'],
         dynamic_axes={
             'embed_x': {1: 'embed_x_len'},
             'embed_y': {1: 'embed_y_len'},
+            'embed_z': {1: 'embed_y_len'},
             'concat_hidden_state': {1: 'concat_len'},
         },
         do_constant_folding=True,
@@ -419,6 +421,7 @@ with torch.inference_mode():
     del part_D
     del embed_x
     del embed_y
+    del embed_z
     gc.collect()
     print("\nExport part_D Done.\n\nExport part_E Start...")
 
@@ -1062,6 +1065,7 @@ in_name_D = ort_session_D.get_inputs()
 out_name_D = ort_session_D.get_outputs()
 in_name_D0 = in_name_D[0].name
 in_name_D1 = in_name_D[1].name
+in_name_D2 = in_name_D[2].name
 out_name_D0 = out_name_D[0].name
 out_name_D1 = out_name_D[1].name
 
@@ -1153,13 +1157,6 @@ for i in range(total_sentences):
             in_name_B0: text_ids,
         })[0]
 
-    mel_emb = ort_session_D.run(
-        [out_name_D0],
-        {
-            in_name_D0: all_outputs_A[last_output_indices_A],
-            in_name_D1: text_hidden_state
-        })[0]
-
     gpt_hidden_state, gen_len = ort_session_C.run(
         [out_name_C0, out_name_C1],
         {
@@ -1170,8 +1167,9 @@ for i in range(total_sentences):
     gpt_hidden_state, concat_len = ort_session_D.run(
         [out_name_D0, out_name_D1],
         {
-            in_name_D0: mel_emb,
-            in_name_D1: gpt_hidden_state
+            in_name_D0: all_outputs_A[last_output_indices_A],
+            in_name_D1: text_hidden_state,
+            in_name_D2: gpt_hidden_state
         })
 
     generate_limit = MAX_GENERATE_LENGTH - concat_len
@@ -1201,6 +1199,7 @@ for i in range(total_sentences):
         if (num_decode > PENALITY_RANGE) and (save_max_logits_ids[reset_penality] != max_logit_ids):
             repeat_penality[:, save_max_logits_ids[reset_penality]] = 1.0
             reset_penality += 1
+        input_feed_E[in_names_E[num_layers_2_plus_1]] = repeat_penality
         gpt_hidden_state, gen_len = ort_session_C.run(
             [out_name_C0, out_name_C1],
             {
