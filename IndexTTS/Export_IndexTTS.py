@@ -289,7 +289,7 @@ class IndexTTS_E(torch.nn.Module):
             hidden_state_attn = torch.matmul(hidden_state_attn, layer.attn.c_proj.weight).sum(dim=0, keepdim=True) + layer.attn.c_proj.bias
             hidden_state += hidden_state_attn
             hidden_state = hidden_state + layer.mlp.c_proj(layer.mlp.act(layer.mlp.c_fc(layer.ln_2(hidden_state))))
-        last_hidden_state = self.indexTTS.inference_model.transformer.ln_f(hidden_state)[:, -1]
+        last_hidden_state = self.indexTTS.inference_model.transformer.ln_f(hidden_state[:, -1])
         logits = self.indexTTS.inference_model.lm_head(last_hidden_state) * all_inputs[-4]   # repeat_penality
         max_logit_ids = torch.argmax(logits, dim=-1, keepdim=True).int()                     # Greedy Search
         return *self.save_key, *self.save_value, kv_seq_len, last_hidden_state, max_logit_ids
