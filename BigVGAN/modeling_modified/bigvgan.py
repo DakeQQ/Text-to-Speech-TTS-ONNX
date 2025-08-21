@@ -367,7 +367,7 @@ class BigVGAN(
             self.x_shape.append(shape)
             self.up_filter_pad.append(up_filter.expand(shape, -1, -1))
             self.up_pad_zeros.append(torch.zeros((1, shape, self.activation_post.upsample.pad), dtype=torch.float32))
-        self.up_pad_zeros.append(torch.zeros((1, 24, 15), dtype=torch.float32))
+        self.up_pad_zeros.append(torch.zeros((1, shape, 15), dtype=torch.float32))
 
         down_filter = self.activation_post.downsample.lowpass.filter
         self.down_filter_pad = []
@@ -378,8 +378,8 @@ class BigVGAN(
             self.down_filter_pad.append(down_filter.expand(shape, -1, -1))
             self.down_pad_zeros_L.append(torch.zeros((1, shape, self.activation_post.downsample.lowpass.pad_left), dtype=torch.float32))
             self.down_pad_zeros_R.append(torch.zeros((1, shape, self.activation_post.downsample.lowpass.pad_right), dtype=torch.float32))
-        self.down_pad_zeros_L.append(torch.zeros((1, 24, 15), dtype=torch.float32))
-        self.down_pad_zeros_R.append(torch.zeros((1, 24, 15), dtype=torch.float32))
+        self.down_pad_zeros_L.append(torch.zeros((1, shape, 15), dtype=torch.float32))
+        self.down_pad_zeros_R.append(torch.zeros((1, shape, 15), dtype=torch.float32))
 
     def forward(self, x):
         # Pre-conv
