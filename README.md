@@ -31,7 +31,7 @@
 
 ### To-Do List  
 - [ ] Beam Search
-- [ ] [MOSS-TTSD](https://github.com/OpenMOSS/MOSS-TTSD)
+- [ ] [VoxCPM](https://www.modelscope.cn/models/OpenBMB/VoxCPM-0.5B/summary)
 ---
 
 # Text-to-Speech-TTS-ONNX
