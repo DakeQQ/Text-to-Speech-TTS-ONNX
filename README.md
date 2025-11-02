@@ -40,19 +40,20 @@
 通过 ONNX Runtime 实现运行 TTS 模型。
 
 ### 功能  
-1. **支持的模型**：  
+1. **支持的模型**：
+   - [KaniTTS](https://github.com/nineninesix-ai/kani-tts)
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
    - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (它是TTS模块的一部分)
 
-2. **端到端处理**：  
+3. **端到端处理**：  
    - 解决方案内置 `STFT/ISTFT` 处理。  
    - 输入：`参考音频` + `文本`  
    - 输出：`生成的语音`
      
-3. **优化**:  
+4. **优化**:  
    - 模型关键组件实现了 100% GPU 算子部署。
      
-4. **资源**：  
+5. **资源**：  
    - [探索更多项目](https://github.com/DakeQQ?tab=repositories)  
 ---
