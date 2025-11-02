@@ -55,8 +55,8 @@ TOP_K = 3                                                                      #
 BEAM_SIZE = 3                                                                  # Number of beams in searching.
 MAX_BEAM_SIZE = 10                                                             # Max beams for exported model.
 SAMPLE_RATE = 22050                                                            # The sample rate of output audio.
-MAX_THREADS = 4
-DEVICE_ID = 0
+MAX_THREADS = 0                                                                # Parllel CPU threads. Set 0 for auto.
+DEVICE_ID = 0                                                                  # Default to zero.
 
 
 def rotate_half(x, head_dim_half, dim):
