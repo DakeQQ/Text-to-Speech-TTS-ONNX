@@ -364,8 +364,6 @@ for sentence in target_tts:
         if num_decode < 1:
             input_feed_B[in_name_B[num_keys_values_convs_plus_2]] = ids_len_1
         num_decode += 1
-        print(num_decode)
-        print(max_logits_idx)
     if num_decode > 0:
         print(f"\n\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
         if USE_BEAM_SEARCH:
