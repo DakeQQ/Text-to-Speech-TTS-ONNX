@@ -41,7 +41,7 @@ kani-tts-370m multilingual:
 STOP_TOKEN = [64402]                   # The stop_id in KaniTTS is "64402"
 MAX_SEQ_LEN = 1024                     # The max decode length.
 REPEAT_PENALITY = 0.9                  # Range from 0.0 to 1.0; "1.0" means no penality.
-PENALITY_RANGE = 10                    # Penalizes the most recent output. "30" means the last 30 tokens.
+PENALITY_RANGE = 15                    # Penalizes the most recent output. "15" means the last 15 tokens.
 USE_BEAM_SEARCH = False                # Use beam search or greedy search.
 TOP_K = 3                              # The top k candidate in decoding.
 BEAM_SIZE = 3                          # Number of beams in searching.
@@ -76,7 +76,7 @@ elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
             'cudnn_conv_algo_search': 'EXHAUSTIVE',       # ["DEFAULT", "HEURISTIC", "EXHAUSTIVE"]
             'sdpa_kernel': '2',                           # ["0", "1", "2"]
             'use_tf32': '1',
-            'fuse_conv_bias': '0',                        # Set to '0' to avoid potential errors when enabled.
+            'fuse_conv_bias': '1',                        # Set to '0' to avoid potential errors when enabled.
             'cudnn_conv_use_max_workspace': '1',
             'cudnn_conv1d_pad_to_nc1d': '1',
             'tunable_op_enable': '0',
@@ -220,7 +220,7 @@ else:
     input_feed_C = {in_name_C[2]: penality_value}
 
 
-ort_session_G = onnxruntime.InferenceSession(onnx_model_G, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+ort_session_G = onnxruntime.InferenceSession(onnx_model_G, sess_options=session_opts, providers=["CPUExecutionProvider"], provider_options=None)  # It is recommended to use CPU and Float32 format instead of GPU.
 in_name_G = ort_session_G.get_inputs()
 out_name_G = ort_session_G.get_outputs()
 in_name_G = [in_name_G[0].name, in_name_G[1].name]
@@ -372,10 +372,10 @@ for sentence in target_tts:
                 if idx in STOP_TOKEN:
                     num_decode = i
                     break
-            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(decode_ids, device_type, DEVICE_ID)}
+            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(decode_ids, 'cpu', 0)}
         else:
-            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy, device_type, DEVICE_ID)}
-        input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), device_type, DEVICE_ID)
+            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy, 'cpu', 0)}
+        input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), 'cpu', 0)
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
         audio_out = audio_out.numpy().reshape(-1)
         sf.write(generated_audio_path, audio_out, SAMPLE_RATE, format='WAVEX')
