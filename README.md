@@ -1,20 +1,21 @@
 # Text-to-Speech-TTS-ONNX
    Utilizes ONNX Runtime for TTS model. 
 ### Features  
-1. **Supported Models**:  
+1. **Supported Models**:
+   - [KaniTTS](https://github.com/nineninesix-ai/kani-tts)
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
    - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (It is part of the TTS module.)
 
-2. **End-to-End Processing**:  
+3. **End-to-End Processing**:  
    - The solution includes internal `STFT/ISTFT` processing.  
    - Input: `reference audio` + `text`  
    - Output: `generated speech`  
 
-3. **Optimize**:  
+4. **Optimize**:  
    - The key components enable 100% deployment of GPU operators. 
 
-4. **Resources**:  
+5. **Resources**:  
    - [Explore More Projects](https://github.com/DakeQQ?tab=repositories)  
 
 ---
@@ -26,6 +27,7 @@
 | Ubuntu-24.04 | Laptop       | GPU <br> MX150     | F5-TTS<br>F32      |        62 <br> (NFE=32)                                                   |
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | IndexTTS<br>F32    |        18                                                                 |
 | Ubuntu-24.04 | Laptop       | GPU <br> MX150     | BigVGAN V2 24khz_100band_256x <br>F16    |        4.6 <br> input mel = (1, 100, 512)           |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q8F32   |        8.6                                                                |
 
 ---
 
