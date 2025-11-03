@@ -742,7 +742,6 @@ for sentence in target_tts:
     input_ids = np.concatenate([head_ids, input_ids, tail_ids], axis=1)
     ids_len = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([input_ids.shape[1]], dtype=np.int64), device_type, DEVICE_ID)
     input_ids = onnxruntime.OrtValue.ortvalue_from_numpy(input_ids, device_type, DEVICE_ID)
-    ids_len_1 = init_ids_len_1
     history_len = init_history_len
     past_keys_B = init_past_keys_B
     past_values_B = init_past_values_B
@@ -840,7 +839,7 @@ for sentence in target_tts:
             save_id_greedy[num_decode] = max_logits_idx
         input_feed_B[in_name_B[num_keys_values_convs_plus_1]] = all_outputs_B[num_keys_values_convs_plus_1]
         if num_decode < 1:
-            input_feed_B[in_name_B[num_keys_values_convs_plus_2]] = ids_len_1
+            input_feed_B[in_name_B[num_keys_values_convs_plus_2]] = init_ids_len_1
         num_decode += 1
     if num_decode > 0:
         print(f"\n\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
