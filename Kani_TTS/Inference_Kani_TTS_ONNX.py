@@ -59,7 +59,7 @@ if "OpenVINOExecutionProvider" in ORT_Accelerate_Providers:
         {
             'device_type': 'CPU',                         # [CPU, NPU, GPU, GPU.0, GPU.1]]
             'precision': 'ACCURACY',                      # [FP32, FP16, ACCURACY]
-            'num_of_threads': MAX_THREADS,
+            'num_of_threads': MAX_THREADS if MAX_THREADS != 0 else 8,  # The default value is 8. Edit freely.
             'num_streams': 1,
             'enable_opencl_throttling': False,
             'enable_qdq_optimizer': False,                # Enable it carefully
