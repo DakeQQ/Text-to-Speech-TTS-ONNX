@@ -6,10 +6,14 @@ import subprocess
 import onnx.version_converter
 from pathlib import Path
 from onnxslim import slim
-from onnxruntime.quantization import QuantType, quantize_dynamic, quant_utils
 from onnxruntime.transformers.optimizer import optimize_model
 from transformers import AutoModelForCausalLM
-
+from onnxruntime.quantization import (
+    QuantType,
+    quantize_dynamic,
+    matmul_nbits_quantizer,  # onnxruntime >= 1.22.0
+    quant_utils
+)
 
 # Path Setting
 download_path = r'/home/DakeQQ/Downloads/kani-tts-370m'                          # Set the folder path where the whole project downloaded, otherwise set "NONE".
@@ -31,12 +35,22 @@ model_names = [
 ]
 
 # Settings
-quant_int8 = True                        # Quant the model to int8 format.
+quant_int4 = True                        # Quant the model to int4 format.
+quant_int8 = False                       # Quant the model to int8 format.
 quant_float16 = False                    # Quant the model to float16 format.
 use_openvino = False                     # Set true for OpenVINO optimization.
 use_low_memory_mode_in_Android = False   # If True, save the model into 2 parts.
-upgrade_opset = 17                       # Optional process. Set 0 for close.
+upgrade_opset = 0                        # Optional process. Set 0 for close.
 target_platform = "amd64"                # ['arm', 'amd64']; The 'amd64' means x86_64 desktop, not means the AMD chip.
+
+# Int4 matmul_nbits_quantizer Settings
+algorithm = "DEFAULT"                    # ["DEFAULT", "RTN", "HQQ",], HQQ will very slow both in quant and inference.
+bits = 4                                 # [4, 8]; It is not recommended to use 8.
+quant_axes = [0]                         # Target axes to quant the quant data.
+block_size = 128                         # [32, 64, 128, 256]; A smaller block_size yields greater accuracy but increases quantization time and model size.
+accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
+quant_symmetric = False                  # False may get more accuracy.
+nodes_to_exclude = None                  # Set the node names here. Such as: ["/layers.0/mlp/down_proj/MatMul"]
 
 
 # --- Main Processing Loop ---
@@ -53,7 +67,58 @@ for model_name in model_names:
         continue
 
     # Start Quantize
-    if quant_int8 and ("Reset_Penality" not in model_path) and ("KaniTTS_Codec" not in model_path):
+    if quant_int4 and ("KaniTTS_Embed" in model_path or "KaniTTS_Main" in model_path):
+        if "KaniTTS_Embed" in model_path:
+            op_types = ["Gather"]
+        else:
+            op_types = ["MatMul"]
+
+        # Start Weight-Only Quantize
+        model = quant_utils.load_model_with_shape_infer(Path(model_path))
+
+        if algorithm == "RTN":
+            quant_config = matmul_nbits_quantizer.RTNWeightOnlyQuantConfig(
+                quant_format=quant_utils.QuantFormat.QOperator,
+                op_types_to_quantize=tuple(op_types)
+            )
+        elif algorithm == "HQQ":
+            quant_config = matmul_nbits_quantizer.HQQWeightOnlyQuantConfig(
+                bits=bits,
+                block_size=block_size,
+                axis=quant_axes[0],
+                quant_format=quant_utils.QuantFormat.QOperator,
+                op_types_to_quantize=tuple(op_types),
+                quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types)))
+            )
+        else:
+            quant_config = matmul_nbits_quantizer.DefaultWeightOnlyQuantConfig(
+                block_size=block_size,
+                is_symmetric=quant_symmetric,
+                accuracy_level=accuracy_level,
+                quant_format=quant_utils.QuantFormat.QOperator,
+                op_types_to_quantize=tuple(op_types),
+                quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types)))
+            )
+        quant_config.bits = bits
+        quant = matmul_nbits_quantizer.MatMulNBitsQuantizer(
+            model,
+            block_size=block_size,
+            is_symmetric=quant_symmetric,
+            accuracy_level=accuracy_level,
+            quant_format=quant_utils.QuantFormat.QOperator,
+            op_types_to_quantize=tuple(op_types),
+            quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types))),
+            algo_config=quant_config,
+            nodes_to_exclude=nodes_to_exclude
+        )
+        quant.process()
+        quant.model.save_model_to_file(
+            quanted_model_path,
+            True                                         # save_as_external_data
+        )
+
+
+    elif quant_int8 and ("Reset_Penality" not in model_path) and ("KaniTTS_Codec" not in model_path):
         print("Applying UINT8 quantization...")
         quantize_dynamic(
             model_input=quant_utils.load_model_with_shape_infer(Path(model_path)),
