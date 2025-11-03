@@ -13,7 +13,7 @@ from nemo.collections.tts.models import AudioCodecModel
 
 
 path_kani = r'/home/DakeQQ/Downloads/kani-tts-370m'                                # Set the folder path where the [kani-tts-370m, kani-tts-400m] project downloaded.
-path_codec = r'/home/DakeQQ/Downloads/nemo-nano-codec-22khz-0.6kbps-12.5fps/nemo-nano-codec-22khz-0.6kbps-12.5fps.nemo' # The audio codec download path. URL:https://huggingface.co/nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps
+path_codec = r'/home/DakeQQ/Downloads/nemo-nano-codec-22khz-0.6kbps-12.5fps/nemo-nano-codec-22khz-0.6kbps-12.5fps.nemo' # The audio codec download path. URL: https://huggingface.co/nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps
 onnx_model_A = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Embed.onnx'           # Assign a path where the exported KaniTTS model stored.
 onnx_model_B = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Main.onnx'            # Assign a path where the exported KaniTTS model stored.
 onnx_model_C = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/Greedy_Search.onnx'           # Assign a path where the exported KaniTTS model stored.
