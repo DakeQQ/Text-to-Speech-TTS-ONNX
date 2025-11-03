@@ -31,7 +31,7 @@ model_names = [
     "First_Beam_Search",
     "Second_Beam_Search",
     "Reset_Penality",
-    "KaniTTS_Codec"  # It is recommended to use CPU and Float32 format instead of GPU.
+    "KaniTTS_Codec"  # It is recommended to use CPU and Float32 format instead of low-end GPU.
 ]
 
 # Settings
