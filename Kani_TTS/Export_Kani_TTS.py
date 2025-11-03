@@ -256,8 +256,8 @@ class NEMO_CODEC(torch.nn.Module):
         self.codebook = (torch.tensor([self.codebook_size * i for i in range(4)], dtype=torch.int32) + self.audio_tokens_start).view(1, 1, -1)
         self.scale = float(SAMPLE_RATE / 22050.0)
 
-    def forward(self, decode_ids, num_decode, target_indices):
-        audio_codes = decode_ids[target_indices, 2:num_decode].reshape(1, -1, 4)
+    def forward(self, decode_ids, num_decode):
+        audio_codes = decode_ids[[0], 2:num_decode].reshape(1, -1, 4)
         len_ = audio_codes.shape[1].unsqueeze(0)
         audio_codes = audio_codes - self.codebook
         audio_codes = audio_codes.transpose(1, 2)
@@ -541,15 +541,14 @@ with torch.inference_mode():
 
     decode_ids = torch.tensor([[1, 2, 3, 4, 5, 6]], dtype=torch.int32)  # Dummy values
     num_decode = torch.tensor([decode_ids.shape[-1]], dtype=torch.int64)
-    target_indices = torch.tensor([0], dtype=torch.int64)  # 0 for the max probability decode_ids.
     nemo_codec = AudioCodecModel.from_pretrained(path_codec, map_location=torch.device('cpu')).float().eval()
     tokeniser_length = AutoTokenizer.from_pretrained(path_kani).vocab_size
     nemo_codec = NEMO_CODEC(nemo_codec, tokeniser_length)
     torch.onnx.export(
         nemo_codec,
-        (decode_ids, num_decode, target_indices),
+        (decode_ids, num_decode),
         onnx_model_G,
-        input_names=['decode_ids', 'num_decode', 'target_indices'],
+        input_names=['decode_ids', 'num_decode'],
         output_names=['audio_out'],
         dynamic_axes={
             'decode_ids': {0: 'batch_size', 1: 'num_decode'},
@@ -708,7 +707,7 @@ ort_session_G = onnxruntime.InferenceSession(onnx_model_G, sess_options=session_
 in_name_G = ort_session_G.get_inputs()
 out_name_G = ort_session_G.get_outputs()
 in_name_G = [in_name_G[i].name for i in range(len(in_name_G))]
-out_name_G = [out_name_G[0].name]
+out_name_G = [out_name_G[i].name for i in range(len(out_name_G))]
 
 
 if USE_BEAM_SEARCH:
@@ -850,7 +849,6 @@ for sentence in target_tts:
         else:
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), device_type, DEVICE_ID)}
         input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), device_type, DEVICE_ID)
-        input_feed_G[in_name_G[2]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([0], dtype=np.int64), device_type, DEVICE_ID)  # 0 for the max probability decode_ids.
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
         print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
         audio_out = audio_out.numpy().reshape(-1)
