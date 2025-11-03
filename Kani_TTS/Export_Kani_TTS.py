@@ -8,7 +8,9 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-shutil.copyfile(r'./modeling_modified/common.py', site.getsitepackages()[-1] + r'/nemo/core/classes/common.py')
+package_path = site.getsitepackages()[-1]
+shutil.copyfile(r'./modeling_modified/common.py', package_path + r'/nemo/core/classes/common.py')
+shutil.copyfile(r'./modeling_modified/audio_codec.py', package_path + r'/nemo/collections/tts/models/audio_codec.py')
 from nemo.collections.tts.models import AudioCodecModel
 
 
