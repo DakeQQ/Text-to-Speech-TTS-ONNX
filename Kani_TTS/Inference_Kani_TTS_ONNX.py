@@ -256,6 +256,7 @@ blank_segment = np.zeros((1, 1, int(SAMPLE_RATE * 0.3)), dtype=np.int16)  # The 
 
 # Start to run
 save_audio_out = []
+start_time = time.time()
 for sentence in target_tts:
     sentence = f"{speaker}: {sentence}"
     print(f"\n{sentence}")
@@ -270,8 +271,6 @@ for sentence in target_tts:
     conv_states_B = init_conv_states_B
     save_id = init_save_id
     repeat_penality = init_repeat_penality
-
-    start_time = time.time()
 
     input_feed_A = {in_name_A: input_ids}
     hidden_states = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)[0]
