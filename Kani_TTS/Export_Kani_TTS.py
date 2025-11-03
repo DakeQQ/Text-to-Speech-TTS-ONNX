@@ -730,9 +730,10 @@ init_conv_states_B = onnxruntime.OrtValue.ortvalue_from_numpy(np.zeros((1, ort_s
 init_save_id = onnxruntime.OrtValue.ortvalue_from_numpy(np.zeros((BEAM_SIZE, 0), dtype=np.int32), device_type, DEVICE_ID)
 init_repeat_penality = onnxruntime.OrtValue.ortvalue_from_numpy(np.ones((BEAM_SIZE, vocab_size), dtype=model_dtype), device_type, DEVICE_ID)
 init_batch_size_greedy = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([1], dtype=np.int64), device_type, DEVICE_ID)
-
+blank_segment = np.zeros((1, 1, int(SAMPLE_RATE * 0.3)), dtype=np.int16)  # The blank for separate the generated audio. Default to 300ms. Edit it freely.
 
 # Start to run
+save_audio_out = []
 for sentence in target_tts:
     sentence = f"{speaker}: {sentence}"
     print(f"\n{sentence}")
@@ -740,6 +741,7 @@ for sentence in target_tts:
     input_ids = np.concatenate([head_ids, input_ids, tail_ids], axis=1)
     ids_len = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([input_ids.shape[1]], dtype=np.int64), device_type, DEVICE_ID)
     input_ids = onnxruntime.OrtValue.ortvalue_from_numpy(input_ids, device_type, DEVICE_ID)
+    ids_len_1 = init_ids_len_1
     history_len = init_history_len
     past_keys_B = init_past_keys_B
     past_values_B = init_past_values_B
@@ -839,7 +841,7 @@ for sentence in target_tts:
             save_id_greedy[num_decode] = max_logits_idx
         input_feed_B[in_name_B[num_keys_values_convs_plus_1]] = all_outputs_B[num_keys_values_convs_plus_1]
         if num_decode < 1:
-            input_feed_B[in_name_B[num_keys_values_convs_plus_2]] = init_ids_len_1
+            input_feed_B[in_name_B[num_keys_values_convs_plus_2]] = ids_len_1
         num_decode += 1
     if num_decode > 0:
         print(f"\n\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
@@ -854,4 +856,6 @@ for sentence in target_tts:
         sf.write(generated_audio_path, audio_out, SAMPLE_RATE, format='WAVEX')
     else:
         print("\n Generate Failed")
-        
+print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
+audio_out = np.concatenate(save_audio_out, axis=-1).reshape(-1)
+sf.write(generated_audio_path, audio_out, SAMPLE_RATE, format='WAVEX')
