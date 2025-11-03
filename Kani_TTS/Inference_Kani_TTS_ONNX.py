@@ -372,8 +372,8 @@ for sentence in target_tts:
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), 'cpu', 0)}
         input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), 'cpu', 0)
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
+        print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
         audio_out = audio_out.numpy().reshape(-1)
         sf.write(generated_audio_path, audio_out, SAMPLE_RATE, format='WAVEX')
-        print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
     else:
         print("\n Generate Failed")
