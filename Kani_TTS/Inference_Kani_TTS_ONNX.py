@@ -5,15 +5,15 @@ import onnxruntime
 from transformers import AutoTokenizer
 
 
-tokenizer_path = '/home/DakeQQ/Downloads/kani-tts-370m'                                # Set the folder path where the KaniTTS tokenizer.
-onnx_model_A = '/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Embed.onnx'           # Assign a path where the exported KaniTTS model stored.
-onnx_model_B = '/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Main.onnx'            # Assign a path where the exported KaniTTS model stored.
-onnx_model_C = '/home/DakeQQ/Downloads/KaniTTS_Optimized/Greedy_Search.onnx'           # Assign a path where the exported KaniTTS model stored.
-onnx_model_D = '/home/DakeQQ/Downloads/KaniTTS_Optimized/First_Beam_Search.onnx'       # Assign a path where the exported KaniTTS model stored.
-onnx_model_E = '/home/DakeQQ/Downloads/KaniTTS_Optimized/Second_Beam_Search.onnx'      # Assign a path where the exported KaniTTS model stored.
-onnx_model_F = '/home/DakeQQ/Downloads/KaniTTS_Optimized/Reset_Penality.onnx'          # Assign a path where the exported KaniTTS model stored.
-onnx_model_G = '/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Codec.onnx'           # Assign a path where the exported KaniTTS model stored.
-generated_audio_path = r"./generated.wav"                                              # The generated audio path.
+tokenizer_path = r'/home/DakeQQ/Downloads/kani-tts-370m'                                # Set the folder path where the KaniTTS tokenizer.
+onnx_model_A = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Embed.onnx'           # Assign a path where the exported KaniTTS model stored.
+onnx_model_B = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Main.onnx'            # Assign a path where the exported KaniTTS model stored.
+onnx_model_C = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/Greedy_Search.onnx'           # Assign a path where the exported KaniTTS model stored.
+onnx_model_D = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/First_Beam_Search.onnx'       # Assign a path where the exported KaniTTS model stored.
+onnx_model_E = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/Second_Beam_Search.onnx'      # Assign a path where the exported KaniTTS model stored.
+onnx_model_F = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/Reset_Penality.onnx'          # Assign a path where the exported KaniTTS model stored.
+onnx_model_G = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Codec.onnx'           # Assign a path where the exported KaniTTS model stored.
+generated_audio_path = r"./generated.wav"                                               # The generated audio path.
 
 target_tts = ["大家好，我现在正在大可奇奇体验AI科技。"]                                      # The test query after the export process.
 speaker = 'ming'                                                                       # The Speaker type.
