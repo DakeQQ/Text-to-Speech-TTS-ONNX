@@ -27,7 +27,7 @@
 | Ubuntu-24.04 | Laptop       | GPU <br> MX150     | F5-TTS<br>F32      |        62 <br> (NFE=32)                                                   |
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | IndexTTS<br>F32    |        18                                                                 |
 | Ubuntu-24.04 | Laptop       | GPU <br> MX150     | BigVGAN V2 24khz_100band_256x <br>F16    |        4.6 <br> input mel = (1, 100, 512)           |
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q8F32   |        8.6                                                                |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q8F32   |        4.2                                                                |
 
 ---
 
