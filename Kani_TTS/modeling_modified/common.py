@@ -800,27 +800,27 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
 
         # Resolve if the pretrained model name is from NGC or other sources
         # HF Hub source
-        if '/' in model_name:
-            class_, nemo_model_file_in_cache = cls._get_hf_hub_pretrained_model_info(
-                model_name=model_name, refresh_cache=refresh_cache
-            )
-
-            # Check if nemo_model_file_in_cache is a directory
-            if os.path.isdir(nemo_model_file_in_cache):
-                # Update SaveRestoreConnector with the flag to read from an unpacked NeMo folder
-                save_restore_connector.model_extracted_dir = nemo_model_file_in_cache
-
-        else:
-            # NGC source
-            class_, nemo_model_file_in_cache = cls._get_ngc_pretrained_model_info(
-                model_name=model_name, refresh_cache=refresh_cache
-            )
+        # if '/' in model_name:
+        #     class_, nemo_model_file_in_cache = cls._get_hf_hub_pretrained_model_info(
+        #         model_name=model_name, refresh_cache=refresh_cache
+        #     )
+        # 
+        #     # Check if nemo_model_file_in_cache is a directory
+        #     if os.path.isdir(nemo_model_file_in_cache):
+        #         # Update SaveRestoreConnector with the flag to read from an unpacked NeMo folder
+        #         save_restore_connector.model_extracted_dir = nemo_model_file_in_cache
+        # 
+        # else:
+        #     # NGC source
+        #     class_, nemo_model_file_in_cache = cls._get_ngc_pretrained_model_info(
+        #         model_name=model_name, refresh_cache=refresh_cache
+        #     )
 
         if return_model_file:
             return nemo_model_file_in_cache
 
-        instance = class_.restore_from(
-            restore_path=nemo_model_file_in_cache,
+        instance = cls.restore_from(
+            restore_path=model_name,
             override_config_path=override_config_path,
             map_location=map_location,
             strict=strict,
@@ -909,7 +909,7 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
             -   The path to the NeMo model (.nemo file) in some cached directory (managed by HF Hub).
         """
         # Resolve the model name without origin for filename
-        resolved_model_filename = model_name.split("/")[-1] + '.nemo'
+        resolved_model_filename = model_name
 
         # Try to take from cache first - if not fallback to options below
         if not refresh_cache:
