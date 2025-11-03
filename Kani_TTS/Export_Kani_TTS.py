@@ -12,16 +12,16 @@ shutil.copyfile(r'./modeling_modified/common.py', site.getsitepackages()[-1] + r
 from nemo.collections.tts.models import AudioCodecModel
 
 
-path_kani = '/home/DakeQQ/Downloads/kani-tts-370m'                                # Set the folder path where the [kani-tts-370m, kani-tts-400m] project downloaded.
-path_codec = '/home/iamj/Downloads/nemo-nano-codec-22khz-0.6kbps-12.5fps/nemo-nano-codec-22khz-0.6kbps-12.5fps.nemo'
-onnx_model_A = '/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Embed.onnx'           # Assign a path where the exported KaniTTS model stored.
-onnx_model_B = '/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Main.onnx'            # Assign a path where the exported KaniTTS model stored.
-onnx_model_C = '/home/DakeQQ/Downloads/KaniTTS_ONNX/Greedy_Search.onnx'           # Assign a path where the exported KaniTTS model stored.
-onnx_model_D = '/home/DakeQQ/Downloads/KaniTTS_ONNX/First_Beam_Search.onnx'       # Assign a path where the exported KaniTTS model stored.
-onnx_model_E = '/home/DakeQQ/Downloads/KaniTTS_ONNX/Second_Beam_Search.onnx'      # Assign a path where the exported KaniTTS model stored.
-onnx_model_F = '/home/DakeQQ/Downloads/KaniTTS_ONNX/Reset_Penality.onnx'          # Assign a path where the exported KaniTTS model stored.
-onnx_model_G = '/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Codec.onnx'           # Assign a path where the exported KaniTTS model stored.
-generated_audio_path = r"./generated.wav"                                         # The generated audio path.
+path_kani = r'/home/DakeQQ/Downloads/kani-tts-370m'                                # Set the folder path where the [kani-tts-370m, kani-tts-400m] project downloaded.
+path_codec = r'/home/iamj/Downloads/nemo-nano-codec-22khz-0.6kbps-12.5fps/nemo-nano-codec-22khz-0.6kbps-12.5fps.nemo'
+onnx_model_A = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Embed.onnx'           # Assign a path where the exported KaniTTS model stored.
+onnx_model_B = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Main.onnx'            # Assign a path where the exported KaniTTS model stored.
+onnx_model_C = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/Greedy_Search.onnx'           # Assign a path where the exported KaniTTS model stored.
+onnx_model_D = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/First_Beam_Search.onnx'       # Assign a path where the exported KaniTTS model stored.
+onnx_model_E = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/Second_Beam_Search.onnx'      # Assign a path where the exported KaniTTS model stored.
+onnx_model_F = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/Reset_Penality.onnx'          # Assign a path where the exported KaniTTS model stored.
+onnx_model_G = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Codec.onnx'           # Assign a path where the exported KaniTTS model stored.
+generated_audio_path = r"./generated.wav"                                          # The generated audio path.
 
 target_tts = ["大家好，我现在正在大可奇奇体验AI科技。"]                                 # The test query after the export process.
 speaker = 'ming'
@@ -307,7 +307,7 @@ with torch.inference_mode():
 
     # Build an optimized model
     kani_tts = KANITTS_MAIN(model, MAX_SEQ_LEN, num_heads, num_key_value_heads, head_dim, num_layers, num_conv_layers, num_attn_layers)
-    batch_size = 3                                         # "3" is just a dummy value.
+    batch_size = 3                                    # "3" is just a dummy value.
     ids_len = torch.tensor([10], dtype=torch.int64)   # "10" is just a dummy value.
     hidden_states = torch.ones((batch_size, ids_len, hidden_size), dtype=torch.float32)
     history_len = torch.tensor([0], dtype=torch.int64)
