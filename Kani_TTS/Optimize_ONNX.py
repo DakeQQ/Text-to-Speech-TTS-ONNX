@@ -46,7 +46,6 @@ target_platform = "amd64"                # ['arm', 'amd64']; The 'amd64' means x
 # Int4 matmul_nbits_quantizer Settings
 algorithm = "DEFAULT"                    # ["DEFAULT", "RTN", "HQQ",], HQQ will very slow both in quant and inference.
 bits = 4                                 # [4, 8]; It is not recommended to use 8.
-quant_axes = [0]                         # Target axes to quant the quant data.
 block_size = 32                          # [32, 64, 128, 256]; A smaller block_size yields greater accuracy but increases quantization time and model size.
 accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
 quant_symmetric = False                  # False may get more accuracy.
@@ -70,8 +69,10 @@ for model_name in model_names:
     if quant_int4 and ("KaniTTS_Embed" in model_path or "KaniTTS_Main" in model_path):
         if "KaniTTS_Embed" in model_path:
             op_types = ["Gather"]
+            quant_axes = [1]
         else:
             op_types = ["MatMul"]
+            quant_axes = [0]
 
         # Start Weight-Only Quantize
         model = quant_utils.load_model_with_shape_infer(Path(model_path))
