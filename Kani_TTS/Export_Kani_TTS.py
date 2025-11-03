@@ -853,7 +853,8 @@ for sentence in target_tts:
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
         print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
         audio_out = audio_out.numpy().reshape(-1)
-        sf.write(generated_audio_path, audio_out, SAMPLE_RATE, format='WAVEX')
+        save_audio_out.append(audio_out.numpy())
+        save_audio_out.append(blank_segment)
     else:
         print("\n Generate Failed")
 print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
