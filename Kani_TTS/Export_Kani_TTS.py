@@ -178,10 +178,10 @@ class KANITTS_MAIN(torch.nn.Module):
         self.variance_epsilon = float(1e-5)
 
         scale_factor = float(head_dim ** -0.25)
-        for i, layer in enumerate(self.kani_tts.model.layers):
+        for layer in self.kani_tts.model.layers:
             if layer.is_attention_layer:
-                self.kani_tts.model.layers._modules[f'{i}'].self_attn.q_layernorm.weight.data *= scale_factor
-                self.kani_tts.model.layers._modules[f'{i}'].self_attn.k_layernorm.weight.data *= scale_factor
+                layer.self_attn.q_layernorm.weight.data *= scale_factor
+                layer.self_attn.k_layernorm.weight.data *= scale_factor
 
         position_ids = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(0)
         inv_freq_expanded = self.kani_tts.model.pos_emb.inv_freq[None, :, None].expand(position_ids.shape[0], -1, 1)
