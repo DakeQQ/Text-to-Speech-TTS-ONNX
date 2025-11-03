@@ -45,8 +45,8 @@ MAX_SEQ_LEN = 1024                     # The max decode length.
 REPEAT_PENALITY = 0.9                  # Range from 0.0 to 1.0; "1.0" means no penality.
 PENALITY_RANGE = 10                    # Penalizes the most recent output. "15" means the last 15 tokens.
 USE_BEAM_SEARCH = False                # Use beam search or greedy search.
-TOP_K = 3                              # The top k candidate in decoding.
-BEAM_SIZE = 3                          # Number of beams in searching.
+TOP_K = 5                              # The top k candidate in decoding.
+BEAM_SIZE = 5                          # Number of beams in searching.
 MAX_BEAM_SIZE = 10                     # Max beams for exported model.
 SAMPLE_RATE = 22050                    # The sample rate of output audio. Keep the same with exported model.
 MAX_THREADS = 0                        # The CPU parallel threads. Set 0 for auto.
@@ -78,7 +78,7 @@ elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
             'cudnn_conv_algo_search': 'EXHAUSTIVE',       # ["DEFAULT", "HEURISTIC", "EXHAUSTIVE"]
             'sdpa_kernel': '2',                           # ["0", "1", "2"]
             'use_tf32': '1',
-            'fuse_conv_bias': '1',                        # Set to '0' to avoid potential errors when enabled.
+            'fuse_conv_bias': '0',                        # Set to '0' to avoid potential errors when enabled.
             'cudnn_conv_use_max_workspace': '1',
             'cudnn_conv1d_pad_to_nc1d': '1',
             'tunable_op_enable': '0',
@@ -108,32 +108,39 @@ else:
 
 
 # Run the exported model by ONNX Runtime
+# ONNX Runtime settings
 session_opts = onnxruntime.SessionOptions()
-session_opts.log_severity_level = 4                   # Fatal level, it an adjustable value.
-session_opts.log_verbosity_level = 4                  # Fatal level, it an adjustable value.
-session_opts.inter_op_num_threads = MAX_THREADS       # Run different nodes with num_threads. Set 0 for auto.
-session_opts.intra_op_num_threads = MAX_THREADS       # Under the node, execute the operators with num_threads. Set 0 for auto.
-session_opts.enable_cpu_mem_arena = True              # True for execute speed; False for less memory usage.
+run_options = onnxruntime.RunOptions()
+session_opts.log_severity_level = 4   # Fatal level, it an adjustable value.
+session_opts.log_verbosity_level = 4  # Fatal level, it an adjustable value.
+run_options.log_severity_level = 4    # Fatal level, it an adjustable value.
+run_options.log_verbosity_level = 4   # Fatal level, it an adjustable value.
+session_opts.inter_op_num_threads = MAX_THREADS  # Run different nodes with num_threads. Set 0 for auto.
+session_opts.intra_op_num_threads = MAX_THREADS  # Under the node, execute the operators with num_threads. Set 0 for auto.
+session_opts.enable_cpu_mem_arena = True  # True for execute speed; False for less memory usage.
 session_opts.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
 session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-session_opts.add_session_config_entry("session.set_denormal_as_zero", "1")
-session_opts.add_session_config_entry("session.intra_op.allow_spinning", "1")
-session_opts.add_session_config_entry("session.inter_op.allow_spinning", "1")
-session_opts.add_session_config_entry("session.enable_quant_qdq_cleanup", "1")
-session_opts.add_session_config_entry("session.qdq_matmulnbits_accuracy_level", "4")
-session_opts.add_session_config_entry("optimization.enable_gelu_approximation", "1")
-session_opts.add_session_config_entry("disable_synchronize_execution_providers", "1")
-session_opts.add_session_config_entry("optimization.minimal_build_optimizations", "")
-session_opts.add_session_config_entry("session.use_device_allocator_for_initializers", "1")
+session_opts.add_session_config_entry('session.set_denormal_as_zero', '1')
+session_opts.add_session_config_entry('session.intra_op.allow_spinning', '1')
+session_opts.add_session_config_entry('session.inter_op.allow_spinning', '1')
+session_opts.add_session_config_entry('session.enable_quant_qdq_cleanup', '1')
+session_opts.add_session_config_entry('session.qdq_matmulnbits_accuracy_level', '4')
+session_opts.add_session_config_entry('optimization.enable_gelu_approximation', '1')
+session_opts.add_session_config_entry('optimization.minimal_build_optimizations', '')
+session_opts.add_session_config_entry('session.use_device_allocator_for_initializers', '1')
+session_opts.add_session_config_entry('optimization.enable_cast_chain_elimination', '1')
+session_opts.add_session_config_entry('session.graph_optimizations_loop_level', '2')
+
+run_options.add_run_config_entry('disable_synchronize_execution_providers', '1')
 
 
-ort_session_A = onnxruntime.InferenceSession(onnx_model_A, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+ort_session_A = onnxruntime.InferenceSession(onnx_model_A, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)
 in_name_A = ort_session_A.get_inputs()
 out_name_A = ort_session_A.get_outputs()
 in_name_A = in_name_A[0].name
 out_name_A = [out_name_A[0].name]
 
-ort_session_B = onnxruntime.InferenceSession(onnx_model_B, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+ort_session_B = onnxruntime.InferenceSession(onnx_model_B, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)
 print(f"\nUsable Providers: {ort_session_B.get_providers()}")
 model_dtype = ort_session_B._inputs_meta[0].type
 if 'float16' in model_dtype:
@@ -183,19 +190,19 @@ if (TOP_K < 2) or (BEAM_SIZE < 2):
 
 
 if USE_BEAM_SEARCH:
-    ort_session_D = onnxruntime.InferenceSession(onnx_model_D, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+    ort_session_D = onnxruntime.InferenceSession(onnx_model_D, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)
     in_name_D = ort_session_D.get_inputs()
     out_name_D = ort_session_D.get_outputs()
     in_name_D = [in_name_D[i].name for i in range(len(in_name_D))]
     out_name_D = [out_name_D[i].name for i in range(len(out_name_D))]
     
-    ort_session_E = onnxruntime.InferenceSession(onnx_model_E, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+    ort_session_E = onnxruntime.InferenceSession(onnx_model_E, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)
     in_name_E = ort_session_E.get_inputs()
     out_name_E = ort_session_E.get_outputs()
     in_name_E = [in_name_E[i].name for i in range(len(in_name_E))]
     out_name_E = [out_name_E[i].name for i in range(len(out_name_E))]
     
-    ort_session_F = onnxruntime.InferenceSession(onnx_model_F, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+    ort_session_F = onnxruntime.InferenceSession(onnx_model_F, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)
     in_name_F = ort_session_F.get_inputs()
     out_name_F = ort_session_F.get_outputs()
     in_name_F = [in_name_F[i].name for i in range(len(in_name_F))]
@@ -214,7 +221,7 @@ if USE_BEAM_SEARCH:
 
 else:
     BEAM_SIZE = 1
-    ort_session_C = onnxruntime.InferenceSession(onnx_model_C, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
+    ort_session_C = onnxruntime.InferenceSession(onnx_model_C, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)
     in_name_C = ort_session_C.get_inputs()
     out_name_C = ort_session_C.get_outputs()
     in_name_C = [in_name_C[i].name for i in range(len(in_name_C))]
@@ -222,7 +229,8 @@ else:
     input_feed_C = {in_name_C[2]: penality_value}
 
 
-ort_session_G = onnxruntime.InferenceSession(onnx_model_G, sess_options=session_opts, providers=["CPUExecutionProvider"], provider_options=None)  # It is recommended to use CPU and Float32 format instead of GPU.
+ort_session_G = onnxruntime.InferenceSession(onnx_model_G, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options, run_options=run_options)  
+# It is recommended to use CPU and Float32 format instead of low-end GPU.
 in_name_G = ort_session_G.get_inputs()
 out_name_G = ort_session_G.get_outputs()
 in_name_G = [in_name_G[i].name for i in range(len(in_name_G))]
@@ -370,8 +378,8 @@ for sentence in target_tts:
         if USE_BEAM_SEARCH:
             input_feed_G = {in_name_G[0]: all_outputs_E[num_keys_values_convs_plus_1]}
         else:
-            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), 'cpu', 0)}
-        input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), 'cpu', 0)
+            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), device_type, DEVICE_ID)}
+        input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), device_type, DEVICE_ID)
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
         save_audio_out.append(audio_out.numpy())
         save_audio_out.append(blank_segment)
