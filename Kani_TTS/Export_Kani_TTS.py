@@ -851,8 +851,6 @@ for sentence in target_tts:
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), device_type, DEVICE_ID)}
         input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), device_type, DEVICE_ID)
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
-        print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
-        audio_out = audio_out.numpy().reshape(-1)
         save_audio_out.append(audio_out.numpy())
         save_audio_out.append(blank_segment)
     else:
