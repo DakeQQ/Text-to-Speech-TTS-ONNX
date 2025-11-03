@@ -302,7 +302,7 @@ with torch.inference_mode():
         do_constant_folding=True,
         opset_version=17
     )
-    # del embed
+    del embed
     del input_ids
 
     # Build an optimized model
