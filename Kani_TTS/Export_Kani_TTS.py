@@ -846,10 +846,6 @@ for sentence in target_tts:
         print(f"\n\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
         if USE_BEAM_SEARCH:
             decode_ids = all_outputs_E[num_keys_values_convs_plus_1].numpy()[0]
-            for i, idx in enumerate(decode_ids):
-                if idx in STOP_TOKEN:
-                    num_decode = i
-                    break
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(decode_ids, device_type, DEVICE_ID)}
         else:
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy, device_type, DEVICE_ID)}
