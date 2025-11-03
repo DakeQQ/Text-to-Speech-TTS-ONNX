@@ -257,7 +257,7 @@ class NEMO_CODEC(torch.nn.Module):
         self.scale = float(SAMPLE_RATE / 22050.0)
 
     def forward(self, decode_ids, num_decode):
-        audio_codes = decode_ids[2:num_decode].reshape(1, -1, 4)
+        audio_codes = decode_ids[0, 2:num_decode].reshape(1, -1, 4)
         len_ = audio_codes.shape[1].unsqueeze(0)
         audio_codes = audio_codes - self.codebook
         audio_codes = audio_codes.transpose(1, 2)
@@ -539,8 +539,8 @@ with torch.inference_mode():
         opset_version=17
     )
 
-    decode_ids = torch.tensor([1, 2, 3, 4, 5, 6], dtype=torch.int32)  # Dummy values
-    num_decode = torch.tensor([decode_ids.shape[0]], dtype=torch.int64)
+    decode_ids = torch.tensor([[1, 2, 3, 4, 5, 6]], dtype=torch.int32)  # Dummy values
+    num_decode = torch.tensor([decode_ids.shape[-1]], dtype=torch.int64)
     nemo_codec = AudioCodecModel.from_pretrained(path_codec, map_location=torch.device('cpu')).float().eval()
     tokeniser_length = AutoTokenizer.from_pretrained(path_kani).vocab_size
     nemo_codec = NEMO_CODEC(nemo_codec, tokeniser_length)
@@ -551,7 +551,7 @@ with torch.inference_mode():
         input_names=['decode_ids', 'num_decode'],
         output_names=['audio_out'],
         dynamic_axes={
-            'decode_ids': {0: 'num_decode'},
+            'decode_ids': {0: 'batch_size', 1: 'num_decode'},
             'audio_out': {2: 'audio_len'}
         },
         do_constant_folding=True,
@@ -845,8 +845,7 @@ for sentence in target_tts:
     if num_decode > 0:
         print(f"\n\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
         if USE_BEAM_SEARCH:
-            decode_ids = all_outputs_E[num_keys_values_convs_plus_1].numpy()[0]
-            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(decode_ids, device_type, DEVICE_ID)}
+            input_feed_G = {in_name_G[0]: all_outputs_E[num_keys_values_convs_plus_1]}
         else:
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy, device_type, DEVICE_ID)}
         input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), device_type, DEVICE_ID)
