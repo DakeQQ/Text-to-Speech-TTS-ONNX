@@ -847,7 +847,7 @@ for sentence in target_tts:
         if USE_BEAM_SEARCH:
             input_feed_G = {in_name_G[0]: all_outputs_E[num_keys_values_convs_plus_1]}
         else:
-            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy, device_type, DEVICE_ID)}
+            input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), device_type, DEVICE_ID)}
         input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), device_type, DEVICE_ID)
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
         audio_out = audio_out.numpy().reshape(-1)
