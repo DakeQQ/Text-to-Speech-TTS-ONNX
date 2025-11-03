@@ -16,7 +16,7 @@ onnx_model_G = r'/home/DakeQQ/Downloads/KaniTTS_Optimized/KaniTTS_Codec.onnx'   
 generated_audio_path = r"./generated.wav"                                               # The generated audio path.
 
 target_tts = ["大家好，我现在正在大可奇奇体验AI科技。", "Hello everyone, I'm currently experiencing DakeQQ's AI technology."]                   
-# The test query after the export process.
+# These are sentences that need to be converted into speech.
 
 speaker = 'ming'                                                                        # The Speaker type.
 
