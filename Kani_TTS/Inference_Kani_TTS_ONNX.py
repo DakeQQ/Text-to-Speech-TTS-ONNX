@@ -41,7 +41,7 @@ kani-tts-370m multilingual:
 STOP_TOKEN = [64402]                   # The stop_id in KaniTTS is "64402"
 MAX_SEQ_LEN = 1024                     # The max decode length.
 REPEAT_PENALITY = 0.9                  # Range from 0.0 to 1.0; "1.0" means no penality.
-PENALITY_RANGE = 15                    # Penalizes the most recent output. "15" means the last 15 tokens.
+PENALITY_RANGE = 10                    # Penalizes the most recent output. "15" means the last 15 tokens.
 USE_BEAM_SEARCH = False                # Use beam search or greedy search.
 TOP_K = 3                              # The top k candidate in decoding.
 BEAM_SIZE = 3                          # Number of beams in searching.
