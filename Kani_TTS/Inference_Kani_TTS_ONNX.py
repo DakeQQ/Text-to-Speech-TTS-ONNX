@@ -223,7 +223,7 @@ else:
 ort_session_G = onnxruntime.InferenceSession(onnx_model_G, sess_options=session_opts, providers=["CPUExecutionProvider"], provider_options=None)  # It is recommended to use CPU and Float32 format instead of GPU.
 in_name_G = ort_session_G.get_inputs()
 out_name_G = ort_session_G.get_outputs()
-in_name_G = [in_name_G[0].name, in_name_G[1].name]
+in_name_G = [in_name_G[i].name for i in range(len(in_name_G))]
 out_name_G = [out_name_G[0].name]
 
 
@@ -371,9 +371,11 @@ for sentence in target_tts:
         else:
             input_feed_G = {in_name_G[0]: onnxruntime.OrtValue.ortvalue_from_numpy(save_id_greedy.reshape(1, -1), 'cpu', 0)}
         input_feed_G[in_name_G[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([num_decode], dtype=np.int64), 'cpu', 0)
+        input_feed_G[in_name_G[2]] = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([0], dtype=np.int64), 'cpu', 0)  # 0 for the max probability decode_ids.
         audio_out = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)[0]
         print(f"\nGenerate Complete.\n\nSaving to: {generated_audio_path}.\n\nTime Cost: {time.time() - start_time:.3f} Seconds")
         audio_out = audio_out.numpy().reshape(-1)
         sf.write(generated_audio_path, audio_out, SAMPLE_RATE, format='WAVEX')
     else:
         print("\n Generate Failed")
+        
