@@ -168,15 +168,6 @@ for model_name in model_names:
                                        verbose=False,
                                        model_type='bert',
                                        only_onnxruntime=False)
-                slim(
-                    model=quanted_model_path,
-                    output_model=quanted_model_path,
-                    no_shape_infer=False,
-                    skip_fusion_patterns=False,
-                    no_constant_folding=False,
-                    save_as_external_data=use_low_memory_mode_in_Android,
-                    verbose=False,
-                )
             else:
                 model = optimize_model(model_path,
                                        use_gpu=False,
@@ -186,7 +177,7 @@ for model_name in model_names:
                                        verbose=False,
                                        model_type='bert',
                                        only_onnxruntime=False)
-                if quant_float16 and "Reset_Penality" in model_path:  # KaniTTS_Codec can not convert to FP16, currently.
+                if quant_float16:
                     print("Converting model to Float16...")
                     model.convert_float_to_float16(
                         keep_io_types=False,
