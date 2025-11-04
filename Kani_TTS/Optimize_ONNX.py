@@ -249,26 +249,26 @@ for model_name in model_names:
             verbose=False
         )
 
-        # Upgrade the Opset version. (optional process)
-        if upgrade_opset > 0:
-            print(f"Upgrading Opset to {upgrade_opset}...")
-            try:
-                model = onnx.load(quanted_model_path)
-                converted_model = onnx.version_converter.convert_version(model, upgrade_opset)
-                onnx.save(converted_model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
-                del model, converted_model
-                gc.collect()
-            except Exception as e:
-                print(f"Could not upgrade opset due to an error: {e}. Saving model with original opset.")
-                model = onnx.load(quanted_model_path)
-                onnx.save(model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
-                del model
-                gc.collect()
-        else:
+    # Upgrade the Opset version. (optional process)
+    if upgrade_opset > 0:
+        print(f"Upgrading Opset to {upgrade_opset}...")
+        try:
+            model = onnx.load(quanted_model_path)
+            converted_model = onnx.version_converter.convert_version(model, upgrade_opset)
+            onnx.save(converted_model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
+            del model, converted_model
+            gc.collect()
+        except Exception as e:
+            print(f"Could not upgrade opset due to an error: {e}. Saving model with original opset.")
             model = onnx.load(quanted_model_path)
             onnx.save(model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
             del model
             gc.collect()
+    else:
+        model = onnx.load(quanted_model_path)
+        onnx.save(model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
+        del model
+        gc.collect()
 
     # This check is outside the main processing block in the original script.
     # It should be inside the loop if you want to convert each model to ORT format right after processing.
