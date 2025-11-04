@@ -25,7 +25,7 @@ onnx_model_F = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/Reset_Penality.onnx'       
 onnx_model_G = r'/home/DakeQQ/Downloads/KaniTTS_ONNX/KaniTTS_Codec.onnx'           # Assign a path where the exported KaniTTS model stored.
 generated_audio_path = r"./generated.wav"                                          # The generated audio path.
 
-target_tts = ["大家好，我现在正在大可奇奇体验AI科技。", "Hello everyone, I'm currently experiencing DakeQQ's AI technology."]                     
+target_tts = ["大家好，我现在正在大可奇奇体验AI科技。", "Hello everyone, I'm currently experiencing DakeQQ's AI technology."]
 # The test query after the export process.
 
 speaker = 'ming'
@@ -61,6 +61,7 @@ MAX_BEAM_SIZE = 10                                                             #
 SAMPLE_RATE = 22050                                                            # The sample rate of output audio.
 MAX_THREADS = 0                                                                # Parllel CPU threads. Set 0 for auto.
 DEVICE_ID = 0                                                                  # Default to zero.
+USE_FLOAT16_CODEC = True                                                       # Convert the NeMo Codec into float16 format.
 
 
 def rotate_half(x, head_dim_half, dim):
@@ -265,16 +266,17 @@ class NEMO_CODEC(torch.nn.Module):
         len_ = audio_codes.shape[1].unsqueeze(0)
         audio_codes = audio_codes - self.codebook
         audio_codes = audio_codes.transpose(1, 2)
-        reconstructed_audio, _ = self.nemo_codec.decode(tokens=audio_codes, tokens_len=len_)
-        reconstructed_audio = reconstructed_audio.view(1, 1, -1)
-        if self.scale != 1.0:
-            reconstructed_audio = torch.nn.functional.interpolate(
-                reconstructed_audio,
-                scale_factor=self.scale,
-                mode='linear',
-                align_corners=False
-            )
-        audio_out = (reconstructed_audio.clamp(min=-1.0, max=1.0) * 32767.0).to(torch.int16)
+        with torch.autocast(device_type="cpu", dtype=torch.float16 if USE_FLOAT16_CODEC else torch.float32):
+            reconstructed_audio, _ = self.nemo_codec.decode(tokens=audio_codes, tokens_len=len_)
+            reconstructed_audio = reconstructed_audio.view(1, 1, -1)
+            if self.scale != 1.0:
+                reconstructed_audio = torch.nn.functional.interpolate(
+                    reconstructed_audio,
+                    scale_factor=self.scale,
+                    mode='linear',
+                    align_corners=False
+                )
+            audio_out = (reconstructed_audio.clamp(min=-1.0, max=1.0) * 32767.0).to(torch.int16)
         return audio_out
 
 
