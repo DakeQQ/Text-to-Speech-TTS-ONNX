@@ -46,7 +46,7 @@ target_platform = "amd64"                # ['arm', 'amd64']; The 'amd64' means x
 # Int4 matmul_nbits_quantizer Settings
 algorithm = "DEFAULT"                    # ["DEFAULT", "RTN", "HQQ",], HQQ will very slow both in quant and inference.
 bits = 4                                 # [4, 8]; It is not recommended to use 8.
-block_size = 32                          # [32, 64, 128, 256]; A smaller block_size yields greater accuracy but increases quantization time and model size.
+block_size = 64                          # [32, 64, 128, 256]; A smaller block_size yields greater accuracy but increases quantization time and model size.
 accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
 quant_symmetric = False                  # False may get more accuracy.
 nodes_to_exclude = None                  # Set the node names here. Such as: ["/layers.0/mlp/down_proj/MatMul"]
