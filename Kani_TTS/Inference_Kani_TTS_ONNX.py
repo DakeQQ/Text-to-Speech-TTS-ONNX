@@ -18,7 +18,7 @@ generated_audio_path = r"./generated.wav"                                       
 target_tts = ["大家好，我现在正在大可奇奇体验AI科技。", "Hello everyone, I'm currently experiencing DakeQQ's AI technology."]                   
 # These are sentences that need to be converted into speech.
 
-speaker = 'ming'                                                                        # The Speaker type.
+speaker = 'jenny'                                                                        # The Speaker type.
 
 """
 kani-tts-370m multilingual:
@@ -374,7 +374,7 @@ for sentence in target_tts:
             input_feed_B[in_name_B[num_keys_values_convs_plus_2]] = init_ids_len_1
         num_decode += 1
     if num_decode > 0:
-        print(f"\n\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
+        print(f"\nDecode: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s")
         if USE_BEAM_SEARCH:
             input_feed_G = {in_name_G[0]: all_outputs_E[num_keys_values_convs_plus_1]}
         else:
