@@ -31,7 +31,7 @@ model_names = [
     "First_Beam_Search",
     "Second_Beam_Search",
     "Reset_Penality",
-    "KaniTTS_Codec"  # It is recommended to use CPU and Float32 format instead of low-end GPU.
+    "KaniTTS_Codec"                      # It is recommended to use CPU and Float32 format instead of low-end GPU.
 ]
 
 # Settings
@@ -118,7 +118,6 @@ for model_name in model_names:
             True                                         # save_as_external_data
         )
 
-
     elif quant_int8 and ("Reset_Penality" not in model_path) and ("KaniTTS_Codec" not in model_path):
         print("Applying UINT8 quantization...")
         quantize_dynamic(
@@ -151,25 +150,24 @@ for model_name in model_names:
         # ONNX Model Optimizer for non-INT8 or Reset_Penality model
         print("Optimizing model (non-UINT8 path)...")
         if ("Reset_Penality" in model_path) or ("KaniTTS_Codec" in model_path):
-            model = optimize_model(model_path,
-                                   use_gpu=False,
-                                   opt_level=2,
-                                   num_heads=0,
-                                   hidden_size=0,
-                                   verbose=False,
-                                   model_type='bert',
-                                   only_onnxruntime=False)
-            if quant_float16 and "Reset_Penality" in model_path:  # KaniTTS_Codec can not convert to FP16, currently.
-                print("Converting model to Float16...")
-                model.convert_float_to_float16(
-                    keep_io_types=False,
-                    force_fp16_initializers=True,
-                    use_symbolic_shape_infer=True,
-                    max_finite_val=65504.0,
-                    op_block_list=['DynamicQuantizeLinear', 'DequantizeLinear', 'DynamicQuantizeMatMul', 'Range', 'MatMulIntegerToFloat']
-                )
-            model.save_model_to_file(quanted_model_path, use_external_data_format=use_low_memory_mode_in_Android)
             if "KaniTTS_Codec" in model_path:
+                slim(
+                    model=model_path,
+                    output_model=quanted_model_path,
+                    no_shape_infer=False,
+                    skip_fusion_patterns=False,
+                    no_constant_folding=False,
+                    save_as_external_data=use_low_memory_mode_in_Android,
+                    verbose=False,
+                )
+                model = optimize_model(quanted_model_path,
+                                       use_gpu=False,
+                                       opt_level=2,
+                                       num_heads=0,
+                                       hidden_size=0,
+                                       verbose=False,
+                                       model_type='bert',
+                                       only_onnxruntime=False)
                 slim(
                     model=quanted_model_path,
                     output_model=quanted_model_path,
@@ -179,6 +177,25 @@ for model_name in model_names:
                     save_as_external_data=use_low_memory_mode_in_Android,
                     verbose=False,
                 )
+            else:
+                model = optimize_model(model_path,
+                                       use_gpu=False,
+                                       opt_level=2,
+                                       num_heads=0,
+                                       hidden_size=0,
+                                       verbose=False,
+                                       model_type='bert',
+                                       only_onnxruntime=False)
+                if quant_float16 and "Reset_Penality" in model_path:  # KaniTTS_Codec can not convert to FP16, currently.
+                    print("Converting model to Float16...")
+                    model.convert_float_to_float16(
+                        keep_io_types=False,
+                        force_fp16_initializers=True,
+                        use_symbolic_shape_infer=True,
+                        max_finite_val=65504.0,
+                        op_block_list=['DynamicQuantizeLinear', 'DequantizeLinear', 'DynamicQuantizeMatMul', 'Range', 'MatMulIntegerToFloat']
+                    )
+            model.save_model_to_file(quanted_model_path, use_external_data_format=use_low_memory_mode_in_Android)
         else:
             slim(
                 model=quant_utils.load_model_with_shape_infer(Path(model_path)),
