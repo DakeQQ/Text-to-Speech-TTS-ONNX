@@ -289,7 +289,7 @@ for model_name in model_names:
 
 # Clean up external data files at the very end
 print("Cleaning up temporary *.onnx.data files...")
-pattern = os.path.join(quanted_folder_path, '*.onnx.data')
+pattern = os.path.join(quanted_folder_path, '*.data')
 files_to_delete = glob.glob(pattern)
 for file_path in files_to_delete:
     try:
