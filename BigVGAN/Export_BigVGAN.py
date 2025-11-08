@@ -69,6 +69,7 @@ with torch.inference_mode():
             'generated_wav': {2: 'generated_len'}
         } if DYNAMIC_AXIS else None,
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17)
     del model
     del mel_features
