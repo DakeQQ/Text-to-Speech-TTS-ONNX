@@ -357,6 +357,7 @@ with torch.inference_mode():
             'conds_latent': {1: 'ref_signal_len'},
         },
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17)
     del custom_stft
     del part_A
@@ -377,6 +378,7 @@ with torch.inference_mode():
             'text_hidden_state': {1: 'text_ids_len'},
         },
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17)
     del part_B
     del text_ids
@@ -393,6 +395,7 @@ with torch.inference_mode():
         input_names=['gpt_ids', 'kv_seq_len'],
         output_names=['gpt_hidden_state', 'next_kv_seq_len'],
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17)
     del part_C
     del gpt_ids
@@ -417,6 +420,7 @@ with torch.inference_mode():
             'concat_hidden_state': {1: 'concat_len'},
         },
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17)
     del part_D
     del embed_x
@@ -478,6 +482,7 @@ with torch.inference_mode():
         output_names=output_names,
         dynamic_axes=dynamic_axes,
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17
     )
     del part_E
@@ -517,6 +522,7 @@ with torch.inference_mode():
             'generated_wav': {2: 'generated_len'}
         },
         do_constant_folding=True,
+        dynamo=False,
         opset_version=17)
     del part_F
     del all_inputs
