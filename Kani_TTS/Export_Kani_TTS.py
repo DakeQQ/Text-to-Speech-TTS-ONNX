@@ -182,11 +182,10 @@ class KANITTS_MAIN(torch.nn.Module):
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.variance_epsilon = float(1e-5)
 
-        scale_factor = float(head_dim ** -0.25)
+        scale_factor = float(head_dim ** -0.5)
         for layer in self.kani_tts.model.layers:
             if layer.is_attention_layer:
                 layer.self_attn.q_layernorm.weight.data *= scale_factor
-                layer.self_attn.k_layernorm.weight.data *= scale_factor
 
         position_ids = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(0)
         inv_freq_expanded = self.kani_tts.model.pos_emb.inv_freq[None, :, None].expand(position_ids.shape[0], -1, 1)
