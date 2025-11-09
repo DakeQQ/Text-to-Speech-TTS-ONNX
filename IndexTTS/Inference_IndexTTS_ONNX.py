@@ -64,7 +64,7 @@ elif "CUDAExecutionProvider" in ORT_Accelerate_Providers:
             'use_tf32': '1',
             'fuse_conv_bias': '0',                        # Set to '0' to avoid potential errors when enabled.
             'cudnn_conv_use_max_workspace': '1',
-            'cudnn_conv1d_pad_to_nc1d': '1',
+            'cudnn_conv1d_pad_to_nc1d': '0',
             'tunable_op_enable': '0',
             'tunable_op_tuning_enable': '0',
             'tunable_op_max_tuning_duration_ms': 10,
