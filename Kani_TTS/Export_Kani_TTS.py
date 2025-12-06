@@ -759,7 +759,6 @@ for sentence in target_tts:
     past_keys_B = init_past_keys_B
     past_values_B = init_past_values_B
     conv_states_B = init_conv_states_B
-    save_id = init_save_id
     repeat_penality = init_repeat_penality
 
     input_feed_A = {in_name_A: input_ids}
@@ -779,7 +778,7 @@ for sentence in target_tts:
         input_feed_B[in_name_B[i]] = conv_states_B
 
     if USE_BEAM_SEARCH:
-        save_id_beam = onnxruntime.OrtValue.ortvalue_from_numpy(np.zeros((BEAM_SIZE, 0), dtype=np.int32), device_type, DEVICE_ID)
+        save_id_beam = init_save_id
         input_feed_D[in_name_D[num_keys_values_convs_plus_1]] = save_id_beam
         input_feed_D[in_name_D[num_keys_values_convs_plus_2]] = repeat_penality
     else:
