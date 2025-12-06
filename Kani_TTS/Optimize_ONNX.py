@@ -44,7 +44,7 @@ upgrade_opset = 0                        # Optional process. Set 0 for close.
 target_platform = "amd64"                # ['arm', 'amd64']; The 'amd64' means x86_64 desktop, not means the AMD chip.
 
 # Int4 matmul_nbits_quantizer Settings
-algorithm = "DEFAULT"                    # ["DEFAULT", "RTN", "HQQ",], HQQ will very slow both in quant and inference.
+algorithm = "DEFAULT"                    # ["DEFAULT", "RTN", "HQQ", "k_quant"]
 bits = 4                                 # [4, 8]; It is not recommended to use 8.
 block_size = 64                          # [32, 64, 128, 256]; A smaller block_size yields greater accuracy but increases quantization time and model size.
 accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
@@ -53,6 +53,7 @@ nodes_to_exclude = None                  # Set the node names here. Such as: ["/
 
 
 # --- Main Processing Loop ---
+algorithm_copy = algorithm
 for model_name in model_names:
     print(f"--- Processing model: {model_name} ---")
 
@@ -70,9 +71,11 @@ for model_name in model_names:
         if "KaniTTS_Embed" in model_path:
             op_types = ["Gather"]
             quant_axes = [1]
+            algorithm = "DEFAULT" # Fallback to DEFAULT
         else:
             op_types = ["MatMul"]
             quant_axes = [0]
+            algorithm = algorithm_copy
 
         # Start Weight-Only Quantize
         model = quant_utils.load_model_with_shape_infer(Path(model_path))
@@ -90,6 +93,11 @@ for model_name in model_names:
                 quant_format=quant_utils.QuantFormat.QOperator,
                 op_types_to_quantize=tuple(op_types),
                 quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types)))
+            )
+        elif algorithm == "k_quant":
+            quant_config = matmul_nbits_quantizer.KQuantWeightOnlyQuantConfig(
+                quant_format=quant_utils.QuantFormat.QOperator,
+                op_types_to_quantize=tuple(op_types)
             )
         else:
             quant_config = matmul_nbits_quantizer.DefaultWeightOnlyQuantConfig(
