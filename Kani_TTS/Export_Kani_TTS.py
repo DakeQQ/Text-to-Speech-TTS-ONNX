@@ -387,7 +387,7 @@ with torch.inference_mode():
     repeat_penality = torch.ones((beam_size, vocab_size), dtype=torch.float32)
     penality_reset_count = torch.zeros(beam_size, dtype=torch.int32)
     logits = torch.ones((beam_size, vocab_size), dtype=torch.float32)
-    penality_value = torch.tensor(REPEAT_PENALITY, dtype=torch.float32)
+    penality_value = torch.tensor([REPEAT_PENALITY], dtype=torch.float32)
     batch_indices = torch.arange(BEAM_SIZE, dtype=torch.int64)
 
     torch.onnx.export(
@@ -660,7 +660,7 @@ num_keys_values_convs_plus_7 = num_keys_values_convs + 7
 vocab_size = ort_session_B._outputs_meta[num_keys_values_convs].shape[1]
 topK = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([TOP_K], dtype=np.int64), device_type, DEVICE_ID)
 beam_size = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([BEAM_SIZE], dtype=np.int64), device_type, DEVICE_ID)
-penality_value = onnxruntime.OrtValue.ortvalue_from_numpy(np.array(REPEAT_PENALITY, dtype=model_dtype), device_type, DEVICE_ID)
+penality_value = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([REPEAT_PENALITY], dtype=model_dtype), device_type, DEVICE_ID)
 tokenizer = AutoTokenizer.from_pretrained(path_kani)
 head_ids = np.array([[64403]], dtype=np.int32)       # For non-Python tokenizer = [64403, 1]
 tail_ids = np.array([[2, 64404]], dtype=np.int32)
