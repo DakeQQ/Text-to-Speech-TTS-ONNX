@@ -267,7 +267,7 @@ class NEMO_CODEC(torch.nn.Module):
         audio_codes = audio_codes - self.codebook
         audio_codes = audio_codes.transpose(1, 2)
         with torch.autocast(device_type="cpu", dtype=torch.float16 if USE_FLOAT16_CODEC else torch.float32):
-            reconstructed_audio, _ = self.nemo_codec.decode(tokens=audio_codes, tokens_len=len_)
+            reconstructed_audio, audio_out_len = self.nemo_codec.decode(tokens=audio_codes, tokens_len=len_)
             reconstructed_audio = reconstructed_audio.view(1, 1, -1)
             if self.scale != 1.0:
                 reconstructed_audio = torch.nn.functional.interpolate(
@@ -276,8 +276,9 @@ class NEMO_CODEC(torch.nn.Module):
                     mode='linear',
                     align_corners=False
                 )
-            audio_out = (reconstructed_audio.clamp(min=-1.0, max=1.0) * 32767.0).to(torch.int16)
-        return audio_out
+                audio_out_len = reconstructed_audio.shape[-1]
+            audio_out = (reconstructed_audio * 32767.0).clamp(min=-32768.0, max=32767.0).to(torch.int16)
+        return audio_out, audio_out_len
 
 
 print('Export start ...')
@@ -561,7 +562,7 @@ with torch.inference_mode():
         (decode_ids, num_decode),
         onnx_model_G,
         input_names=['decode_ids', 'num_decode'],
-        output_names=['audio_out'],
+        output_names=['audio_out', 'audio_out_len'],
         dynamic_axes={
             'decode_ids': {0: 'batch_size', 1: 'num_decode'},
             'audio_out': {2: 'audio_len'}
