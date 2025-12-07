@@ -44,7 +44,7 @@ upgrade_opset = 0                        # Optional process. Set 0 for close.
 target_platform = "amd64"                # ['arm', 'amd64']; The 'amd64' means x86_64 desktop, not means the AMD chip.
 
 # Int4 matmul_nbits_quantizer Settings
-algorithm = "DEFAULT"                    # ["DEFAULT", "RTN", "HQQ", "k_quant"]
+algorithm = "k_quant"                    # ["DEFAULT", "RTN", "HQQ", "k_quant"]
 bits = 4                                 # [4, 8]; It is not recommended to use 8.
 block_size = 64                          # [32, 64, 128, 256]; A smaller block_size yields greater accuracy but increases quantization time and model size.
 accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
