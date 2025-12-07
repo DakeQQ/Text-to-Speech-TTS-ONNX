@@ -846,7 +846,7 @@ for sentence in target_tts:
             else:
                 input_feed_C[in_name_C[1]] = all_outputs_C[1]
             input_feed_C[in_name_C[0]] = all_outputs_C[0]
-            input_feed_B.update(zip(in_name_B[:num_keys_values_convs_plus_1], all_outputs_B))
+            input_feed_B.update(zip(in_name_B[:num_keys_values_convs], all_outputs_B))
             input_feed_A[in_name_A] = all_outputs_C[0]
             input_feed_B[in_name_B[num_keys_values_convs]] = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)[0]
             save_id_greedy[num_decode] = max_logits_idx
