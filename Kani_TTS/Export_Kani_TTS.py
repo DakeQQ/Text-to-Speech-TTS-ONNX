@@ -842,9 +842,9 @@ for sentence in target_tts:
                     repeat_penality = all_outputs_C[1].numpy()
                     repeat_penality[:, reset_ids] = 1.0
                     input_feed_C[in_name_C[1]].update_inplace(repeat_penality)
+                else:
+                    input_feed_C[in_name_C[1]] = all_outputs_C[1]
                 penality_reset_count_greedy += 1
-            else:
-                input_feed_C[in_name_C[1]] = all_outputs_C[1]
             input_feed_C[in_name_C[0]] = all_outputs_C[0]
             input_feed_B.update(zip(in_name_B[:num_keys_values_convs], all_outputs_B))
             input_feed_A[in_name_A] = all_outputs_C[0]
