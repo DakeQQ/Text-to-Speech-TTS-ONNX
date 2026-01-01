@@ -352,16 +352,27 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
 
     def forward(self, latent_pred):
         decode_audio = self.voxcpm.audio_vae.decode(latent_pred.transpose(-1, -2))
-        if self.scale != 1.0:
+        if self.scale < 1.0:
             decode_audio = torch.nn.functional.interpolate(
                 decode_audio,
                 scale_factor=self.scale,
                 mode='linear',
                 align_corners=False
             )
-        audio_out = (decode_audio * 32767.0).clamp(min=-32768.0, max=32767.0).to(torch.int16)
-        audio_out_len = audio_out.shape[-1].unsqueeze(0)
-        return audio_out, audio_out_len
+            decode_audio = (decode_audio * 32767.0).clamp(min=-32768.0, max=32767.0)
+        elif self.scale > 1.0:
+            decode_audio = decode_audio * 32767.0
+            decode_audio = torch.nn.functional.interpolate(
+                decode_audio,
+                scale_factor=self.scale,
+                mode='linear',
+                align_corners=False
+            )
+            decode_audio = decode_audio.clamp(min=-32768.0, max=32767.0)
+        else:
+            decode_audio = (decode_audio * 32767.0).clamp(min=-32768.0, max=32767.0)
+        audio_out_len = decode_audio.shape[-1].unsqueeze(0)
+        return decode_audio.to(torch.int16), audio_out_len
 
 
 print('Export start ...')
