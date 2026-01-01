@@ -89,13 +89,15 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
                 mode='linear',
                 align_corners=False
             )
-        else:
+        elif self.sr_scale > 1.0::
             prompt_audio = torch.nn.functional.interpolate(
                 prompt_audio,
                 scale_factor=self.sr_scale,
                 mode='linear',
                 align_corners=False
             )
+            prompt_audio = prompt_audio * self.inv_int16
+        else:
             prompt_audio = prompt_audio * self.inv_int16
         padding_size = self.patch_len - prompt_audio.shape[-1] % self.patch_len
         prompt_audio = torch.cat([prompt_audio, self.pad_zeros[..., :padding_size].float()], dim=-1)
