@@ -354,7 +354,7 @@ else:
     print("\nInfo: No prompt audio provided, using ransom seed to generate voice.")
 
 count_time = time.time()
-if prompt_audio_path and prompt_text:
+if use_prompt_audio:
     # Run Audio Encoder (Session B)
     input_feed_B[in_name_B] = audio
     audio_feat = ort_session_B.run_with_ort_values(out_name_B, input_feed_B)[0]
