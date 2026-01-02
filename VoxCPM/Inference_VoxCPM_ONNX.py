@@ -42,7 +42,7 @@ CFG_VALUE = 2.5                          # Lower values result in more natural s
 RANDOM_SEED = 9527                       # Global random seed
 
 # === Feature flags ===
-STREAMING = False                         # Enable streaming synthesis. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
+STREAMING = False                        # Enable streaming synthesis. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
 USE_TEXT_NORMALIZER = True               # Use text normalizer
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics.
 
@@ -50,7 +50,7 @@ USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize 
 MAX_THREADS = 0                          # Parallel CPU threads, 0 for auto
 DEVICE_ID = 0                            # Device id, default 0
 
-ORT_Accelerate_Providers = ["CUDAExecutionProvider"]            # If you have accelerate devices for : ['CUDAExecutionProvider', 'TensorrtExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'AzureExecutionProvider']
+ORT_Accelerate_Providers = []            # If you have accelerate devices for : ['CUDAExecutionProvider', 'TensorrtExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'AzureExecutionProvider']
                                          # else keep empty.
 
 if "OpenVINOExecutionProvider" in ORT_Accelerate_Providers:
