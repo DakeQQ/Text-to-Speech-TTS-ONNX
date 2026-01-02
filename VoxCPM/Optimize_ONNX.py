@@ -46,8 +46,7 @@ model_names = [             # Recommended quantize dtype. The int8 is best for C
 quant_int4 = False                       # Quant the model to int4 format (not used by auto settings below).
 quant_int8 = False                       # Global default, overridden per model.
 quant_float16 = False                    # Global default, overridden per model.
-keep_io_dtype = True                    # Will be overridden when needed; must be True for mixed-precision.
-target_platform = "amd64"                # ['arm', 'amd64']; The 'amd64' means x86_64 desktop, not means the AMD chip.
+keep_io_dtype = True                     # Will be overridden when needed; must be True for mixed-precision.
 
 # Int4 matmul_nbits_quantizer Settings
 algorithm = "k_quant"                    # ["DEFAULT", "RTN", "HQQ", "k_quant"]
