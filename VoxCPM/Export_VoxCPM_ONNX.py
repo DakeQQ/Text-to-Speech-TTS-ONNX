@@ -23,36 +23,36 @@ onnx_model_H = r'/home/DakeQQ/Downloads/VoxCPM_ONNX/VoxCPM_VAE_Decoder.onnx'
 
 prompt_audio_path = "./example/basic_ref_zh.wav"                                # optional: path to a prompt speech for voice cloning else None.
 prompt_text = "对，这就是我，万人敬仰的太乙真人。"                                    # The reference text for the prompt speech.
-target_tts = ["大家好，我现在正在大可奇奇体验AI科技。", "Hello everyone, I'm currently experiencing DakeQQ's AI technology."]  # The test query after the export process.
+target_tts = [ "大家好，我现在正在大可奇奇体验AI科技。", "Hello everyone, I'm currently experiencing DakeQQ's AI technology."]  # The test query after the export process.
 generated_audio_path = r"./generated.wav"                                       # The generated audio path.
 
 # === Decoding limits & tokens ===
 STOP_TOKEN = [1]                         # The stop_id in VoxCPM is "1"
-MAX_SEQ_LEN = 1024                       # The max decode length; cannot be changed after export
-MIN_SEQ_LEN = 2                          # The min decode length
-MAX_TARGET_TEXT_LEN = 256                # The max TTS text length in tokens; cannot be changed after export
-DECODE_LIMIT_FACTOR = 6                  # Decode length limit factor, integer >= 1
+MAX_SEQ_LEN = 1024                       # The max decode length; cannot be changed after export. Free to edit it.
+MIN_SEQ_LEN = 2                          # The min decode length. Free to edit it.
+MAX_TARGET_TEXT_LEN = 256                # The max TTS text length in tokens; cannot be changed after export. Free to edit it.
+DECODE_LIMIT_FACTOR = 6                  # Decode length limit factor, integer >= 1. Free to edit it.
 
 # === Audio configuration ===
 IN_SAMPLE_RATE = 44100                      # Input prompt audio sample rate; cannot be changed after export
 OUT_SAMPLE_RATE = 44100                     # Output audio sample rate; cannot be changed after export
-MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples (20 seconds)
+MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples (20 seconds). Free to edit it.
 
 # === ONNX / runtime configuration ===
-OPSET = 17                               # ONNX opset version
-MAX_THREADS = 0                          # Parallel CPU threads, 0 for auto
-DEVICE_ID = 0                            # Device id, default 0
+OPSET = 17                               # ONNX opset version. Free to edit it.
+MAX_THREADS = 0                          # Parallel CPU threads, 0 for auto. Free to edit it.
+DEVICE_ID = 0                            # Device id, default 0. Free to edit it.
 
 # === Guidance, diffusion & randomness ===
-FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower.
-CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features.
-RANDOM_SEED = 42                         # Global random seed
+FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower. Free to edit it.
+CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
+RANDOM_SEED = 1                          # Global random seed. Free to edit it.
 
 # === Feature flags ===
-STREAMING = False                        # Enable streaming synthesis. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
-DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder
-USE_TEXT_NORMALIZER = True               # Use text normalizer
-USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics.
+STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
+DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
+USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable it.
+USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
 
 shutil.copyfile('./modeling_modified/model.py',  path_voxcpm + '/model.py')
 shutil.copyfile('./modeling_modified/audio_vae.py',  site.getsitepackages()[-1] + '/voxcpm/modules/audiovae/audio_vae.py')
@@ -73,7 +73,7 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
     def __init__(self, voxcpm, in_sample_rate):
         super(VOXCPM_VAE_ENCODER, self).__init__()
         self.voxcpm = voxcpm
-        self.inv_int16 = torch.tensor(1./32768.0, dtype=torch.float32).view(1, 1, -1)
+        self.inv_int16 = torch.tensor(1.0 / 32768.0, dtype=torch.float32).view(1, 1, -1)
         self.patch_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
         self.pad_zeros = torch.zeros([1, 1, self.patch_len], dtype=torch.int8)
         self.in_sample_rate = in_sample_rate
@@ -113,11 +113,11 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         max_prompt_feat_len = (max_prompt_audio_len // in_sample_rate * 44100) // (self.voxcpm.patch_size * self.voxcpm.chunk_size) + 1
         self.special_tokens = self.voxcpm.feat_encoder.special_token.expand(1, max_prompt_feat_len, 1, -1).squeeze(0).half()
         self.q_len = self.voxcpm.patch_size + 1  # Fixed to 5 for VoxCPM1.5
-        self.scale_factor = float(self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim ** -0.5)
+        self.scale_factor = float(self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim ** -0.25)
         position_ids = torch.arange(self.q_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.feat_encoder.encoder.rope_emb(position_ids)
-        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0)
-        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0)
+        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0) * self.scale_factor
+        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0) * self.scale_factor
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim // 2
@@ -146,7 +146,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
             k = k * self.rope_emb_cos_k + self.rotate_half(k, -2, self.split_size) * self.rope_emb_sin_k
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
-            attn = torch.nn.functional.softmax(torch.matmul(q, k) * self.scale_factor, dim=-1, dtype=torch.float32)
+            attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
             attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(1, 2).contiguous().view(-1, self.q_len, layer.self_attn.o_proj.in_features))
             hidden_states += attn_out
             residual = hidden_states
@@ -185,10 +185,9 @@ class VOXCPM_MAIN(torch.nn.Module):
         self.voxcpm = voxcpm
         position_ids = torch.arange(max_seq_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.base_lm.rope_emb(position_ids)
-        self.cos_rotary_pos_emb = rope_emb_cos.unsqueeze(0).half()
-        self.sin_rotary_pos_emb = rope_emb_sin.unsqueeze(0).half()
-        self.scale_factor_base = float(self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim ** -0.5)
-        self.scale_factor_residual = float(self.voxcpm.residual_lm.layers._modules['0'].self_attn.head_dim ** -0.5)
+        self.scale_factor_base = float(self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim ** -0.25)
+        self.cos_rotary_pos_emb = (rope_emb_cos.unsqueeze(0) * self.scale_factor_base).half()
+        self.sin_rotary_pos_emb = (rope_emb_sin.unsqueeze(0) * self.scale_factor_base).half()
         self.total_layers = self.voxcpm.base_lm.config.num_hidden_layers + self.voxcpm.residual_lm.config.num_hidden_layers
         self.save_key = [None] * self.total_layers
         self.save_value = [None] * self.total_layers
@@ -231,7 +230,7 @@ class VOXCPM_MAIN(torch.nn.Module):
             self.save_value[i] = v
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
-            attn = torch.nn.functional.softmax(torch.matmul(q, k) * self.scale_factor_base + attention_mask, dim=-1, dtype=torch.float32)
+            attn = torch.nn.functional.softmax(torch.matmul(q, k) + attention_mask, dim=-1, dtype=torch.float32)
             attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(0, 1).contiguous().view(1, -1, layer.self_attn.o_proj.in_features))
             hidden_states += attn_out
             residual = hidden_states
@@ -257,7 +256,7 @@ class VOXCPM_MAIN(torch.nn.Module):
             self.save_value[i] = v
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
-            attn = torch.nn.functional.softmax(torch.matmul(q, k) * self.scale_factor_residual + attention_mask, dim=-1, dtype=torch.float32)
+            attn = torch.nn.functional.softmax(torch.matmul(q, k) + attention_mask, dim=-1, dtype=torch.float32)
             attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(0, 1).contiguous().view(1, -1, layer.self_attn.o_proj.in_features))
             hidden_states += attn_out
             residual = hidden_states
@@ -291,11 +290,11 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self.t = (t + dt_in).unsqueeze(0)
         self.prefix_plus = self.voxcpm.patch_size + 1
         self.q_len = 9  # Fixed to 9 for VoxCPM1.5 CFM
-        self.scale_factor = float(self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim ** -0.5)
+        self.scale_factor = float(self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim ** -0.25)
         position_ids = torch.arange(self.q_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.feat_decoder.estimator.decoder.rope_emb(position_ids)
-        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0)
-        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0)
+        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0) * self.scale_factor
+        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0) * self.scale_factor
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim // 2
@@ -327,7 +326,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             k = k * self.rope_emb_cos_k + self.rotate_half(k, -2, self.split_size) * self.rope_emb_sin_k
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
-            attn = torch.nn.functional.softmax(torch.matmul(q, k) * self.scale_factor, dim=-1, dtype=torch.float32)
+            attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
             attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(1, 2).contiguous().view(-1, self.q_len, layer.self_attn.o_proj.in_features))
             hidden_states += attn_out
             residual = hidden_states
@@ -878,7 +877,7 @@ if prompt_audio_path:
         print("Warning: No prompt text provided, so the prompt audio will be ignored.\n")
 else:
     use_prompt_audio = False
-    print("Info: No prompt audio provided, using random seed to generate voice.\n")
+    print("Info: No prompt audio provided, using ransom seed to generate voice.\n")
 
 count_time = time.time()
 if use_prompt_audio:
