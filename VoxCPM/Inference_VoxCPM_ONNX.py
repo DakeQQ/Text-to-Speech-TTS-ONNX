@@ -39,7 +39,7 @@ OUT_SAMPLE_RATE = 44100                  # Output audio sample rate; keep the sa
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; keep the same as exported model.
 CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features.
-RANDOM_SEED = 42                         # Global random seed
+RANDOM_SEED = 1                          # Global random seed
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
