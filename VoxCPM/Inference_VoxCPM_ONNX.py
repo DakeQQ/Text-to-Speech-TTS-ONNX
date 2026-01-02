@@ -348,10 +348,10 @@ if prompt_audio_path:
         audio = onnxruntime.OrtValue.ortvalue_from_numpy(audio.reshape(1, 1, -1), device_type, DEVICE_ID)
     else:
         use_prompt_audio = False
-        print("\nWarning: No prompt text provided, so the prompt audio will be ignored.")
+        print("Warning: No prompt text provided, so the prompt audio will be ignored.\n")
 else:
     use_prompt_audio = False
-    print("\nInfo: No prompt audio provided, using ransom seed to generate voice.")
+    print("Info: No prompt audio provided, using ransom seed to generate voice.\n")
 
 count_time = time.time()
 if use_prompt_audio:
