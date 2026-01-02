@@ -30,8 +30,8 @@
 | Ubuntu-24.04 | Laptop       | GPU <br> MX150     | BigVGAN V2 24khz_100band_256x <br>F16    |        4.6 <br> input mel = (1, 100, 512)           | 1.53 |
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q8F32   |        8.4                                                                | 1.4 |
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q4F32   |        5.2                                                                | 0.87 |
-| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        9                                                                   | 1.5 |
-| Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        1.2                                                                 | 0.2 |
+| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        9                                                               | 1.5 |
+| Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        1.03                                                            | 0.17 |
 
 
 ---
