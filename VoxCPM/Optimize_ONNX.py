@@ -30,6 +30,10 @@ use_openvino = False                        # Set true for OpenVINO optimization
 use_low_memory_mode_in_Android = False      # If True, save the model into 2 parts.
 upgrade_opset = 0                           # Optional process. Set 0 for close.
 
+
+#------------------------------------------------------------------------------ 
+# Manual Settings
+#------------------------------------------------------------------------------ 
 # List of models to process
 model_names = [             # Recommended quantize dtype. The int8 is best for CPU.
     "VoxCPM_Text_Embed",    # [int8, int4, float32, float16]
