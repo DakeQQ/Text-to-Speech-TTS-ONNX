@@ -351,7 +351,7 @@ if prompt_audio_path:
         print("Warning: No prompt text provided, so the prompt audio will be ignored.\n")
 else:
     use_prompt_audio = False
-    print("Info: No prompt audio provided, using ransom seed to generate voice.\n")
+    print("Info: No prompt audio provided, using random seed to generate voice.\n")
 
 count_time = time.time()
 if use_prompt_audio:
