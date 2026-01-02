@@ -89,7 +89,7 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
                 mode='linear',
                 align_corners=False
             )
-        elif self.sr_scale < 1.0::
+        elif self.sr_scale < 1.0:
             prompt_audio = torch.nn.functional.interpolate(
                 prompt_audio,
                 scale_factor=self.sr_scale,
