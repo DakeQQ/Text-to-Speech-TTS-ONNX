@@ -46,7 +46,7 @@ DEVICE_ID = 0                            # Device id, default 0
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower.
 CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features.
-RANDOM_SEED = 9527                       # Global random seed
+RANDOM_SEED = 42                         # Global random seed
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
@@ -120,9 +120,10 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0)
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
+        self.split_size = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim // 2
 
-    def rotate_half(self, x, dim):
-        x1, x2 = x.chunk(2, dim=dim)
+    def rotate_half(self, x, dim, split_size):
+        x1, x2 = x.split(split_size, dim=dim)
         return torch.cat((-x2, x1), dim=dim)
 
     def repeat_k(self, kv_states, num_key_value_groups, head_dim, num_heads, q_len):
@@ -141,8 +142,8 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
             q = layer.self_attn.q_proj(hidden_states_norm).view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
             k = layer.self_attn.k_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
             v = layer.self_attn.v_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
-            q = q * self.rope_emb_cos_q + self.rotate_half(q, -1) * self.rope_emb_sin_q
-            k = k * self.rope_emb_cos_k + self.rotate_half(k, -2) * self.rope_emb_sin_k
+            q = q * self.rope_emb_cos_q + self.rotate_half(q, -1, self.split_size) * self.rope_emb_sin_q
+            k = k * self.rope_emb_cos_k + self.rotate_half(k, -2, self.split_size) * self.rope_emb_sin_k
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             attn = torch.nn.functional.softmax(torch.matmul(q, k) * self.scale_factor, dim=-1, dtype=torch.float32)
@@ -192,9 +193,11 @@ class VOXCPM_MAIN(torch.nn.Module):
         self.save_key = [None] * self.total_layers
         self.save_value = [None] * self.total_layers
         self.attention_mask = (1 - torch.tril(torch.ones([1, max_seq_len, max_seq_len], dtype=torch.int8))) * -128
+        self.split_size_base = self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim // 2
+        self.split_size_residual = self.voxcpm.residual_lm.layers._modules['0'].self_attn.head_dim // 2
 
-    def rotate_half(self, x, dim):
-        x1, x2 = x.chunk(2, dim=dim)
+    def rotate_half(self, x, dim, split_size):
+        x1, x2 = x.split(split_size, dim=dim)
         return torch.cat((-x2, x1), dim=dim)
 
     def repeat_k(self, kv_states, num_key_value_groups, head_dim, num_heads):
@@ -220,8 +223,8 @@ class VOXCPM_MAIN(torch.nn.Module):
             q = layer.self_attn.q_proj(hidden_states_norm).view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
             k = layer.self_attn.k_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
             v = layer.self_attn.v_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
-            q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1) * rotary_pos_emb_sin_q
-            k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2) * rotary_pos_emb_sin_k
+            q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1, self.split_size_base) * rotary_pos_emb_sin_q
+            k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2, self.split_size_base) * rotary_pos_emb_sin_k
             k = torch.cat((all_inputs[i], k), dim=-1)
             v = torch.cat((all_inputs[i + self.total_layers], v), dim=-2)
             self.save_key[i] = k
@@ -246,8 +249,8 @@ class VOXCPM_MAIN(torch.nn.Module):
             q = layer.self_attn.q_proj(hidden_states_norm).view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
             k = layer.self_attn.k_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
             v = layer.self_attn.v_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
-            q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1) * rotary_pos_emb_sin_q
-            k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2) * rotary_pos_emb_sin_k
+            q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1, self.split_size_residual) * rotary_pos_emb_sin_q
+            k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2, self.split_size_residual) * rotary_pos_emb_sin_k
             k = torch.cat((all_inputs[i], k), dim=-1)
             v = torch.cat((all_inputs[i + self.total_layers], v), dim=-2)
             self.save_key[i] = k
@@ -295,9 +298,10 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0)
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
+        self.split_size = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim // 2
 
-    def rotate_half(self, x, dim):
-        x1, x2 = x.chunk(2, dim=dim)
+    def rotate_half(self, x, dim, split_size):
+        x1, x2 = x.split(split_size, dim=dim)
         return torch.cat((-x2, x1), dim=dim)
 
     def repeat_k(self, kv_states, num_key_value_groups, head_dim, num_heads, q_len):
@@ -319,8 +323,8 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             q = layer.self_attn.q_proj(hidden_states_norm).view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
             k = layer.self_attn.k_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
             v = layer.self_attn.v_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
-            q = q * self.rope_emb_cos_q + self.rotate_half(q, -1) * self.rope_emb_sin_q
-            k = k * self.rope_emb_cos_k + self.rotate_half(k, -2) * self.rope_emb_sin_k
+            q = q * self.rope_emb_cos_q + self.rotate_half(q, -1, self.split_size) * self.rope_emb_sin_q
+            k = k * self.rope_emb_cos_k + self.rotate_half(k, -2, self.split_size) * self.rope_emb_sin_k
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             attn = torch.nn.functional.softmax(torch.matmul(q, k) * self.scale_factor, dim=-1, dtype=torch.float32)
@@ -871,10 +875,10 @@ if prompt_audio_path:
         audio = onnxruntime.OrtValue.ortvalue_from_numpy(audio.reshape(1, 1, -1), device_type, DEVICE_ID)
     else:
         use_prompt_audio = False
-        print("\nWarning: No prompt text provided, so the prompt audio will be ignored.")
+        print("Warning: No prompt text provided, so the prompt audio will be ignored.\n")
 else:
     use_prompt_audio = False
-    print("\nInfo: No prompt audio provided, using ransom seed to generate voice.")
+    print("Info: No prompt audio provided, using ransom seed to generate voice.\n")
 
 count_time = time.time()
 if use_prompt_audio:
