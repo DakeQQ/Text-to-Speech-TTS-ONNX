@@ -519,7 +519,7 @@ for sentence in target_tts:
 cost_time = time.time() - count_time
 audio_out = np.concatenate(save_audio_out, axis=-1).reshape(-1)
 if USE_AUDIO_NORMALIZER:
-  audio_out = audio_normalizer(audio_out)
+    audio_out = audio_normalizer(audio_out)
 sf.write(generated_audio_path, audio_out, OUT_SAMPLE_RATE, format='WAVEX')
 
 total_audio_duration = (audio_out.shape[-1] - blank_segment.shape[-1] * len(target_tts)) / OUT_SAMPLE_RATE
