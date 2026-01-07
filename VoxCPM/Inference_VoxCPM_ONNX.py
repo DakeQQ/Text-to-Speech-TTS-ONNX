@@ -177,6 +177,10 @@ session_opts.add_session_config_entry('optimization.minimal_build_optimizations'
 session_opts.add_session_config_entry('optimization.enable_cast_chain_elimination', '1')
 run_options.add_run_config_entry('disable_synchronize_execution_providers', '1')
 
+ORT_Accelerate_Providers = ['CPUExecutionProvider']
+device_type = 'cpu'
+provider_options = None
+
 ort_session_A = onnxruntime.InferenceSession(onnx_model_A, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
 in_name_A = ort_session_A.get_inputs()
 out_name_A = ort_session_A.get_outputs()
@@ -253,6 +257,7 @@ in_name_H = ort_session_H.get_inputs()
 out_name_H = ort_session_H.get_outputs()
 in_name_H = in_name_H[0].name
 out_name_H = [out_name_H[i].name for i in range(len(out_name_H))]
+half_decode_len = 7056  # Fixed for VoxCPM1.5
 
 # ==============================================================================
 # 1. Configuration & Constants Calculation
@@ -351,7 +356,7 @@ if prompt_audio_path:
         print("Warning: No prompt text provided, so the prompt audio will be ignored.\n")
 else:
     use_prompt_audio = False
-    print("Info: No prompt audio provided, using random seed to generate voice.\n")
+    print("Info: No prompt audio provided, using ransom seed to generate voice.\n")
 
 count_time = time.time()
 if use_prompt_audio:
@@ -391,7 +396,7 @@ for sentence in target_tts:
     target_ids = np.array([tokenizer(sentence)], dtype=np.int32)
     input_feed_A[in_name_A] = onnxruntime.OrtValue.ortvalue_from_numpy(target_ids, device_type, DEVICE_ID)
     target_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)[0]
-
+    
     # 5.2 Combine Embeddings (Session E)
     if use_prompt_audio:
         input_feed_E[in_name_E[0]] = prompt_embed
@@ -406,7 +411,7 @@ for sentence in target_tts:
     if use_prompt_audio:
         input_feed_C[in_name_C] = audio_feat
         feat_embed = ort_session_C.run_with_ort_values(out_name_C, input_feed_C)[0]
-
+        
         input_feed_E[in_name_E[0]] = concat_embed
         input_feed_E[in_name_E[1]] = feat_embed
         concat_embed, ids_len = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
@@ -442,7 +447,7 @@ for sentence in target_tts:
     # --------------------------------------------------------------------------
     num_decode = 0
     start_decode = time.time()
-
+    
     while num_decode < max_len:
         # --- Run Transformer (Session F) ---
         all_outputs_F = ort_session_F.run_with_ort_values(out_name_F, input_feed_F)
@@ -462,16 +467,26 @@ for sentence in target_tts:
 
         # --- Handle Output (Stream or Save) ---
         if STREAMING:
-            input_feed_H[in_name_H] = latent_pred
-            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
-            save_audio_out.append(audio_out.numpy())
+            if num_decode < 1:
+                pre_latent_pred = latent_pred
+            else:
+                input_feed_E[in_name_E[0]] = pre_latent_pred
+                input_feed_E[in_name_E[1]] = latent_pred
+                save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                input_feed_H[in_name_H] = save_latent
+                audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+                pre_latent_pred = latent_pred
+                audio_out = audio_out.numpy()
+                if num_decode > 1:
+                    audio_out = audio_out[..., half_decode_len:]
+                save_audio_out.append(audio_out)
         else:
             if DYNAMIC_SHAPE_VAE_DECODE:
                 input_feed_E[in_name_E[0]] = save_latent
                 input_feed_E[in_name_E[1]] = latent_pred
                 save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
             else:
-                save_latent.append(latent_pred.numpy())
+                save_latent.append(latent_pred)
 
         # --- Check Stop Token ---
         if num_decode >= MIN_SEQ_LEN and all_outputs_F[num_keys_values_plus_3].numpy() in STOP_TOKEN:
@@ -493,7 +508,7 @@ for sentence in target_tts:
             input_feed_F[in_name_F[num_keys_values_plus_2]] = init_concat_text_len
             input_feed_F[in_name_F[num_keys_values_plus_4]] = init_ids_len_1
             input_feed_F[in_name_F[num_keys_values_plus_5]] = init_attention_mask_0
-
+        
         num_decode += 1
         print(f"    Decode: {num_decode}")
 
@@ -506,10 +521,20 @@ for sentence in target_tts:
             audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
             save_audio_out.append(audio_out.numpy())
         else:
-            for latent in save_latent:
-                input_feed_H[in_name_H] = onnxruntime.OrtValue.ortvalue_from_numpy(latent, device_type, DEVICE_ID)
+            input_feed_E[in_name_E[0]] = save_latent[0]
+            input_feed_E[in_name_E[1]] = save_latent[1]
+            concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+            input_feed_H[in_name_H] = concat_latent
+            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+            save_audio_out.append(audio_out.numpy())
+            for i in range(2, len(save_latent)):
+                input_feed_E[in_name_E[0]] = save_latent[i - 1]
+                input_feed_E[in_name_E[1]] = save_latent[i]
+                concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                input_feed_H[in_name_H] = concat_latent
                 audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
-                save_audio_out.append(audio_out.numpy())
+                audio_out = audio_out.numpy()[..., half_decode_len:]
+                save_audio_out.append(audio_out)
 
     save_audio_out.append(blank_segment)
 

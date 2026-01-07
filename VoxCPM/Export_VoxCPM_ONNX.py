@@ -49,13 +49,15 @@ CFG_VALUE = 2.5                          # Lower values result in more natural s
 RANDOM_SEED = 1                          # Global random seed. Free to edit it.
 
 # === Feature flags ===
-STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes a single latent at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
-DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
+STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes two latents at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
+DYNAMIC_SHAPE_VAE_DECODE = False         # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable it.
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
 
+py_site = site.getsitepackages()[-1]
 shutil.copyfile('./modeling_modified/model.py',  path_voxcpm + '/model.py')
-shutil.copyfile('./modeling_modified/audio_vae.py',  site.getsitepackages()[-1] + '/voxcpm/modules/audiovae/audio_vae.py')
+shutil.copyfile('./modeling_modified/audio_vae.py',  py_site + '/voxcpm/modules/audiovae/audio_vae.py')
+shutil.copyfile('./modeling_modified/core.py',  py_site + '/voxcpm/core.py')
 from voxcpm import VoxCPM
 
 
@@ -352,6 +354,7 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
         super(VOXCPM_VAE_DECODE, self).__init__()
         self.voxcpm = voxcpm
         self.scale = float(output_sample_rate / 44100.0)
+        self.single_decode_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
 
     def forward(self, latent_pred):
         decode_audio = self.voxcpm.audio_vae.decode(latent_pred.transpose(-1, -2))
@@ -438,7 +441,7 @@ with torch.inference_mode():
     del audio_feat
 
     model_D = VOXCPM_FEAT_COND(model)
-    audio_feat = torch.zeros([96, model.patch_size, model.feat_dim], dtype=torch.float32)  # "96" is just a dummy value.
+    audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
     torch.onnx.export(
         model_D,
         (audio_feat,),
@@ -548,16 +551,16 @@ with torch.inference_mode():
     output_names.append('random')
     output_names.append('dit_hidden')
     output_names.append('stop_flag')
-    torch.onnx.export(
-        model_F,
-        tuple(all_inputs),
-        onnx_model_F,
-        input_names=input_names,
-        output_names=output_names,
-        dynamic_axes=dynamic_axes,
-        opset_version=OPSET,
-        dynamo=False
-    )
+    # torch.onnx.export(
+    #     model_F,
+    #     tuple(all_inputs),
+    #     onnx_model_F,
+    #     input_names=input_names,
+    #     output_names=output_names,
+    #     dynamic_axes=dynamic_axes,
+    #     opset_version=OPSET,
+    #     dynamo=False
+    # )
     del model_F
     del all_inputs
     del base_lm_past_keys
@@ -585,16 +588,16 @@ with torch.inference_mode():
     feat_cond = torch.zeros((2, model.patch_size, model.feat_decoder.estimator.cond_proj.out_features), dtype=torch.float32)
     cfg_value = torch.tensor([CFG_VALUE], dtype=torch.float32)
     cfg_value_minus = torch.tensor([1.0 - CFG_VALUE], dtype=torch.float32)
-    torch.onnx.export(
-        model_G,
-        (step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus),
-        onnx_model_G,
-        input_names=['step', 'random', 'dit_hidden', 'feat_cond', 'cfg_value', 'cfg_value_minus'],
-        output_names=['next_step', 'next_random'],
-        dynamic_axes=None,
-        opset_version=OPSET,
-        dynamo=False
-    )
+    # torch.onnx.export(
+    #     model_G,
+    #     (step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus),
+    #     onnx_model_G,
+    #     input_names=['step', 'random', 'dit_hidden', 'feat_cond', 'cfg_value', 'cfg_value_minus'],
+    #     output_names=['next_step', 'next_random'],
+    #     dynamic_axes=None,
+    #     opset_version=OPSET,
+    #     dynamo=False
+    # )
     del model_G
     del step
     del random
@@ -604,20 +607,20 @@ with torch.inference_mode():
     del cfg_value_minus
 
     model_H = VOXCPM_VAE_DECODE(model, OUT_SAMPLE_RATE)
-    latent_pred = torch.ones((1, model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
-    torch.onnx.export(
-        model_H,
-        (latent_pred,),
-        onnx_model_H,
-        input_names=['latent_pred'],
-        output_names=['audio_out', 'audio_out_len'],
-        dynamic_axes={
-            'latent_pred': {1: 'latent_pred_len'},
-            'audio_out': {2: 'audio_out_len'}
-        } if DYNAMIC_SHAPE_VAE_DECODE else None,
-        opset_version=OPSET,
-        dynamo=False
-    )
+    latent_pred = torch.ones((1, model.patch_size + model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
+    # torch.onnx.export(
+    #     model_H,
+    #     (latent_pred,),
+    #     onnx_model_H,
+    #     input_names=['latent_pred'],
+    #     output_names=['audio_out', 'audio_out_len'],
+    #     dynamic_axes={
+    #         'latent_pred': {1: 'latent_pred_len'},
+    #         'audio_out': {2: 'audio_out_len'}
+    #     } if DYNAMIC_SHAPE_VAE_DECODE else None,
+    #     opset_version=OPSET,
+    #     dynamo=False
+    # )
     del model_H
     del latent_pred
     del model
@@ -779,6 +782,7 @@ in_name_H = ort_session_H.get_inputs()
 out_name_H = ort_session_H.get_outputs()
 in_name_H = in_name_H[0].name
 out_name_H = [out_name_H[i].name for i in range(len(out_name_H))]
+half_decode_len = 7056  # Fixed for VoxCPM1.5
 
 # ==============================================================================
 # 1. Configuration & Constants Calculation
@@ -988,16 +992,26 @@ for sentence in target_tts:
 
         # --- Handle Output (Stream or Save) ---
         if STREAMING:
-            input_feed_H[in_name_H] = latent_pred
-            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
-            save_audio_out.append(audio_out.numpy())
+            if num_decode < 1:
+                pre_latent_pred = latent_pred
+            else:
+                input_feed_E[in_name_E[0]] = pre_latent_pred
+                input_feed_E[in_name_E[1]] = latent_pred
+                save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                input_feed_H[in_name_H] = save_latent
+                audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+                pre_latent_pred = latent_pred
+                audio_out = audio_out.numpy()
+                if num_decode > 1:
+                    audio_out = audio_out[..., half_decode_len:]
+                save_audio_out.append(audio_out)
         else:
             if DYNAMIC_SHAPE_VAE_DECODE:
                 input_feed_E[in_name_E[0]] = save_latent
                 input_feed_E[in_name_E[1]] = latent_pred
                 save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
             else:
-                save_latent.append(latent_pred.numpy())
+                save_latent.append(latent_pred)
 
         # --- Check Stop Token ---
         if num_decode >= MIN_SEQ_LEN and all_outputs_F[num_keys_values_plus_3].numpy() in STOP_TOKEN:
@@ -1032,10 +1046,20 @@ for sentence in target_tts:
             audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
             save_audio_out.append(audio_out.numpy())
         else:
-            for latent in save_latent:
-                input_feed_H[in_name_H] = onnxruntime.OrtValue.ortvalue_from_numpy(latent, device_type, DEVICE_ID)
+            input_feed_E[in_name_E[0]] = save_latent[0]
+            input_feed_E[in_name_E[1]] = save_latent[1]
+            concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+            input_feed_H[in_name_H] = concat_latent
+            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+            save_audio_out.append(audio_out.numpy())
+            for i in range(2, len(save_latent)):
+                input_feed_E[in_name_E[0]] = save_latent[i - 1]
+                input_feed_E[in_name_E[1]] = save_latent[i]
+                concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                input_feed_H[in_name_H] = concat_latent
                 audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
-                save_audio_out.append(audio_out.numpy())
+                audio_out = audio_out.numpy()[..., half_decode_len:]
+                save_audio_out.append(audio_out)
 
     save_audio_out.append(blank_segment)
 
