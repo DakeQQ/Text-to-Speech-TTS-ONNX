@@ -71,7 +71,7 @@ if lazy_setting_CPU:
             "VoxCPM_Feat_Cond": "float32",
             "VoxCPM_Concat": "float32",
             "VoxCPM_Main": "int8",
-            "VoxCPM_Feat_Decoder": "int8",
+            "VoxCPM_Feat_Decoder": "float32",
             "VoxCPM_VAE_Decoder": "float32",
         }
     else:
