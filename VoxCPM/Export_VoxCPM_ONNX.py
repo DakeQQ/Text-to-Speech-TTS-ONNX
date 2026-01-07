@@ -551,16 +551,16 @@ with torch.inference_mode():
     output_names.append('random')
     output_names.append('dit_hidden')
     output_names.append('stop_flag')
-    # torch.onnx.export(
-    #     model_F,
-    #     tuple(all_inputs),
-    #     onnx_model_F,
-    #     input_names=input_names,
-    #     output_names=output_names,
-    #     dynamic_axes=dynamic_axes,
-    #     opset_version=OPSET,
-    #     dynamo=False
-    # )
+    torch.onnx.export(
+        model_F,
+        tuple(all_inputs),
+        onnx_model_F,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset_version=OPSET,
+        dynamo=False
+    )
     del model_F
     del all_inputs
     del base_lm_past_keys
@@ -588,16 +588,16 @@ with torch.inference_mode():
     feat_cond = torch.zeros((2, model.patch_size, model.feat_decoder.estimator.cond_proj.out_features), dtype=torch.float32)
     cfg_value = torch.tensor([CFG_VALUE], dtype=torch.float32)
     cfg_value_minus = torch.tensor([1.0 - CFG_VALUE], dtype=torch.float32)
-    # torch.onnx.export(
-    #     model_G,
-    #     (step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus),
-    #     onnx_model_G,
-    #     input_names=['step', 'random', 'dit_hidden', 'feat_cond', 'cfg_value', 'cfg_value_minus'],
-    #     output_names=['next_step', 'next_random'],
-    #     dynamic_axes=None,
-    #     opset_version=OPSET,
-    #     dynamo=False
-    # )
+    torch.onnx.export(
+        model_G,
+        (step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus),
+        onnx_model_G,
+        input_names=['step', 'random', 'dit_hidden', 'feat_cond', 'cfg_value', 'cfg_value_minus'],
+        output_names=['next_step', 'next_random'],
+        dynamic_axes=None,
+        opset_version=OPSET,
+        dynamo=False
+    )
     del model_G
     del step
     del random
@@ -608,19 +608,19 @@ with torch.inference_mode():
 
     model_H = VOXCPM_VAE_DECODE(model, OUT_SAMPLE_RATE)
     latent_pred = torch.ones((1, model.patch_size + model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
-    # torch.onnx.export(
-    #     model_H,
-    #     (latent_pred,),
-    #     onnx_model_H,
-    #     input_names=['latent_pred'],
-    #     output_names=['audio_out', 'audio_out_len'],
-    #     dynamic_axes={
-    #         'latent_pred': {1: 'latent_pred_len'},
-    #         'audio_out': {2: 'audio_out_len'}
-    #     } if DYNAMIC_SHAPE_VAE_DECODE else None,
-    #     opset_version=OPSET,
-    #     dynamo=False
-    # )
+    torch.onnx.export(
+        model_H,
+        (latent_pred,),
+        onnx_model_H,
+        input_names=['latent_pred'],
+        output_names=['audio_out', 'audio_out_len'],
+        dynamic_axes={
+            'latent_pred': {1: 'latent_pred_len'},
+            'audio_out': {2: 'audio_out_len'}
+        } if DYNAMIC_SHAPE_VAE_DECODE else None,
+        opset_version=OPSET,
+        dynamo=False
+    )
     del model_H
     del latent_pred
     del model
