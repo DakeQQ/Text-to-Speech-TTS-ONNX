@@ -71,12 +71,6 @@ def rel_shift(x, x_len, zero_pad, n_head):
     return x[:, :, :x_len]
 
 
-def normalize_to_int16(audio):
-    max_val = np.max(np.abs(audio))
-    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
-    return (audio * float(scaling_factor)).astype(np.int16)
-
-
 class IndexTTS_A(torch.nn.Module):
     def __init__(self, indexTTS, custom_stft, nfft, n_mels, sample_rate, max_signal_len):
         super(IndexTTS_A, self).__init__()
@@ -1106,8 +1100,7 @@ out_name_F0 = out_name_F[0].name
 
 
 # Run IndexTTS by ONNX Runtime
-audio = np.array(AudioSegment.from_file(reference_audio).set_channels(1).set_frame_rate(SAMPLE_RATE).get_array_of_samples(), dtype=np.float32)
-audio = normalize_to_int16(audio)
+audio = np.array(AudioSegment.from_file(reference_audio).set_channels(1).set_frame_rate(SAMPLE_RATE).get_array_of_samples(), dtype=np.int16)
 audio = audio.reshape(1, 1, -1)
 init_gpt_ids = np.array([[8192]], dtype=np.int32)
 init_gen_len = np.array([0], dtype=np.int64)
