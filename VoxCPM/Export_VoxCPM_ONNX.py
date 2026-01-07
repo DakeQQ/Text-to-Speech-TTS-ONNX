@@ -55,9 +55,9 @@ USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable i
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
 
 py_site = site.getsitepackages()[-1]
-shutil.copyfile('./modeling_modified/model.py',  path_voxcpm + '/model.py')
-shutil.copyfile('./modeling_modified/audio_vae.py',  py_site + '/voxcpm/modules/audiovae/audio_vae.py')
-shutil.copyfile('./modeling_modified/core.py',  py_site + '/voxcpm/core.py')
+shutil.copyfile('./modeling_modified/model.py', path_voxcpm + '/model.py')
+shutil.copyfile('./modeling_modified/core.py', py_site + '/voxcpm/core.py')
+shutil.copyfile('./modeling_modified/audio_vae.py', py_site + '/voxcpm/modules/audiovae/audio_vae.py')
 from voxcpm import VoxCPM
 
 
