@@ -91,12 +91,6 @@ else:
     provider_options = None
 
 
-def normalize_to_int16(audio):
-    max_val = np.max(np.abs(audio))
-    scaling_factor = 32767.0 / max_val if max_val > 0 else 1.0
-    return (audio * float(scaling_factor)).astype(np.int16)
-
-
 # Optimized version
 def tokenize_by_CJK_char(line: str, do_upper_case=True) -> str:
     """
@@ -673,8 +667,7 @@ out_name_F0 = out_name_F[0].name
 
 
 # Run IndexTTS by ONNX Runtime
-audio = np.array(AudioSegment.from_file(reference_audio).set_channels(1).set_frame_rate(SAMPLE_RATE).get_array_of_samples(), dtype=np.float32)
-audio = normalize_to_int16(audio)
+audio = np.array(AudioSegment.from_file(reference_audio).set_channels(1).set_frame_rate(SAMPLE_RATE).get_array_of_samples(), dtype=np.int16)
 audio = audio.reshape(1, 1, -1)
 audio = onnxruntime.OrtValue.ortvalue_from_numpy(audio, device_type, DEVICE_ID)
 init_gpt_ids = onnxruntime.OrtValue.ortvalue_from_numpy(np.array([[8192]], dtype=np.int32), device_type, DEVICE_ID)
