@@ -42,7 +42,7 @@ model_names = [             # Recommended quantize dtype. The int8 is best for C
     "VoxCPM_Feat_Cond",     # [float32, float16]
     "VoxCPM_Concat",        # [float32, float16]
     "VoxCPM_Main",          # [int8, float32, float16]
-    "VoxCPM_Feat_Decoder",  # [int8, float32, float16]
+    "VoxCPM_Feat_Decoder",  # [float32, int8, float16]
     "VoxCPM_VAE_Decoder"    # [float32, float16]
 ]
 
@@ -71,7 +71,7 @@ if lazy_setting_CPU:
             "VoxCPM_Feat_Cond": "float32",
             "VoxCPM_Concat": "float32",
             "VoxCPM_Main": "int8",
-            "VoxCPM_Feat_Decoder": "float32",
+            "VoxCPM_Feat_Decoder": "float32", # int8 can also work, but it will affect the quality.
             "VoxCPM_VAE_Decoder": "float32",
         }
     else:
@@ -82,7 +82,7 @@ if lazy_setting_CPU:
             "VoxCPM_Feat_Cond": "float32",
             "VoxCPM_Concat": "float32",
             "VoxCPM_Main": "int8",
-            "VoxCPM_Feat_Decoder": "int8",
+            "VoxCPM_Feat_Decoder": "float32",  # int8 can also work, but it will affect the quality.
             "VoxCPM_VAE_Decoder": "float32",
         }
 elif lazy_setting_GPU:
