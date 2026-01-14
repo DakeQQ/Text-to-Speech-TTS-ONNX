@@ -177,9 +177,6 @@ session_opts.add_session_config_entry('optimization.minimal_build_optimizations'
 session_opts.add_session_config_entry('optimization.enable_cast_chain_elimination', '1')
 run_options.add_run_config_entry('disable_synchronize_execution_providers', '1')
 
-ORT_Accelerate_Providers = ['CPUExecutionProvider']
-device_type = 'cpu'
-provider_options = None
 
 ort_session_A = onnxruntime.InferenceSession(onnx_model_A, sess_options=session_opts, providers=ORT_Accelerate_Providers, provider_options=provider_options)
 in_name_A = ort_session_A.get_inputs()
