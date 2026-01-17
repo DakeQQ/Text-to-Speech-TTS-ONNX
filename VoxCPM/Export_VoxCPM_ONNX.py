@@ -30,13 +30,12 @@ generated_audio_path = r"./generated.wav"                                       
 STOP_TOKEN = [1]                         # The stop_id in VoxCPM is "1"
 MAX_SEQ_LEN = 1024                       # The max decode length; cannot be changed after export. Free to edit it.
 MIN_SEQ_LEN = 2                          # The min decode length. Free to edit it.
-MAX_TARGET_TEXT_LEN = 256                # The max TTS text length in tokens; cannot be changed after export. Free to edit it.
 DECODE_LIMIT_FACTOR = 6                  # Decode length limit factor, integer >= 1. Free to edit it.
 
 # === Audio configuration ===
 IN_SAMPLE_RATE = 44100                      # Input prompt audio sample rate; cannot be changed after export
 OUT_SAMPLE_RATE = 44100                     # Output audio sample rate; cannot be changed after export
-MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples (20 seconds). Free to edit it.
+MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples. Free to edit it.
 
 # === ONNX / runtime configuration ===
 OPSET = 17                               # ONNX opset version. Free to edit it.
@@ -46,7 +45,7 @@ DEVICE_ID = 0                            # Device id, default 0. Free to edit it
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower. Free to edit it.
 CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
-RANDOM_SEED = 1                          # Global random seed. Free to edit it.
+RANDOM_SEED = 9527                       # Global random seed. Free to edit it.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes two latents at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
@@ -109,7 +108,7 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
 
 
 class VOXCPM_FEAT_ENCODER(torch.nn.Module):
-    def __init__(self, voxcpm, max_prompt_audio_len, max_target_text_len, in_sample_rate):
+    def __init__(self, voxcpm, max_prompt_audio_len, in_sample_rate):
         super(VOXCPM_FEAT_ENCODER, self).__init__()
         self.voxcpm = voxcpm
         max_prompt_feat_len = (max_prompt_audio_len // in_sample_rate * 44100) // (self.voxcpm.patch_size * self.voxcpm.chunk_size) + 1
@@ -123,6 +122,49 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim // 2
+        self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
+        with torch.no_grad():
+            for layer in self.voxcpm.feat_encoder.encoder.layers:
+                # 1) Fuse q/k/v into qkv
+                q_proj = layer.self_attn.q_proj
+                k_proj = layer.self_attn.k_proj
+                v_proj = layer.self_attn.v_proj
+                in_features = int(q_proj.in_features)
+                out_features = int(q_proj.out_features + k_proj.out_features + v_proj.out_features)
+                has_bias = (q_proj.bias is not None) or (k_proj.bias is not None) or (v_proj.bias is not None)
+                qkv = torch.nn.Linear(in_features, out_features, bias=has_bias)
+                qkv.weight.copy_(torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0))
+                if has_bias:
+                    z = lambda feat: torch.zeros(feat, dtype=q_proj.weight.dtype, device=q_proj.weight.device)
+                    qb = q_proj.bias if q_proj.bias is not None else z(q_proj.out_features)
+                    kb = k_proj.bias if k_proj.bias is not None else z(k_proj.out_features)
+                    vb = v_proj.bias if v_proj.bias is not None else z(v_proj.out_features)
+                    qkv.bias.copy_(torch.cat([qb, kb, vb], dim=0))
+
+                layer.self_attn.q_out_features = int(q_proj.out_features)
+                layer.self_attn.k_out_features = int(k_proj.out_features)
+                layer.self_attn.v_out_features = int(v_proj.out_features)
+                layer.self_attn.qkv = qkv
+
+                del layer.self_attn.q_proj
+                del layer.self_attn.k_proj
+                del layer.self_attn.v_proj
+
+                # 2) Fuse input rmsnorm weight into qkv input columns
+                w = layer.input_layernorm.weight.unsqueeze(0)
+                qkv.weight.mul_(w)
+                del layer.input_layernorm
+
+                # 3) Fuse post-attention rmsnorm weight into MLP gate/up input columns
+                w = layer.post_attention_layernorm.weight.unsqueeze(0)
+                layer.mlp.gate_proj.weight.mul_(w)
+                layer.mlp.up_proj.weight.mul_(w)
+                del layer.post_attention_layernorm
+
+            # 4) Fuse final norm weight into enc_to_lm_proj
+            w = self.voxcpm.feat_encoder.encoder.norm.weight.unsqueeze(0)
+            self.voxcpm.enc_to_lm_proj.weight.mul_(w)
+            del self.voxcpm.feat_encoder.encoder.norm
 
     def rotate_half(self, x, dim, split_size):
         x1, x2 = x.split(split_size, dim=dim)
@@ -140,22 +182,26 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         hidden_states = torch.cat([self.special_tokens[:audio_feat_len].float(), hidden_states], dim=-2)
         hidden_states = hidden_states.view(-1, self.q_len, self.voxcpm.feat_encoder.in_proj.out_features)
         for layer in self.voxcpm.feat_encoder.encoder.layers:
-            hidden_states_norm = layer.input_layernorm(hidden_states)
-            q = layer.self_attn.q_proj(hidden_states_norm).view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
-            k = layer.self_attn.k_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
-            v = layer.self_attn.v_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            qkv = layer.self_attn.qkv(hidden_states_norm)
+            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
+            q = q.view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
+            k = k.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
+            v = v.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
             q = q * self.rope_emb_cos_q + self.rotate_half(q, -1, self.split_size) * self.rope_emb_sin_q
             k = k * self.rope_emb_cos_k + self.rotate_half(k, -2, self.split_size) * self.rope_emb_sin_k
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
-            attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(1, 2).contiguous().view(-1, self.q_len, layer.self_attn.o_proj.in_features))
+            attn = torch.matmul(attn, v).transpose(1, 2).reshape(-1, self.q_len, layer.self_attn.o_proj.in_features)
+            attn_out = layer.self_attn.o_proj(attn)
             hidden_states += attn_out
             residual = hidden_states
-            hidden_states = layer.post_attention_layernorm(hidden_states)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
             hidden_states = layer.mlp(hidden_states)
             hidden_states += residual
-        feat_embed = self.voxcpm.feat_encoder.encoder.norm(hidden_states[:, 0])
+        feat_embed = hidden_states[:, 0]
+        feat_embed = feat_embed * torch.rsqrt(feat_embed.square().mean(-1, keepdim=True) + self.variance_epsilon)
         feat_embed = self.voxcpm.enc_to_lm_proj(feat_embed).unsqueeze(0)
         return feat_embed
 
@@ -186,8 +232,8 @@ class VOXCPM_MAIN(torch.nn.Module):
         super(VOXCPM_MAIN, self).__init__()
         self.voxcpm = voxcpm
         position_ids = torch.arange(max_seq_len, dtype=torch.int32)
-        rope_emb_cos, rope_emb_sin = self.voxcpm.base_lm.rope_emb(position_ids)
         self.scale_factor_base = float(self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim ** -0.25)
+        rope_emb_cos, rope_emb_sin = self.voxcpm.base_lm.rope_emb(position_ids)
         self.cos_rotary_pos_emb = (rope_emb_cos.unsqueeze(0) * self.scale_factor_base).half()
         self.sin_rotary_pos_emb = (rope_emb_sin.unsqueeze(0) * self.scale_factor_base).half()
         self.total_layers = self.voxcpm.base_lm.config.num_hidden_layers + self.voxcpm.residual_lm.config.num_hidden_layers
@@ -196,6 +242,45 @@ class VOXCPM_MAIN(torch.nn.Module):
         self.attention_mask = (1 - torch.tril(torch.ones([1, max_seq_len, max_seq_len], dtype=torch.int8))) * -128
         self.split_size_base = self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim // 2
         self.split_size_residual = self.voxcpm.residual_lm.layers._modules['0'].self_attn.head_dim // 2
+        self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
+        with torch.no_grad():
+            self._fuse_layers(self.voxcpm.base_lm.layers)
+            self._fuse_layers(self.voxcpm.residual_lm.layers)
+
+    def _fuse_layers(self, layers):
+        for layer in layers:
+            q_proj = layer.self_attn.q_proj
+            k_proj = layer.self_attn.k_proj
+            v_proj = layer.self_attn.v_proj
+            in_features = int(q_proj.in_features)
+            out_features = int(q_proj.out_features + k_proj.out_features + v_proj.out_features)
+            has_bias = (q_proj.bias is not None) or (k_proj.bias is not None) or (v_proj.bias is not None)
+            qkv = torch.nn.Linear(in_features, out_features, bias=has_bias)
+            qkv.weight.copy_(torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0))
+            if has_bias:
+                z = lambda feat: torch.zeros(feat, dtype=q_proj.weight.dtype, device=q_proj.weight.device)
+                qb = q_proj.bias if q_proj.bias is not None else z(q_proj.out_features)
+                kb = k_proj.bias if k_proj.bias is not None else z(k_proj.out_features)
+                vb = v_proj.bias if v_proj.bias is not None else z(v_proj.out_features)
+                qkv.bias.copy_(torch.cat([qb, kb, vb], dim=0))
+
+            layer.self_attn.q_out_features = int(q_proj.out_features)
+            layer.self_attn.k_out_features = int(k_proj.out_features)
+            layer.self_attn.v_out_features = int(v_proj.out_features)
+            layer.self_attn.qkv = qkv
+
+            del layer.self_attn.q_proj
+            del layer.self_attn.k_proj
+            del layer.self_attn.v_proj
+
+            w = layer.input_layernorm.weight.unsqueeze(0)
+            qkv.weight.mul_(w)
+            del layer.input_layernorm
+
+            w = layer.post_attention_layernorm.weight.unsqueeze(0)
+            layer.mlp.gate_proj.weight.mul_(w)
+            layer.mlp.up_proj.weight.mul_(w)
+            del layer.post_attention_layernorm
 
     def rotate_half(self, x, dim, split_size):
         x1, x2 = x.split(split_size, dim=dim)
@@ -213,17 +298,20 @@ class VOXCPM_MAIN(torch.nn.Module):
         concat_text_len = all_inputs[-4]
         hidden_states = all_inputs[-3]
         ids_len = all_inputs[-2]
+        mask = all_inputs[-1]
         kv_seq_len = history_len + ids_len
         rotary_pos_emb_cos_q = self.cos_rotary_pos_emb[:, history_len:kv_seq_len].float()
         rotary_pos_emb_sin_q = self.sin_rotary_pos_emb[:, history_len:kv_seq_len].float()
         rotary_pos_emb_cos_k = rotary_pos_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         rotary_pos_emb_sin_k = rotary_pos_emb_sin_q.transpose(-1, -2).unsqueeze(0)
-        attention_mask = (self.attention_mask[..., :ids_len, :kv_seq_len] * all_inputs[-1]).float()
+        attention_mask = (self.attention_mask[..., :ids_len, :kv_seq_len] * mask).float()
         for i, layer in enumerate(self.voxcpm.base_lm.layers):
-            hidden_states_norm = layer.input_layernorm(hidden_states)
-            q = layer.self_attn.q_proj(hidden_states_norm).view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
-            k = layer.self_attn.k_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
-            v = layer.self_attn.v_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            qkv = layer.self_attn.qkv(hidden_states_norm)
+            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
+            q = q.view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
+            k = k.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
+            v = v.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
             q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1, self.split_size_base) * rotary_pos_emb_sin_q
             k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2, self.split_size_base) * rotary_pos_emb_sin_k
             k = torch.cat((all_inputs[i], k), dim=-1)
@@ -233,10 +321,11 @@ class VOXCPM_MAIN(torch.nn.Module):
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
             attn = torch.nn.functional.softmax(torch.matmul(q, k) + attention_mask, dim=-1, dtype=torch.float32)
-            attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(0, 1).contiguous().view(1, -1, layer.self_attn.o_proj.in_features))
+            attn = torch.matmul(attn, v).transpose(0, 1).reshape(1, -1, layer.self_attn.o_proj.in_features)
+            attn_out = layer.self_attn.o_proj(attn)
             hidden_states += attn_out
             residual = hidden_states
-            hidden_states = layer.post_attention_layernorm(hidden_states)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
             hidden_states = layer.mlp(hidden_states)
             hidden_states += residual
         hidden_states = self.voxcpm.base_lm.norm(hidden_states)
@@ -246,10 +335,12 @@ class VOXCPM_MAIN(torch.nn.Module):
         hidden_states = torch.cat([hidden_states, fsq_layer_out + feat_embed], dim=1)
         i = self.voxcpm.base_lm.config.num_hidden_layers
         for layer in self.voxcpm.residual_lm.layers:
-            hidden_states_norm = layer.input_layernorm(hidden_states)
-            q = layer.self_attn.q_proj(hidden_states_norm).view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
-            k = layer.self_attn.k_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
-            v = layer.self_attn.v_proj(hidden_states_norm).view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            qkv = layer.self_attn.qkv(hidden_states_norm)
+            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
+            q = q.view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
+            k = k.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
+            v = v.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
             q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1, self.split_size_residual) * rotary_pos_emb_sin_q
             k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2, self.split_size_residual) * rotary_pos_emb_sin_k
             k = torch.cat((all_inputs[i], k), dim=-1)
@@ -259,10 +350,11 @@ class VOXCPM_MAIN(torch.nn.Module):
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads)
             attn = torch.nn.functional.softmax(torch.matmul(q, k) + attention_mask, dim=-1, dtype=torch.float32)
-            attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(0, 1).contiguous().view(1, -1, layer.self_attn.o_proj.in_features))
+            attn = torch.matmul(attn, v).transpose(0, 1).reshape(1, -1, layer.self_attn.o_proj.in_features)
+            attn_out = layer.self_attn.o_proj(attn)
             hidden_states += attn_out
             residual = hidden_states
-            hidden_states = layer.post_attention_layernorm(hidden_states)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
             hidden_states = layer.mlp(hidden_states)
             hidden_states += residual
             i += 1
@@ -300,6 +392,49 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim // 2
+        self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
+        with torch.no_grad():
+            for layer in self.voxcpm.feat_decoder.estimator.decoder.layers:
+                # 1) Fuse q/k/v into qkv
+                q_proj = layer.self_attn.q_proj
+                k_proj = layer.self_attn.k_proj
+                v_proj = layer.self_attn.v_proj
+                in_features = int(q_proj.in_features)
+                out_features = int(q_proj.out_features + k_proj.out_features + v_proj.out_features)
+                has_bias = (q_proj.bias is not None) or (k_proj.bias is not None) or (v_proj.bias is not None)
+                qkv = torch.nn.Linear(in_features, out_features, bias=has_bias)
+                qkv.weight.copy_(torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0))
+                if has_bias:
+                    z = lambda feat: torch.zeros(feat, dtype=q_proj.weight.dtype, device=q_proj.weight.device)
+                    qb = q_proj.bias if q_proj.bias is not None else z(q_proj.out_features)
+                    kb = k_proj.bias if k_proj.bias is not None else z(k_proj.out_features)
+                    vb = v_proj.bias if v_proj.bias is not None else z(v_proj.out_features)
+                    qkv.bias.copy_(torch.cat([qb, kb, vb], dim=0))
+
+                layer.self_attn.q_out_features = int(q_proj.out_features)
+                layer.self_attn.k_out_features = int(k_proj.out_features)
+                layer.self_attn.v_out_features = int(v_proj.out_features)
+                layer.self_attn.qkv = qkv
+
+                del layer.self_attn.q_proj
+                del layer.self_attn.k_proj
+                del layer.self_attn.v_proj
+
+                # 2) Fuse input rmsnorm weight
+                w = layer.input_layernorm.weight.unsqueeze(0)
+                qkv.weight.mul_(w)
+                del layer.input_layernorm
+
+                # 3) Fuse post-attention rmsnorm weight
+                w = layer.post_attention_layernorm.weight.unsqueeze(0)
+                layer.mlp.gate_proj.weight.mul_(w)
+                layer.mlp.up_proj.weight.mul_(w)
+                del layer.post_attention_layernorm
+
+            # 4) Fuse final norm weight into out_proj
+            w = self.voxcpm.feat_decoder.estimator.decoder.norm.weight.unsqueeze(0)
+            self.voxcpm.feat_decoder.estimator.out_proj.weight.mul_(w)
+            del self.voxcpm.feat_decoder.estimator.decoder.norm
 
     def rotate_half(self, x, dim, split_size):
         x1, x2 = x.split(split_size, dim=dim)
@@ -320,24 +455,28 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         x = torch.cat([x, x], dim=0)
         hidden_states = torch.cat([dit_hidden, feat_cond, x], dim=1)
         for layer in self.voxcpm.feat_decoder.estimator.decoder.layers:
-            hidden_states_norm = layer.input_layernorm(hidden_states)
-            q = layer.self_attn.q_proj(hidden_states_norm).view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
-            k = layer.self_attn.k_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
-            v = layer.self_attn.v_proj(hidden_states_norm).view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            qkv = layer.self_attn.qkv(hidden_states_norm)
+            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
+            q = q.view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
+            k = k.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
+            v = v.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
             q = q * self.rope_emb_cos_q + self.rotate_half(q, -1, self.split_size) * self.rope_emb_sin_q
             k = k * self.rope_emb_cos_k + self.rotate_half(k, -2, self.split_size) * self.rope_emb_sin_k
             k = self.repeat_k(k, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             v = self.repeat_v(v, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim, layer.self_attn.num_heads, self.q_len)
             attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
-            attn_out = layer.self_attn.o_proj(torch.matmul(attn, v).transpose(1, 2).contiguous().view(-1, self.q_len, layer.self_attn.o_proj.in_features))
+            attn = torch.matmul(attn, v).transpose(1, 2).reshape(-1, self.q_len, layer.self_attn.o_proj.in_features)
+            attn_out = layer.self_attn.o_proj(attn)
             hidden_states += attn_out
             residual = hidden_states
-            hidden_states = layer.post_attention_layernorm(hidden_states)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
             hidden_states = layer.mlp(hidden_states)
             hidden_states += residual
         hidden_states = hidden_states[:, self.prefix_plus:]
-        hidden_states = self.voxcpm.feat_decoder.estimator.decoder.norm(hidden_states)
-        dphi_dt, cfg_dphi_dt = self.voxcpm.feat_decoder.estimator.out_proj(hidden_states).chunk(2, dim=0)
+        hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+        hidden_states = self.voxcpm.feat_decoder.estimator.out_proj(hidden_states)
+        dphi_dt, cfg_dphi_dt = hidden_states.split([1, 1], dim=0)
         positive_flat = dphi_dt.view(1, 1, -1)
         negative_flat = cfg_dphi_dt.view(1, -1, 1)
         dot_product = torch.matmul(positive_flat, negative_flat)
@@ -386,6 +525,9 @@ with torch.inference_mode():
     model = VoxCPM.from_pretrained(path_voxcpm, load_denoiser=False, optimize=False).tts_model
     model = model.float().to('cpu').eval()
 
+    # ============================================================================
+    # Model A: Text Embedding
+    # ============================================================================
     model_A = VOXCPM_TEXT_EMBED(model)
     text_ids = torch.zeros([1, 10], dtype=torch.int32)  # "10" is just a dummy value.
     torch.onnx.export(
@@ -404,6 +546,9 @@ with torch.inference_mode():
     del model_A
     del text_ids
 
+    # ============================================================================
+    # Model B: VAE Encoder
+    # ============================================================================
     model_B = VOXCPM_VAE_ENCODER(model, IN_SAMPLE_RATE)
     prompt_audio = torch.zeros([1, 1, MAX_PROMPT_AUDIO_LEN], dtype=torch.int16)
     torch.onnx.export(
@@ -422,7 +567,10 @@ with torch.inference_mode():
     del model_B
     del prompt_audio
 
-    model_C = VOXCPM_FEAT_ENCODER(model, MAX_PROMPT_AUDIO_LEN, MAX_TARGET_TEXT_LEN, IN_SAMPLE_RATE)
+    # ============================================================================
+    # Model C: Feature Encoder
+    # ============================================================================
+    model_C = VOXCPM_FEAT_ENCODER(model, MAX_PROMPT_AUDIO_LEN, IN_SAMPLE_RATE)
     audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
     torch.onnx.export(
         model_C,
@@ -440,6 +588,9 @@ with torch.inference_mode():
     del model_C
     del audio_feat
 
+    # ============================================================================
+    # Model D: Feature Conditioning
+    # ============================================================================
     model_D = VOXCPM_FEAT_COND(model)
     audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
     torch.onnx.export(
@@ -457,6 +608,9 @@ with torch.inference_mode():
     del model_D
     del audio_feat
 
+    # ============================================================================
+    # Model E: Concatenation
+    # ============================================================================
     model_E = VOXCPM_CONCAT()
     embed_0 = torch.zeros([1, 10, model.feat_encoder.config.hidden_size], dtype=torch.float32)     # "10" is just a dummy value.
     embed_1 = torch.zeros([1, 10, model.base_lm.embed_tokens.embedding_dim], dtype=torch.float32)
@@ -478,79 +632,109 @@ with torch.inference_mode():
     del embed_0
     del embed_1
 
+    # ============================================================================
+    # Model F: Main Model (with KV cache)
+    # ============================================================================
     model_F = VOXCPM_MAIN(model, MAX_SEQ_LEN)
+
+    # Extract model dimensions
     base_lm_head_dim = model.base_lm.layers._modules['0'].self_attn.head_dim
     base_lm_num_key_value_heads = model.base_lm.layers._modules['0'].self_attn.num_key_value_heads
     residual_lm_head_dim = model.residual_lm.layers._modules['0'].self_attn.head_dim
     residual_lm_num_key_value_heads = model.residual_lm.layers._modules['0'].self_attn.num_key_value_heads
-    ids_len = torch.tensor([25], dtype=torch.int64)             # "25" is just a dummy value.
+    base_lm_num_attn_layers = model.base_lm.config.num_hidden_layers
+    residual_lm_num_attn_layers = model.residual_lm.config.num_hidden_layers
+
+    # Create dummy inputs
+    ids_len = torch.tensor([25], dtype=torch.int64)              # "25" is just a dummy value.
     concat_text_len = torch.tensor([10], dtype=torch.int64)      # "10" is just a dummy value.
     feat_embed = torch.zeros([1, ids_len - concat_text_len, model.feat_encoder.config.hidden_size], dtype=torch.float32)
     hidden_states = torch.ones((1, ids_len, model.base_lm.embed_tokens.embedding_dim), dtype=torch.float32)
     history_len = torch.tensor([0], dtype=torch.int64)
+    attention_mask = torch.tensor([1], dtype=torch.int8)
+
     base_lm_past_keys = torch.zeros((base_lm_num_key_value_heads, 1, base_lm_head_dim, 0), dtype=torch.float32)
     base_lm_past_values = torch.zeros((base_lm_num_key_value_heads, 1, 0, base_lm_head_dim), dtype=torch.float32)
     residual_lm_past_keys = torch.zeros((residual_lm_num_key_value_heads, 1, residual_lm_head_dim, 0), dtype=torch.float32)
     residual_lm_past_values = torch.zeros((residual_lm_num_key_value_heads, 1, 0, residual_lm_head_dim), dtype=torch.float32)
-    base_lm_num_attn_layers = model.base_lm.config.num_hidden_layers
-    residual_lm_num_attn_layers = model.residual_lm.config.num_hidden_layers
-    attention_mask = torch.tensor([1], dtype=torch.int8)
 
     # Prepare input and output names
     all_inputs = []
     input_names = []
     output_names = []
     dynamic_axes = {}
+
+    # Base LM keys
     for i in range(base_lm_num_attn_layers):
         name = f'in_key_{i}'
         input_names.append(name)
         all_inputs.append(base_lm_past_keys)
         dynamic_axes[name] = {3: 'history_len'}
+
         name = f'out_key_{i}'
         output_names.append(name)
         dynamic_axes[name] = {3: 'kv_seq_len'}
+
+    # Residual LM keys
     for i in range(base_lm_num_attn_layers, base_lm_num_attn_layers + residual_lm_num_attn_layers):
         name = f'in_key_{i}'
         input_names.append(name)
         all_inputs.append(residual_lm_past_keys)
         dynamic_axes[name] = {3: 'history_len'}
+
         name = f'out_key_{i}'
         output_names.append(name)
         dynamic_axes[name] = {3: 'kv_seq_len'}
+
+    # Base LM values
     for i in range(base_lm_num_attn_layers):
         name = f'in_value_{i}'
         input_names.append(name)
         all_inputs.append(base_lm_past_values)
         dynamic_axes[name] = {2: 'history_len'}
+
         name = f'out_value_{i}'
         output_names.append(name)
         dynamic_axes[name] = {2: 'kv_seq_len'}
+
+    # Residual LM values
     for i in range(base_lm_num_attn_layers, base_lm_num_attn_layers + residual_lm_num_attn_layers):
         name = f'in_value_{i}'
         input_names.append(name)
         all_inputs.append(residual_lm_past_values)
         dynamic_axes[name] = {2: 'history_len'}
+
         name = f'out_value_{i}'
         output_names.append(name)
         dynamic_axes[name] = {2: 'kv_seq_len'}
+
+    # Other inputs
     input_names.append('history_len')
     all_inputs.append(history_len)
+
     input_names.append('feat_embed')
     all_inputs.append(feat_embed)
     dynamic_axes["feat_embed"] = {1: 'audio_feat_len'}
+
     input_names.append('concat_text_len')
     all_inputs.append(concat_text_len)
+
     input_names.append('hidden_states')
     all_inputs.append(hidden_states)
     dynamic_axes["hidden_states"] = {1: 'ids_len'}
+
     input_names.append('ids_len')
     all_inputs.append(ids_len)
+
     input_names.append('attention_mask')
     all_inputs.append(attention_mask)
+
+    # Other outputs
     output_names.append('kv_seq_len')
     output_names.append('random')
     output_names.append('dit_hidden')
     output_names.append('stop_flag')
+
     torch.onnx.export(
         model_F,
         tuple(all_inputs),
@@ -561,6 +745,7 @@ with torch.inference_mode():
         opset_version=OPSET,
         dynamo=False
     )
+
     del model_F
     del all_inputs
     del base_lm_past_keys
@@ -581,6 +766,9 @@ with torch.inference_mode():
     del residual_lm_head_dim
     del residual_lm_num_key_value_heads
 
+    # ============================================================================
+    # Model G: Feature Decoder (Diffusion)
+    # ============================================================================
     model_G = VOXCPM_FEAT_DECODER(model, FIXED_TIMESTEPS)
     step = torch.tensor([0], dtype=torch.int32)
     random = torch.ones((1, model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
@@ -606,6 +794,9 @@ with torch.inference_mode():
     del cfg_value
     del cfg_value_minus
 
+    # ============================================================================
+    # Model H: VAE Decoder
+    # ============================================================================
     model_H = VOXCPM_VAE_DECODE(model, OUT_SAMPLE_RATE)
     latent_pred = torch.ones((1, model.patch_size + model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
     torch.onnx.export(
@@ -625,7 +816,6 @@ with torch.inference_mode():
     del latent_pred
     del model
     gc.collect()
-
 print('\nExport done!\n\nStart running the VoxCPM by ONNXRuntime.\nNow loading . . . it could cost minutes.')
 
 
