@@ -157,8 +157,20 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
 
                 # 3) Fuse post-attention rmsnorm weight into MLP gate/up input columns
                 w = layer.post_attention_layernorm.weight.unsqueeze(0)
-                layer.mlp.gate_proj.weight.mul_(w)
-                layer.mlp.up_proj.weight.mul_(w)
+                gate = layer.mlp.gate_proj
+                up = layer.mlp.up_proj
+
+                in_feat = gate.in_features
+                out_feat = gate.out_features + up.out_features
+                gate_up = torch.nn.Linear(in_feat, out_feat, bias=False)
+
+                gate_weight = gate.weight * w
+                up_weight = up.weight * w
+                gate_up.weight.copy_(torch.cat([gate_weight, up_weight], dim=0))
+
+                layer.mlp.gate_up_proj = gate_up
+                del layer.mlp.gate_proj
+                del layer.mlp.up_proj
                 del layer.post_attention_layernorm
 
             # 4) Fuse final norm weight into enc_to_lm_proj
@@ -198,7 +210,9 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
             hidden_states += attn_out
             residual = hidden_states
             hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
-            hidden_states = layer.mlp(hidden_states)
+            gate_up = layer.mlp.gate_up_proj(hidden_states)
+            gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
+            hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
             hidden_states += residual
         feat_embed = hidden_states[:, 0]
         feat_embed = feat_embed * torch.rsqrt(feat_embed.square().mean(-1, keepdim=True) + self.variance_epsilon)
@@ -278,8 +292,20 @@ class VOXCPM_MAIN(torch.nn.Module):
             del layer.input_layernorm
 
             w = layer.post_attention_layernorm.weight.unsqueeze(0)
-            layer.mlp.gate_proj.weight.mul_(w)
-            layer.mlp.up_proj.weight.mul_(w)
+            gate = layer.mlp.gate_proj
+            up = layer.mlp.up_proj
+
+            in_feat = gate.in_features
+            out_feat = gate.out_features + up.out_features
+            gate_up = torch.nn.Linear(in_feat, out_feat, bias=False)
+
+            gate_weight = gate.weight * w
+            up_weight = up.weight * w
+            gate_up.weight.copy_(torch.cat([gate_weight, up_weight], dim=0))
+
+            layer.mlp.gate_up_proj = gate_up
+            del layer.mlp.gate_proj
+            del layer.mlp.up_proj
             del layer.post_attention_layernorm
 
     def rotate_half(self, x, dim, split_size):
@@ -326,7 +352,9 @@ class VOXCPM_MAIN(torch.nn.Module):
             hidden_states += attn_out
             residual = hidden_states
             hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
-            hidden_states = layer.mlp(hidden_states)
+            gate_up = layer.mlp.gate_up_proj(hidden_states)
+            gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
+            hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
             hidden_states += residual
         hidden_states = self.voxcpm.base_lm.norm(hidden_states)
         fsq_layer_out = self.voxcpm.fsq_layer(hidden_states[:, concat_text_len:])
@@ -355,7 +383,9 @@ class VOXCPM_MAIN(torch.nn.Module):
             hidden_states += attn_out
             residual = hidden_states
             hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
-            hidden_states = layer.mlp(hidden_states)
+            gate_up = layer.mlp.gate_up_proj(hidden_states)
+            gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
+            hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
             hidden_states += residual
             i += 1
         residual_hidden = self.voxcpm.residual_lm.norm(hidden_states[:, [-1]])
@@ -427,8 +457,20 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
 
                 # 3) Fuse post-attention rmsnorm weight
                 w = layer.post_attention_layernorm.weight.unsqueeze(0)
-                layer.mlp.gate_proj.weight.mul_(w)
-                layer.mlp.up_proj.weight.mul_(w)
+                gate = layer.mlp.gate_proj
+                up = layer.mlp.up_proj
+
+                in_feat = gate.in_features
+                out_feat = gate.out_features + up.out_features
+                gate_up = torch.nn.Linear(in_feat, out_feat, bias=False)
+
+                gate_weight = gate.weight * w
+                up_weight = up.weight * w
+                gate_up.weight.copy_(torch.cat([gate_weight, up_weight], dim=0))
+
+                layer.mlp.gate_up_proj = gate_up
+                del layer.mlp.gate_proj
+                del layer.mlp.up_proj
                 del layer.post_attention_layernorm
 
             # 4) Fuse final norm weight into out_proj
@@ -471,7 +513,9 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             hidden_states += attn_out
             residual = hidden_states
             hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
-            hidden_states = layer.mlp(hidden_states)
+            gate_up = layer.mlp.gate_up_proj(hidden_states)
+            gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
+            hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
             hidden_states += residual
         hidden_states = hidden_states[:, self.prefix_plus:]
         hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
@@ -890,7 +934,7 @@ session_opts.add_session_config_entry('session.graph_optimizations_loop_level', 
 session_opts.add_session_config_entry('optimization.enable_gelu_approximation', '1')
 session_opts.add_session_config_entry('optimization.minimal_build_optimizations', '')
 session_opts.add_session_config_entry('optimization.enable_cast_chain_elimination', '1')
-run_options.add_run_config_entry('disable_synchronize_execution_providers', '1')
+run_options.add_run_config_entry('disable_synchronize_execution_providers', '0')
 
 ORT_Accelerate_Providers = ['CPUExecutionProvider']
 device_type = 'cpu'
