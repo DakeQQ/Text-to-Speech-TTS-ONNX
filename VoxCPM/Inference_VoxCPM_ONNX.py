@@ -323,11 +323,11 @@ input_feed_I = {}
 
 # Session A: Audio Start Embedding
 input_feed_A[in_name_A] = init_audio_start_ids
-audio_start_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)[0]
+audio_start_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A, run_options=run_options)[0]
 
 # Session D: IO Binding & Initialization
 input_feed_D[in_name_D] = onnxruntime.OrtValue.ortvalue_from_numpy(np.zeros([1, ort_session_D._inputs_meta[0].shape[1], ort_session_D._inputs_meta[0].shape[2]], dtype=model_dtype_D), device_type, DEVICE_ID)
-init_feat_cond_0 = ort_session_D.run_with_ort_values(out_name_D, input_feed_D)[0]
+init_feat_cond_0 = ort_session_D.run_with_ort_values(out_name_D, input_feed_D, run_options=run_options)[0]
 
 # Session G: IO Binding & Fixed Inputs
 input_feed_G[in_name_G[4]] = cfg_value
@@ -359,11 +359,11 @@ count_time = time.time()
 if use_prompt_audio:
     # Run Audio Encoder (Session B)
     input_feed_B[in_name_B] = audio
-    audio_feat = ort_session_B.run_with_ort_values(out_name_B, input_feed_B)[0]
+    audio_feat = ort_session_B.run_with_ort_values(out_name_B, input_feed_B, run_options=run_options)[0]
     
     # Run Feature Condition (Session D)
     input_feed_D[in_name_D] = audio_feat
-    init_feat_cond = ort_session_D.run_with_ort_values(out_name_D, input_feed_D)[0]
+    init_feat_cond = ort_session_D.run_with_ort_values(out_name_D, input_feed_D, run_options=run_options)[0]
     
     # Process Text
     if USE_TEXT_NORMALIZER:
@@ -373,7 +373,7 @@ if use_prompt_audio:
     
     # Run Text Encoder (Session A)
     input_feed_A[in_name_A] = onnxruntime.OrtValue.ortvalue_from_numpy(prompt_ids, device_type, DEVICE_ID)
-    prompt_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)[0]
+    prompt_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A, run_options=run_options)[0]
 else:
     # Use Defaults
     init_feat_cond = init_feat_cond_0
@@ -392,26 +392,26 @@ for sentence in target_tts:
     # 5.1 Encode Target Text
     target_ids = np.array([tokenizer(sentence)], dtype=np.int32)
     input_feed_A[in_name_A] = onnxruntime.OrtValue.ortvalue_from_numpy(target_ids, device_type, DEVICE_ID)
-    target_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)[0]
+    target_embed = ort_session_A.run_with_ort_values(out_name_A, input_feed_A, run_options=run_options)[0]
     
     # 5.2 Combine Embeddings (Session E)
     if use_prompt_audio:
         input_feed_E[in_name_E[0]] = prompt_embed
         input_feed_E[in_name_E[1]] = target_embed
-        target_embed, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+        target_embed, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
 
     input_feed_E[in_name_E[0]] = target_embed
     input_feed_E[in_name_E[1]] = audio_start_embed
-    concat_embed, concat_text_len = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+    concat_embed, concat_text_len = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
 
     # 5.3 Calculate Max Length & Initial Features
     if use_prompt_audio:
         input_feed_C[in_name_C] = audio_feat
-        feat_embed = ort_session_C.run_with_ort_values(out_name_C, input_feed_C)[0]
+        feat_embed = ort_session_C.run_with_ort_values(out_name_C, input_feed_C, run_options=run_options)[0]
         
         input_feed_E[in_name_E[0]] = concat_embed
         input_feed_E[in_name_E[1]] = feat_embed
-        concat_embed, ids_len = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+        concat_embed, ids_len = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
     else:
         feat_embed = init_feat_embed
         ids_len = concat_text_len
@@ -447,7 +447,7 @@ for sentence in target_tts:
     
     while num_decode < max_len:
         # --- Run Transformer (Session F) ---
-        all_outputs_F = ort_session_F.run_with_ort_values(out_name_F, input_feed_F)
+        all_outputs_F = ort_session_F.run_with_ort_values(out_name_F, input_feed_F, run_options=run_options)
 
         # --- Run Flow Matching / Diffusion (Session G) ---
         input_feed_G[in_name_G[0]] = init_cfm_steps
@@ -456,7 +456,7 @@ for sentence in target_tts:
         input_feed_G[in_name_G[3]] = feat_cond
 
         for i in range(timesteps):
-            all_outputs_G = ort_session_G.run_with_ort_values(out_name_G, input_feed_G)
+            all_outputs_G = ort_session_G.run_with_ort_values(out_name_G, input_feed_G, run_options=run_options)
             input_feed_G[in_name_G[0]] = all_outputs_G[0]
             input_feed_G[in_name_G[1]] = all_outputs_G[1]
 
@@ -469,9 +469,9 @@ for sentence in target_tts:
             else:
                 input_feed_E[in_name_E[0]] = pre_latent_pred
                 input_feed_E[in_name_E[1]] = latent_pred
-                save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
                 input_feed_H[in_name_H] = save_latent
-                audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+                audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H, run_options=run_options)
                 pre_latent_pred = latent_pred
                 audio_out = audio_out.numpy()
                 if num_decode > 1:
@@ -481,7 +481,7 @@ for sentence in target_tts:
             if DYNAMIC_SHAPE_VAE_DECODE:
                 input_feed_E[in_name_E[0]] = save_latent
                 input_feed_E[in_name_E[1]] = latent_pred
-                save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                save_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
             else:
                 save_latent.append(latent_pred)
 
@@ -491,10 +491,10 @@ for sentence in target_tts:
 
         # --- Update Inputs for Next Iteration ---
         input_feed_C[in_name_C] = latent_pred
-        feat_embed = ort_session_C.run_with_ort_values(out_name_C, input_feed_C)[0]
+        feat_embed = ort_session_C.run_with_ort_values(out_name_C, input_feed_C, run_options=run_options)[0]
 
         input_feed_D[in_name_D] = latent_pred
-        feat_cond = ort_session_D.run_with_ort_values(out_name_D, input_feed_D)[0]
+        feat_cond = ort_session_D.run_with_ort_values(out_name_D, input_feed_D, run_options=run_options)[0]
 
         input_feed_F.update(zip(in_name_F[:num_keys_values_plus_1], all_outputs_F))
         input_feed_F[in_name_F[num_keys_values_plus_1]] = feat_embed
@@ -515,21 +515,21 @@ for sentence in target_tts:
     if not STREAMING:
         if DYNAMIC_SHAPE_VAE_DECODE:
             input_feed_H[in_name_H] = save_latent
-            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H, run_options=run_options)
             save_audio_out.append(audio_out.numpy())
         else:
             input_feed_E[in_name_E[0]] = save_latent[0]
             input_feed_E[in_name_E[1]] = save_latent[1]
-            concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+            concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
             input_feed_H[in_name_H] = concat_latent
-            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+            audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H, run_options=run_options)
             save_audio_out.append(audio_out.numpy())
             for i in range(2, len(save_latent)):
                 input_feed_E[in_name_E[0]] = save_latent[i - 1]
                 input_feed_E[in_name_E[1]] = save_latent[i]
-                concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E)
+                concat_latent, _ = ort_session_E.run_with_ort_values(out_name_E, input_feed_E, run_options=run_options)
                 input_feed_H[in_name_H] = concat_latent
-                audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H)
+                audio_out, _ = ort_session_H.run_with_ort_values(out_name_H, input_feed_H, run_options=run_options)
                 audio_out = audio_out.numpy()[..., half_decode_len:]
                 save_audio_out.append(audio_out)
 
