@@ -52,12 +52,17 @@ STREAMING = False                        # Enable streaming synthesis. Free to e
 DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable it.
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
+PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16 or Q8F16 or F16 quantization.
+
 
 py_site = site.getsitepackages()[-1]
 shutil.copyfile('./modeling_modified/model.py', path_voxcpm + '/model.py')
 shutil.copyfile('./modeling_modified/core.py', py_site + '/voxcpm/core.py')
 shutil.copyfile('./modeling_modified/audio_vae.py', py_site + '/voxcpm/modules/audiovae/audio_vae.py')
 from voxcpm import VoxCPM
+
+
+STOP_TOKEN = set(STOP_TOKEN) if isinstance(STOP_TOKEN, (list, tuple)) else {STOP_TOKEN}
 
 
 class VOXCPM_TEXT_EMBED(torch.nn.Module):
@@ -111,6 +116,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
     def __init__(self, voxcpm, max_prompt_audio_len, in_sample_rate):
         super(VOXCPM_FEAT_ENCODER, self).__init__()
         self.voxcpm = voxcpm
+        self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         max_prompt_feat_len = (max_prompt_audio_len // in_sample_rate * 44100) // (self.voxcpm.patch_size * self.voxcpm.chunk_size) + 1
         self.special_tokens = self.voxcpm.feat_encoder.special_token.expand(1, max_prompt_feat_len, 1, -1).squeeze(0).half()
         self.q_len = self.voxcpm.patch_size + 1  # Fixed to 5 for VoxCPM1.5
@@ -123,6 +129,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim // 2
         self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
+        self.norm_factor = self.voxcpm.feat_encoder.encoder.config.hidden_size ** 0.5
         with torch.no_grad():
             for layer in self.voxcpm.feat_encoder.encoder.layers:
                 # 1) Fuse q/k/v into qkv
@@ -151,12 +158,12 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
                 del layer.self_attn.v_proj
 
                 # 2) Fuse input rmsnorm weight into qkv input columns
-                w = layer.input_layernorm.weight.unsqueeze(0)
+                w = layer.input_layernorm.weight.unsqueeze(0) * self.norm_factor
                 qkv.weight.mul_(w)
                 del layer.input_layernorm
 
                 # 3) Fuse post-attention rmsnorm weight into MLP gate/up input columns
-                w = layer.post_attention_layernorm.weight.unsqueeze(0)
+                w = layer.post_attention_layernorm.weight.unsqueeze(0) * self.norm_factor
                 gate = layer.mlp.gate_proj
                 up = layer.mlp.up_proj
 
@@ -174,7 +181,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
                 del layer.post_attention_layernorm
 
             # 4) Fuse final norm weight into enc_to_lm_proj
-            w = self.voxcpm.feat_encoder.encoder.norm.weight.unsqueeze(0)
+            w = self.voxcpm.feat_encoder.encoder.norm.weight.unsqueeze(0) * self.norm_factor
             self.voxcpm.enc_to_lm_proj.weight.mul_(w)
             del self.voxcpm.feat_encoder.encoder.norm
 
@@ -194,7 +201,10 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         hidden_states = torch.cat([self.special_tokens[:audio_feat_len].float(), hidden_states], dim=-2)
         hidden_states = hidden_states.view(-1, self.q_len, self.voxcpm.feat_encoder.in_proj.out_features)
         for layer in self.voxcpm.feat_encoder.encoder.layers:
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            residual = hidden_states
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
@@ -207,15 +217,19 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
             attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
             attn = torch.matmul(attn, v).transpose(1, 2).reshape(-1, self.q_len, layer.self_attn.o_proj.in_features)
             attn_out = layer.self_attn.o_proj(attn)
-            hidden_states += attn_out
+            hidden_states = residual + attn_out
             residual = hidden_states
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
-            hidden_states += residual
+            hidden_states = residual + hidden_states
         feat_embed = hidden_states[:, 0]
-        feat_embed = feat_embed * torch.rsqrt(feat_embed.square().mean(-1, keepdim=True) + self.variance_epsilon)
+        if PREVENT_F16_OVERFLOW:
+            feat_embed = feat_embed * self.overflow_scale
+        feat_embed = feat_embed * torch.rsqrt(feat_embed.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
         feat_embed = self.voxcpm.enc_to_lm_proj(feat_embed).unsqueeze(0)
         return feat_embed
 
@@ -245,6 +259,7 @@ class VOXCPM_MAIN(torch.nn.Module):
     def __init__(self, voxcpm, max_seq_len):
         super(VOXCPM_MAIN, self).__init__()
         self.voxcpm = voxcpm
+        self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         position_ids = torch.arange(max_seq_len, dtype=torch.int32)
         self.scale_factor_base = float(self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim ** -0.25)
         rope_emb_cos, rope_emb_sin = self.voxcpm.base_lm.rope_emb(position_ids)
@@ -257,6 +272,7 @@ class VOXCPM_MAIN(torch.nn.Module):
         self.split_size_base = self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim // 2
         self.split_size_residual = self.voxcpm.residual_lm.layers._modules['0'].self_attn.head_dim // 2
         self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
+        self.norm_factor = self.voxcpm.base_lm.config.hidden_size ** 0.5
         with torch.no_grad():
             self._fuse_layers(self.voxcpm.base_lm.layers)
             self._fuse_layers(self.voxcpm.residual_lm.layers)
@@ -287,11 +303,11 @@ class VOXCPM_MAIN(torch.nn.Module):
             del layer.self_attn.k_proj
             del layer.self_attn.v_proj
 
-            w = layer.input_layernorm.weight.unsqueeze(0)
+            w = layer.input_layernorm.weight.unsqueeze(0) * self.norm_factor
             qkv.weight.mul_(w)
             del layer.input_layernorm
 
-            w = layer.post_attention_layernorm.weight.unsqueeze(0)
+            w = layer.post_attention_layernorm.weight.unsqueeze(0) * self.norm_factor
             gate = layer.mlp.gate_proj
             up = layer.mlp.up_proj
 
@@ -332,7 +348,10 @@ class VOXCPM_MAIN(torch.nn.Module):
         rotary_pos_emb_sin_k = rotary_pos_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         attention_mask = (self.attention_mask[..., :ids_len, :kv_seq_len] * mask).float()
         for i, layer in enumerate(self.voxcpm.base_lm.layers):
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            residual = hidden_states
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
@@ -349,13 +368,15 @@ class VOXCPM_MAIN(torch.nn.Module):
             attn = torch.nn.functional.softmax(torch.matmul(q, k) + attention_mask, dim=-1, dtype=torch.float32)
             attn = torch.matmul(attn, v).transpose(0, 1).reshape(1, -1, layer.self_attn.o_proj.in_features)
             attn_out = layer.self_attn.o_proj(attn)
-            hidden_states += attn_out
+            hidden_states = residual + attn_out
             residual = hidden_states
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
-            hidden_states += residual
+            hidden_states = residual + hidden_states
         hidden_states = self.voxcpm.base_lm.norm(hidden_states)
         fsq_layer_out = self.voxcpm.fsq_layer(hidden_states[:, concat_text_len:])
         hidden_states = hidden_states[:, :concat_text_len]
@@ -363,7 +384,10 @@ class VOXCPM_MAIN(torch.nn.Module):
         hidden_states = torch.cat([hidden_states, fsq_layer_out + feat_embed], dim=1)
         i = self.voxcpm.base_lm.config.num_hidden_layers
         for layer in self.voxcpm.residual_lm.layers:
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            residual = hidden_states
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
@@ -380,13 +404,15 @@ class VOXCPM_MAIN(torch.nn.Module):
             attn = torch.nn.functional.softmax(torch.matmul(q, k) + attention_mask, dim=-1, dtype=torch.float32)
             attn = torch.matmul(attn, v).transpose(0, 1).reshape(1, -1, layer.self_attn.o_proj.in_features)
             attn_out = layer.self_attn.o_proj(attn)
-            hidden_states += attn_out
+            hidden_states = residual + attn_out
             residual = hidden_states
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
-            hidden_states += residual
+            hidden_states = residual + hidden_states
             i += 1
         residual_hidden = self.voxcpm.residual_lm.norm(hidden_states[:, [-1]])
         dit_hidden_1 = self.voxcpm.lm_to_dit_proj(lm_hidden)
@@ -401,6 +427,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
     def __init__(self, voxcpm, fixed_timesteps):
         super(VOXCPM_FEAT_DECODER, self).__init__()
         self.voxcpm = voxcpm
+        self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         sway_sampling_coef = 1.0
         t_span = torch.linspace(1, 0, fixed_timesteps + 1, dtype=torch.float32)
         t_span = (t_span + sway_sampling_coef * (torch.cos(torch.pi / 2 * t_span) - 1 + t_span))[1:]
@@ -423,6 +450,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim // 2
         self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
+        self.norm_factor = self.voxcpm.feat_decoder.estimator.config.hidden_size ** 0.5
         with torch.no_grad():
             for layer in self.voxcpm.feat_decoder.estimator.decoder.layers:
                 # 1) Fuse q/k/v into qkv
@@ -451,12 +479,12 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
                 del layer.self_attn.v_proj
 
                 # 2) Fuse input rmsnorm weight
-                w = layer.input_layernorm.weight.unsqueeze(0)
+                w = layer.input_layernorm.weight.unsqueeze(0) * self.norm_factor
                 qkv.weight.mul_(w)
                 del layer.input_layernorm
 
                 # 3) Fuse post-attention rmsnorm weight
-                w = layer.post_attention_layernorm.weight.unsqueeze(0)
+                w = layer.post_attention_layernorm.weight.unsqueeze(0) * self.norm_factor
                 gate = layer.mlp.gate_proj
                 up = layer.mlp.up_proj
 
@@ -474,7 +502,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
                 del layer.post_attention_layernorm
 
             # 4) Fuse final norm weight into out_proj
-            w = self.voxcpm.feat_decoder.estimator.decoder.norm.weight.unsqueeze(0)
+            w = self.voxcpm.feat_decoder.estimator.decoder.norm.weight.unsqueeze(0) * self.norm_factor
             self.voxcpm.feat_decoder.estimator.out_proj.weight.mul_(w)
             del self.voxcpm.feat_decoder.estimator.decoder.norm
 
@@ -491,13 +519,16 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
     def forward(self, step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus):
         t = self.t[:, step]
         dt = self.dt[..., step]
-        dit_hidden += t
+        dit_hidden = dit_hidden + t
         dit_hidden = torch.cat([dit_hidden, t], dim=0)
         x = self.voxcpm.feat_decoder.estimator.in_proj(random)
         x = torch.cat([x, x], dim=0)
         hidden_states = torch.cat([dit_hidden, feat_cond, x], dim=1)
         for layer in self.voxcpm.feat_decoder.estimator.decoder.layers:
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            residual = hidden_states
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
@@ -510,21 +541,25 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
             attn = torch.matmul(attn, v).transpose(1, 2).reshape(-1, self.q_len, layer.self_attn.o_proj.in_features)
             attn_out = layer.self_attn.o_proj(attn)
-            hidden_states += attn_out
+            hidden_states = residual + attn_out
             residual = hidden_states
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+            if PREVENT_F16_OVERFLOW:
+                hidden_states = hidden_states * self.overflow_scale
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
-            hidden_states += residual
+            hidden_states = residual + hidden_states
         hidden_states = hidden_states[:, self.prefix_plus:]
-        hidden_states = hidden_states * torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.variance_epsilon)
+        if PREVENT_F16_OVERFLOW:
+            hidden_states = hidden_states * self.overflow_scale
+        hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
         hidden_states = self.voxcpm.feat_decoder.estimator.out_proj(hidden_states)
         dphi_dt, cfg_dphi_dt = hidden_states.split([1, 1], dim=0)
         positive_flat = dphi_dt.view(1, 1, -1)
         negative_flat = cfg_dphi_dt.view(1, -1, 1)
         dot_product = torch.matmul(positive_flat, negative_flat)
-        squared_norm = torch.matmul(negative_flat.transpose(1, 2), negative_flat) + 1e-7
+        squared_norm = torch.matmul(negative_flat.transpose(1, 2), negative_flat) + self.variance_epsilon
         st_star = dot_product / squared_norm
         dphi_dt = cfg_value_minus * cfg_dphi_dt * st_star + cfg_value * dphi_dt
         next_random = random - dt * dphi_dt
