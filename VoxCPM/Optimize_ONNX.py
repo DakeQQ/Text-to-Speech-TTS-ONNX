@@ -55,7 +55,7 @@ keep_io_dtype = True                     # Will be overridden when needed; must 
 # Int4 matmul_nbits_quantizer Settings
 algorithm = "k_quant"                    # ["DEFAULT", "RTN", "HQQ", "k_quant"]
 bits = 4                                 # [4, 8]; It is not recommended to use 8.
-block_size = 32                          # [32, 64, 128, 256]; Smaller block_size => more accuracy, more time and size.
+block_size = 32                          # [16, 32, 64, 128, 256]; Smaller block_size => more accuracy, more time and size.
 accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
 quant_symmetric = False                  # False may get more accuracy.
 nodes_to_exclude = None                  # Example: ["/layers.0/mlp/down_proj/MatMul"]
@@ -82,7 +82,7 @@ if lazy_setting_CPU:
             "VoxCPM_Feat_Cond": "float32",
             "VoxCPM_Concat": "float32",
             "VoxCPM_Main": "int8",
-            "VoxCPM_Feat_Decoder": "float32",  # int8 can also work, but it will affect the quality.
+            "VoxCPM_Feat_Decoder": "int8",   # int8 = speed / float32 = quality.
             "VoxCPM_VAE_Decoder": "float32",
         }
 elif lazy_setting_GPU:
