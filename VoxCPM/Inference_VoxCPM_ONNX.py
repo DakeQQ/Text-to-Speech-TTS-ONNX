@@ -104,6 +104,9 @@ else:
     provider_options = None
 
 
+STOP_TOKEN = set(STOP_TOKEN) if isinstance(STOP_TOKEN, (list, tuple)) else {STOP_TOKEN}
+
+
 def audio_normalizer(_audio, target_value=8192.0):
     _audio = _audio.astype(np.float32)
     rms = np.sqrt(np.mean((_audio * _audio), dtype=np.float32), dtype=np.float32)
