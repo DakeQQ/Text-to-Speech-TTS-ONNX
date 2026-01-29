@@ -62,9 +62,6 @@ shutil.copyfile('./modeling_modified/audio_vae.py', py_site + '/voxcpm/modules/a
 from voxcpm import VoxCPM
 
 
-STOP_TOKEN = set(STOP_TOKEN) if isinstance(STOP_TOKEN, (list, tuple)) else {STOP_TOKEN}
-
-
 class VOXCPM_TEXT_EMBED(torch.nn.Module):
     def __init__(self, voxcpm):
         super(VOXCPM_TEXT_EMBED, self).__init__()
