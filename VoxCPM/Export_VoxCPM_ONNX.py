@@ -44,8 +44,8 @@ DEVICE_ID = 0                            # Device id, default 0. Free to edit it
 
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower. Free to edit it.
-CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
-RANDOM_SEED = 9527                       # Global random seed. Free to edit it.
+CFG_VALUE = 2.0                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
+RANDOM_SEED = 1                          # Global random seed. Free to edit it.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes two latents at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
@@ -76,11 +76,20 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
     def __init__(self, voxcpm, in_sample_rate):
         super(VOXCPM_VAE_ENCODER, self).__init__()
         self.voxcpm = voxcpm
+        self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.inv_int16 = torch.tensor(1.0 / 32768.0, dtype=torch.float32).view(1, 1, -1)
         self.patch_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
         self.pad_zeros = torch.zeros([1, 1, self.patch_len], dtype=torch.int8)
         self.in_sample_rate = in_sample_rate
         self.sr_scale = float(44100.0 / self.in_sample_rate)
+
+    def _replace_gelu_with_tanh_approximation(self, module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.GELU):
+                setattr(module, name, torch.nn.GELU(approximate='tanh'))
+                print(f"Replaced GELU at: {name}")
+            else:
+                self._replace_gelu_with_tanh_approximation(child)
 
     def forward(self, prompt_audio):
         prompt_audio = prompt_audio.float()
@@ -113,6 +122,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
     def __init__(self, voxcpm, max_prompt_audio_len, in_sample_rate):
         super(VOXCPM_FEAT_ENCODER, self).__init__()
         self.voxcpm = voxcpm
+        self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         max_prompt_feat_len = (max_prompt_audio_len // in_sample_rate * 44100) // (self.voxcpm.patch_size * self.voxcpm.chunk_size) + 1
         self.special_tokens = self.voxcpm.feat_encoder.special_token.expand(1, max_prompt_feat_len, 1, -1).squeeze(0).half()
@@ -120,13 +130,12 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         self.scale_factor = float(self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim ** -0.25)
         position_ids = torch.arange(self.q_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.feat_encoder.encoder.rope_emb(position_ids)
-        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0) * self.scale_factor
-        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0) * self.scale_factor
+        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0)
+        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0)
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim // 2
-        self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
-        self.norm_factor = self.voxcpm.feat_encoder.encoder.config.hidden_size ** 0.5
+        norm_factor = self.voxcpm.feat_encoder.encoder.config.hidden_size ** 0.5
         with torch.no_grad():
             for layer in self.voxcpm.feat_encoder.encoder.layers:
                 # 1) Fuse q/k/v into qkv
@@ -137,13 +146,13 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
                 out_features = int(q_proj.out_features + k_proj.out_features + v_proj.out_features)
                 has_bias = (q_proj.bias is not None) or (k_proj.bias is not None) or (v_proj.bias is not None)
                 qkv = torch.nn.Linear(in_features, out_features, bias=has_bias)
-                qkv.weight.copy_(torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0))
+                qkv.weight.copy_(torch.cat([q_proj.weight * self.scale_factor, k_proj.weight * self.scale_factor, v_proj.weight], dim=0))
                 if has_bias:
                     z = lambda feat: torch.zeros(feat, dtype=q_proj.weight.dtype, device=q_proj.weight.device)
                     qb = q_proj.bias if q_proj.bias is not None else z(q_proj.out_features)
                     kb = k_proj.bias if k_proj.bias is not None else z(k_proj.out_features)
                     vb = v_proj.bias if v_proj.bias is not None else z(v_proj.out_features)
-                    qkv.bias.copy_(torch.cat([qb, kb, vb], dim=0))
+                    qkv.bias.copy_(torch.cat([qb * self.scale_factor, kb * self.scale_factor, vb], dim=0))
 
                 layer.self_attn.q_out_features = int(q_proj.out_features)
                 layer.self_attn.k_out_features = int(k_proj.out_features)
@@ -155,12 +164,12 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
                 del layer.self_attn.v_proj
 
                 # 2) Fuse input rmsnorm weight into qkv input columns
-                w = layer.input_layernorm.weight.unsqueeze(0) * self.norm_factor
+                w = layer.input_layernorm.weight.unsqueeze(0) * norm_factor
                 qkv.weight.mul_(w)
                 del layer.input_layernorm
 
                 # 3) Fuse post-attention rmsnorm weight into MLP gate/up input columns
-                w = layer.post_attention_layernorm.weight.unsqueeze(0) * self.norm_factor
+                w = layer.post_attention_layernorm.weight.unsqueeze(0) * norm_factor
                 gate = layer.mlp.gate_proj
                 up = layer.mlp.up_proj
 
@@ -178,9 +187,17 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
                 del layer.post_attention_layernorm
 
             # 4) Fuse final norm weight into enc_to_lm_proj
-            w = self.voxcpm.feat_encoder.encoder.norm.weight.unsqueeze(0) * self.norm_factor
+            w = self.voxcpm.feat_encoder.encoder.norm.weight.unsqueeze(0) * norm_factor
             self.voxcpm.enc_to_lm_proj.weight.mul_(w)
             del self.voxcpm.feat_encoder.encoder.norm
+
+    def _replace_gelu_with_tanh_approximation(self, module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.GELU):
+                setattr(module, name, torch.nn.GELU(approximate='tanh'))
+                print(f"Replaced GELU at: {name}")
+            else:
+                self._replace_gelu_with_tanh_approximation(child)
 
     def rotate_half(self, x, dim, split_size):
         x1, x2 = x.split(split_size, dim=dim)
@@ -201,8 +218,8 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
-            qkv = layer.self_attn.qkv(hidden_states_norm)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
+            qkv = layer.self_attn.qkv(hidden_states)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
             k = k.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
@@ -218,7 +235,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
@@ -226,7 +243,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         feat_embed = hidden_states[:, 0]
         if PREVENT_F16_OVERFLOW:
             feat_embed = feat_embed * self.overflow_scale
-        feat_embed = feat_embed * torch.rsqrt(feat_embed.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+        feat_embed = feat_embed * torch.rsqrt(feat_embed.square().sum(-1, keepdim=True))
         feat_embed = self.voxcpm.enc_to_lm_proj(feat_embed).unsqueeze(0)
         return feat_embed
 
@@ -256,23 +273,34 @@ class VOXCPM_MAIN(torch.nn.Module):
     def __init__(self, voxcpm, max_seq_len):
         super(VOXCPM_MAIN, self).__init__()
         self.voxcpm = voxcpm
+        self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         position_ids = torch.arange(max_seq_len, dtype=torch.int32)
         self.scale_factor_base = float(self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim ** -0.25)
         rope_emb_cos, rope_emb_sin = self.voxcpm.base_lm.rope_emb(position_ids)
-        self.cos_rotary_pos_emb = (rope_emb_cos.unsqueeze(0) * self.scale_factor_base).half()
-        self.sin_rotary_pos_emb = (rope_emb_sin.unsqueeze(0) * self.scale_factor_base).half()
+        self.cos_rotary_pos_emb = rope_emb_cos.unsqueeze(0).half()
+        self.sin_rotary_pos_emb = rope_emb_sin.unsqueeze(0).half()
         self.total_layers = self.voxcpm.base_lm.config.num_hidden_layers + self.voxcpm.residual_lm.config.num_hidden_layers
         self.save_key = [None] * self.total_layers
         self.save_value = [None] * self.total_layers
         self.attention_mask = (1 - torch.tril(torch.ones([1, max_seq_len, max_seq_len], dtype=torch.int8))) * -128
         self.split_size_base = self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim // 2
         self.split_size_residual = self.voxcpm.residual_lm.layers._modules['0'].self_attn.head_dim // 2
-        self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
         self.norm_factor = self.voxcpm.base_lm.config.hidden_size ** 0.5
         with torch.no_grad():
             self._fuse_layers(self.voxcpm.base_lm.layers)
             self._fuse_layers(self.voxcpm.residual_lm.layers)
+            w = self.voxcpm.residual_lm.norm.weight.unsqueeze(0) * self.norm_factor
+            self.voxcpm.res_to_dit_proj.weight.mul_(w)
+            del self.voxcpm.residual_lm.norm
+
+    def _replace_gelu_with_tanh_approximation(self, module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.GELU):
+                setattr(module, name, torch.nn.GELU(approximate='tanh'))
+                print(f"Replaced GELU at: {name}")
+            else:
+                self._replace_gelu_with_tanh_approximation(child)
 
     def _fuse_layers(self, layers):
         for layer in layers:
@@ -283,13 +311,13 @@ class VOXCPM_MAIN(torch.nn.Module):
             out_features = int(q_proj.out_features + k_proj.out_features + v_proj.out_features)
             has_bias = (q_proj.bias is not None) or (k_proj.bias is not None) or (v_proj.bias is not None)
             qkv = torch.nn.Linear(in_features, out_features, bias=has_bias)
-            qkv.weight.copy_(torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0))
+            qkv.weight.copy_(torch.cat([q_proj.weight * self.scale_factor_base, k_proj.weight * self.scale_factor_base, v_proj.weight], dim=0))
             if has_bias:
                 z = lambda feat: torch.zeros(feat, dtype=q_proj.weight.dtype, device=q_proj.weight.device)
                 qb = q_proj.bias if q_proj.bias is not None else z(q_proj.out_features)
                 kb = k_proj.bias if k_proj.bias is not None else z(k_proj.out_features)
                 vb = v_proj.bias if v_proj.bias is not None else z(v_proj.out_features)
-                qkv.bias.copy_(torch.cat([qb, kb, vb], dim=0))
+                qkv.bias.copy_(torch.cat([qb * self.scale_factor_base, kb * self.scale_factor_base, vb], dim=0))
 
             layer.self_attn.q_out_features = int(q_proj.out_features)
             layer.self_attn.k_out_features = int(k_proj.out_features)
@@ -348,7 +376,7 @@ class VOXCPM_MAIN(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
@@ -369,7 +397,7 @@ class VOXCPM_MAIN(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
@@ -384,7 +412,7 @@ class VOXCPM_MAIN(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
@@ -405,13 +433,16 @@ class VOXCPM_MAIN(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
             hidden_states = residual + hidden_states
             i += 1
-        residual_hidden = self.voxcpm.residual_lm.norm(hidden_states[:, [-1]])
+        residual_hidden = hidden_states[:, [-1]]
+        if PREVENT_F16_OVERFLOW:
+            residual_hidden = residual_hidden * self.overflow_scale
+        residual_hidden = residual_hidden * torch.rsqrt(residual_hidden.square().sum(-1, keepdim=True))
         dit_hidden_1 = self.voxcpm.lm_to_dit_proj(lm_hidden)
         dit_hidden_2 = self.voxcpm.res_to_dit_proj(residual_hidden)
         dit_hidden = dit_hidden_1 + dit_hidden_2
@@ -424,6 +455,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
     def __init__(self, voxcpm, fixed_timesteps):
         super(VOXCPM_FEAT_DECODER, self).__init__()
         self.voxcpm = voxcpm
+        self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         sway_sampling_coef = 1.0
         t_span = torch.linspace(1, 0, fixed_timesteps + 1, dtype=torch.float32)
@@ -441,13 +473,12 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self.scale_factor = float(self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim ** -0.25)
         position_ids = torch.arange(self.q_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.feat_decoder.estimator.decoder.rope_emb(position_ids)
-        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0) * self.scale_factor
-        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0) * self.scale_factor
+        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0)
+        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0)
         self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2).unsqueeze(0)
         self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2).unsqueeze(0)
         self.split_size = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim // 2
-        self.variance_epsilon = torch.tensor([1e-6], dtype=torch.float32)
-        self.norm_factor = self.voxcpm.feat_decoder.estimator.config.hidden_size ** 0.5
+        norm_factor = self.voxcpm.feat_decoder.estimator.config.hidden_size ** 0.5
         with torch.no_grad():
             for layer in self.voxcpm.feat_decoder.estimator.decoder.layers:
                 # 1) Fuse q/k/v into qkv
@@ -458,13 +489,13 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
                 out_features = int(q_proj.out_features + k_proj.out_features + v_proj.out_features)
                 has_bias = (q_proj.bias is not None) or (k_proj.bias is not None) or (v_proj.bias is not None)
                 qkv = torch.nn.Linear(in_features, out_features, bias=has_bias)
-                qkv.weight.copy_(torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0))
+                qkv.weight.copy_(torch.cat([q_proj.weight * self.scale_factor, k_proj.weight * self.scale_factor, v_proj.weight], dim=0))
                 if has_bias:
                     z = lambda feat: torch.zeros(feat, dtype=q_proj.weight.dtype, device=q_proj.weight.device)
                     qb = q_proj.bias if q_proj.bias is not None else z(q_proj.out_features)
                     kb = k_proj.bias if k_proj.bias is not None else z(k_proj.out_features)
                     vb = v_proj.bias if v_proj.bias is not None else z(v_proj.out_features)
-                    qkv.bias.copy_(torch.cat([qb, kb, vb], dim=0))
+                    qkv.bias.copy_(torch.cat([qb * self.scale_factor, kb * self.scale_factor, vb], dim=0))
 
                 layer.self_attn.q_out_features = int(q_proj.out_features)
                 layer.self_attn.k_out_features = int(k_proj.out_features)
@@ -476,12 +507,12 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
                 del layer.self_attn.v_proj
 
                 # 2) Fuse input rmsnorm weight
-                w = layer.input_layernorm.weight.unsqueeze(0) * self.norm_factor
+                w = layer.input_layernorm.weight.unsqueeze(0) * norm_factor
                 qkv.weight.mul_(w)
                 del layer.input_layernorm
 
                 # 3) Fuse post-attention rmsnorm weight
-                w = layer.post_attention_layernorm.weight.unsqueeze(0) * self.norm_factor
+                w = layer.post_attention_layernorm.weight.unsqueeze(0) * norm_factor
                 gate = layer.mlp.gate_proj
                 up = layer.mlp.up_proj
 
@@ -499,9 +530,17 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
                 del layer.post_attention_layernorm
 
             # 4) Fuse final norm weight into out_proj
-            w = self.voxcpm.feat_decoder.estimator.decoder.norm.weight.unsqueeze(0) * self.norm_factor
+            w = self.voxcpm.feat_decoder.estimator.decoder.norm.weight.unsqueeze(0) * norm_factor
             self.voxcpm.feat_decoder.estimator.out_proj.weight.mul_(w)
             del self.voxcpm.feat_decoder.estimator.decoder.norm
+
+    def _replace_gelu_with_tanh_approximation(self, module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.GELU):
+                setattr(module, name, torch.nn.GELU(approximate='tanh'))
+                print(f"Replaced GELU at: {name}")
+            else:
+                self._replace_gelu_with_tanh_approximation(child)
 
     def rotate_half(self, x, dim, split_size):
         x1, x2 = x.split(split_size, dim=dim)
@@ -525,7 +564,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             qkv = layer.self_attn.qkv(hidden_states_norm)
             q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
             q = q.view(-1, self.q_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(1, 2)
@@ -542,7 +581,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             gate_up = layer.mlp.gate_up_proj(hidden_states)
             gate, up = torch.split(gate_up, [layer.mlp.down_proj.in_features, layer.mlp.down_proj.in_features], dim=-1)
             hidden_states = layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
@@ -550,13 +589,13 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         hidden_states = hidden_states[:, self.prefix_plus:]
         if PREVENT_F16_OVERFLOW:
             hidden_states = hidden_states * self.overflow_scale
-        hidden_states = hidden_states * torch.rsqrt(hidden_states.pow(2).sum(-1, keepdim=True) + self.variance_epsilon)
+        hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
         hidden_states = self.voxcpm.feat_decoder.estimator.out_proj(hidden_states)
         dphi_dt, cfg_dphi_dt = hidden_states.split([1, 1], dim=0)
         positive_flat = dphi_dt.view(1, 1, -1)
         negative_flat = cfg_dphi_dt.view(1, -1, 1)
         dot_product = torch.matmul(positive_flat, negative_flat)
-        squared_norm = torch.matmul(negative_flat.transpose(1, 2), negative_flat) + self.variance_epsilon
+        squared_norm = torch.matmul(negative_flat.transpose(1, 2), negative_flat)
         st_star = dot_product / squared_norm
         dphi_dt = cfg_value_minus * cfg_dphi_dt * st_star + cfg_value * dphi_dt
         next_random = random - dt * dphi_dt
@@ -568,8 +607,17 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
     def __init__(self, voxcpm, output_sample_rate):
         super(VOXCPM_VAE_DECODE, self).__init__()
         self.voxcpm = voxcpm
+        self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.scale = float(output_sample_rate / 44100.0)
         self.single_decode_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
+
+    def _replace_gelu_with_tanh_approximation(self, module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.GELU):
+                setattr(module, name, torch.nn.GELU(approximate='tanh'))
+                print(f"Replaced GELU at: {name}")
+            else:
+                self._replace_gelu_with_tanh_approximation(child)
 
     def forward(self, latent_pred):
         decode_audio = self.voxcpm.audio_vae.decode(latent_pred.transpose(-1, -2))
