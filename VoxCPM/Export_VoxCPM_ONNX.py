@@ -634,305 +634,305 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
 
 
 print('Export start ...')
-# with torch.inference_mode():
-#     model = VoxCPM.from_pretrained(path_voxcpm, load_denoiser=False, optimize=False).tts_model
-#     model = model.float().to('cpu').eval()
-#
-#     # ============================================================================
-#     # Model A: Text Embedding
-#     # ============================================================================
-#     model_A = VOXCPM_TEXT_EMBED(model)
-#     text_ids = torch.zeros([1, 10], dtype=torch.int32)  # "10" is just a dummy value.
-#     torch.onnx.export(
-#         model_A,
-#         (text_ids,),
-#         onnx_model_A,
-#         input_names=['text_ids'],
-#         output_names=['text_embed'],
-#         dynamic_axes={
-#             'text_ids': {1: 'ids_len'},
-#             'text_embed': {1: 'ids_len'}
-#         },
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_A
-#     del text_ids
-#
-#     # ============================================================================
-#     # Model B: VAE Encoder
-#     # ============================================================================
-#     model_B = VOXCPM_VAE_ENCODER(model, IN_SAMPLE_RATE)
-#     prompt_audio = torch.zeros([1, 1, MAX_PROMPT_AUDIO_LEN], dtype=torch.int16)
-#     torch.onnx.export(
-#         model_B,
-#         (prompt_audio,),
-#         onnx_model_B,
-#         input_names=['prompt_audio'],
-#         output_names=['audio_feat'],
-#         dynamic_axes={
-#             'prompt_audio': {2: 'audio_len'},
-#             'audio_feat': {0: 'audio_feat_len'}
-#         },
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_B
-#     del prompt_audio
-#
-#     # ============================================================================
-#     # Model C: Feature Encoder
-#     # ============================================================================
-#     model_C = VOXCPM_FEAT_ENCODER(model, MAX_PROMPT_AUDIO_LEN, IN_SAMPLE_RATE)
-#     audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
-#     torch.onnx.export(
-#         model_C,
-#         (audio_feat,),
-#         onnx_model_C,
-#         input_names=['audio_feat'],
-#         output_names=['feat_embed'],
-#         dynamic_axes={
-#             'audio_feat': {0: 'audio_feat_len'},
-#             'feat_embed': {1: 'audio_feat_len'},
-#         },
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_C
-#     del audio_feat
-#
-#     # ============================================================================
-#     # Model D: Feature Conditioning
-#     # ============================================================================
-#     model_D = VOXCPM_FEAT_COND(model)
-#     audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
-#     torch.onnx.export(
-#         model_D,
-#         (audio_feat,),
-#         onnx_model_D,
-#         input_names=['audio_feat'],
-#         output_names=['feat_cond'],
-#         dynamic_axes={
-#             'audio_feat': {0: 'audio_feat_len'}
-#         },
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_D
-#     del audio_feat
-#
-#     # ============================================================================
-#     # Model E: Concatenation
-#     # ============================================================================
-#     model_E = VOXCPM_CONCAT()
-#     embed_0 = torch.zeros([1, 10, model.feat_encoder.config.hidden_size], dtype=torch.float32)     # "10" is just a dummy value.
-#     embed_1 = torch.zeros([1, 10, model.base_lm.embed_tokens.embedding_dim], dtype=torch.float32)
-#     torch.onnx.export(
-#         model_E,
-#         (embed_0, embed_1),
-#         onnx_model_E,
-#         input_names=['embed_0', 'embed_1'],
-#         output_names=['concat_embed', 'concat_len'],
-#         dynamic_axes={
-#             'embed_0': {1: 'embed_len_0', 2: 'embed_size'},
-#             'embed_1': {1: 'embed_len_1', 2: 'embed_size'},
-#             'concat_embed': {1: 'concat_len', 2: 'embed_size'}
-#         },
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_E
-#     del embed_0
-#     del embed_1
-#
-#     # ============================================================================
-#     # Model F: Main Model (with KV cache)
-#     # ============================================================================
-#     model_F = VOXCPM_MAIN(model, MAX_SEQ_LEN)
-#
-#     # Extract model dimensions
-#     base_lm_head_dim = model.base_lm.layers._modules['0'].self_attn.head_dim
-#     base_lm_num_key_value_heads = model.base_lm.layers._modules['0'].self_attn.num_key_value_heads
-#     residual_lm_head_dim = model.residual_lm.layers._modules['0'].self_attn.head_dim
-#     residual_lm_num_key_value_heads = model.residual_lm.layers._modules['0'].self_attn.num_key_value_heads
-#     base_lm_num_attn_layers = model.base_lm.config.num_hidden_layers
-#     residual_lm_num_attn_layers = model.residual_lm.config.num_hidden_layers
-#
-#     # Create dummy inputs
-#     ids_len = torch.tensor([25], dtype=torch.int64)              # "25" is just a dummy value.
-#     concat_text_len = torch.tensor([10], dtype=torch.int64)      # "10" is just a dummy value.
-#     feat_embed = torch.zeros([1, ids_len - concat_text_len, model.feat_encoder.config.hidden_size], dtype=torch.float32)
-#     hidden_states = torch.ones((1, ids_len, model.base_lm.embed_tokens.embedding_dim), dtype=torch.float32)
-#     history_len = torch.tensor([0], dtype=torch.int64)
-#     attention_mask = torch.tensor([1], dtype=torch.int8)
-#
-#     if USE_F16_KV:
-#         kv_dtype = torch.float16
-#     else:
-#         kv_dtype = torch.float32
-#     base_lm_past_keys = torch.zeros((base_lm_num_key_value_heads, 1, base_lm_head_dim, 0), dtype=kv_dtype)
-#     base_lm_past_values = torch.zeros((base_lm_num_key_value_heads, 1, 0, base_lm_head_dim), dtype=kv_dtype)
-#     residual_lm_past_keys = torch.zeros((residual_lm_num_key_value_heads, 1, residual_lm_head_dim, 0), dtype=kv_dtype)
-#     residual_lm_past_values = torch.zeros((residual_lm_num_key_value_heads, 1, 0, residual_lm_head_dim), dtype=kv_dtype)
-#
-#     # Prepare input and output names
-#     all_inputs = []
-#     input_names = []
-#     output_names = []
-#     dynamic_axes = {}
-#
-#     # Base LM keys
-#     for i in range(base_lm_num_attn_layers):
-#         name = f'in_key_{i}'
-#         input_names.append(name)
-#         all_inputs.append(base_lm_past_keys)
-#         dynamic_axes[name] = {3: 'history_len'}
-#
-#         name = f'out_key_{i}'
-#         output_names.append(name)
-#         dynamic_axes[name] = {3: 'kv_seq_len'}
-#
-#     # Residual LM keys
-#     for i in range(base_lm_num_attn_layers, base_lm_num_attn_layers + residual_lm_num_attn_layers):
-#         name = f'in_key_{i}'
-#         input_names.append(name)
-#         all_inputs.append(residual_lm_past_keys)
-#         dynamic_axes[name] = {3: 'history_len'}
-#
-#         name = f'out_key_{i}'
-#         output_names.append(name)
-#         dynamic_axes[name] = {3: 'kv_seq_len'}
-#
-#     # Base LM values
-#     for i in range(base_lm_num_attn_layers):
-#         name = f'in_value_{i}'
-#         input_names.append(name)
-#         all_inputs.append(base_lm_past_values)
-#         dynamic_axes[name] = {2: 'history_len'}
-#
-#         name = f'out_value_{i}'
-#         output_names.append(name)
-#         dynamic_axes[name] = {2: 'kv_seq_len'}
-#
-#     # Residual LM values
-#     for i in range(base_lm_num_attn_layers, base_lm_num_attn_layers + residual_lm_num_attn_layers):
-#         name = f'in_value_{i}'
-#         input_names.append(name)
-#         all_inputs.append(residual_lm_past_values)
-#         dynamic_axes[name] = {2: 'history_len'}
-#
-#         name = f'out_value_{i}'
-#         output_names.append(name)
-#         dynamic_axes[name] = {2: 'kv_seq_len'}
-#
-#     # Other inputs
-#     input_names.append('history_len')
-#     all_inputs.append(history_len)
-#
-#     input_names.append('feat_embed')
-#     all_inputs.append(feat_embed)
-#     dynamic_axes["feat_embed"] = {1: 'audio_feat_len'}
-#
-#     input_names.append('concat_text_len')
-#     all_inputs.append(concat_text_len)
-#
-#     input_names.append('hidden_states')
-#     all_inputs.append(hidden_states)
-#     dynamic_axes["hidden_states"] = {1: 'ids_len'}
-#
-#     input_names.append('ids_len')
-#     all_inputs.append(ids_len)
-#
-#     input_names.append('attention_mask')
-#     all_inputs.append(attention_mask)
-#
-#     # Other outputs
-#     output_names.append('kv_seq_len')
-#     output_names.append('random')
-#     output_names.append('dit_hidden')
-#     output_names.append('stop_flag')
-#
-#     torch.onnx.export(
-#         model_F,
-#         tuple(all_inputs),
-#         onnx_model_F,
-#         input_names=input_names,
-#         output_names=output_names,
-#         dynamic_axes=dynamic_axes,
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#
-#     del model_F
-#     del all_inputs
-#     del base_lm_past_keys
-#     del base_lm_past_values
-#     del residual_lm_past_keys
-#     del residual_lm_past_values
-#     del base_lm_num_attn_layers
-#     del residual_lm_num_attn_layers
-#     del feat_embed
-#     del hidden_states
-#     del ids_len
-#     del history_len
-#     del input_names
-#     del output_names
-#     del dynamic_axes
-#     del base_lm_head_dim
-#     del base_lm_num_key_value_heads
-#     del residual_lm_head_dim
-#     del residual_lm_num_key_value_heads
-#
-#     # ============================================================================
-#     # Model G: Feature Decoder (Diffusion)
-#     # ============================================================================
-#     model_G = VOXCPM_FEAT_DECODER(model, FIXED_TIMESTEPS)
-#     step = torch.tensor([0], dtype=torch.int32)
-#     random = torch.ones((1, model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
-#     dit_hidden = torch.zeros((1, 1, model.base_lm.embed_tokens.embedding_dim), dtype=torch.float32)
-#     feat_cond = torch.zeros((2, model.patch_size, model.feat_decoder.estimator.cond_proj.out_features), dtype=torch.float32)
-#     cfg_value = torch.tensor([CFG_VALUE], dtype=torch.float32)
-#     cfg_value_minus = torch.tensor([1.0 - CFG_VALUE], dtype=torch.float32)
-#     torch.onnx.export(
-#         model_G,
-#         (step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus),
-#         onnx_model_G,
-#         input_names=['step', 'random', 'dit_hidden', 'feat_cond', 'cfg_value', 'cfg_value_minus'],
-#         output_names=['next_step', 'next_random'],
-#         dynamic_axes=None,
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_G
-#     del step
-#     del random
-#     del dit_hidden
-#     del feat_cond
-#     del cfg_value
-#     del cfg_value_minus
-#
-#     # ============================================================================
-#     # Model H: VAE Decoder
-#     # ============================================================================
-#     model_H = VOXCPM_VAE_DECODE(model, OUT_SAMPLE_RATE)
-#     latent_pred = torch.ones((1, model.patch_size + model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
-#     torch.onnx.export(
-#         model_H,
-#         (latent_pred,),
-#         onnx_model_H,
-#         input_names=['latent_pred'],
-#         output_names=['audio_out', 'audio_out_len'],
-#         dynamic_axes={
-#             'latent_pred': {1: 'latent_pred_len'},
-#             'audio_out': {2: 'audio_out_len'}
-#         } if DYNAMIC_SHAPE_VAE_DECODE else None,
-#         opset_version=OPSET,
-#         dynamo=False
-#     )
-#     del model_H
-#     del latent_pred
-#     del model
-#     gc.collect()
+with torch.inference_mode():
+    model = VoxCPM.from_pretrained(path_voxcpm, load_denoiser=False, optimize=False).tts_model
+    model = model.float().to('cpu').eval()
+
+    # ============================================================================
+    # Model A: Text Embedding
+    # ============================================================================
+    model_A = VOXCPM_TEXT_EMBED(model)
+    text_ids = torch.zeros([1, 10], dtype=torch.int32)  # "10" is just a dummy value.
+    torch.onnx.export(
+        model_A,
+        (text_ids,),
+        onnx_model_A,
+        input_names=['text_ids'],
+        output_names=['text_embed'],
+        dynamic_axes={
+            'text_ids': {1: 'ids_len'},
+            'text_embed': {1: 'ids_len'}
+        },
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_A
+    del text_ids
+
+    # ============================================================================
+    # Model B: VAE Encoder
+    # ============================================================================
+    model_B = VOXCPM_VAE_ENCODER(model, IN_SAMPLE_RATE)
+    prompt_audio = torch.zeros([1, 1, MAX_PROMPT_AUDIO_LEN], dtype=torch.int16)
+    torch.onnx.export(
+        model_B,
+        (prompt_audio,),
+        onnx_model_B,
+        input_names=['prompt_audio'],
+        output_names=['audio_feat'],
+        dynamic_axes={
+            'prompt_audio': {2: 'audio_len'},
+            'audio_feat': {0: 'audio_feat_len'}
+        },
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_B
+    del prompt_audio
+
+    # ============================================================================
+    # Model C: Feature Encoder
+    # ============================================================================
+    model_C = VOXCPM_FEAT_ENCODER(model, MAX_PROMPT_AUDIO_LEN, IN_SAMPLE_RATE)
+    audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
+    torch.onnx.export(
+        model_C,
+        (audio_feat,),
+        onnx_model_C,
+        input_names=['audio_feat'],
+        output_names=['feat_embed'],
+        dynamic_axes={
+            'audio_feat': {0: 'audio_feat_len'},
+            'feat_embed': {1: 'audio_feat_len'},
+        },
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_C
+    del audio_feat
+
+    # ============================================================================
+    # Model D: Feature Conditioning
+    # ============================================================================
+    model_D = VOXCPM_FEAT_COND(model)
+    audio_feat = torch.zeros([20, model.patch_size, model.feat_dim], dtype=torch.float32)  # "20" is just a dummy value.
+    torch.onnx.export(
+        model_D,
+        (audio_feat,),
+        onnx_model_D,
+        input_names=['audio_feat'],
+        output_names=['feat_cond'],
+        dynamic_axes={
+            'audio_feat': {0: 'audio_feat_len'}
+        },
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_D
+    del audio_feat
+
+    # ============================================================================
+    # Model E: Concatenation
+    # ============================================================================
+    model_E = VOXCPM_CONCAT()
+    embed_0 = torch.zeros([1, 10, model.feat_encoder.config.hidden_size], dtype=torch.float32)     # "10" is just a dummy value.
+    embed_1 = torch.zeros([1, 10, model.base_lm.embed_tokens.embedding_dim], dtype=torch.float32)
+    torch.onnx.export(
+        model_E,
+        (embed_0, embed_1),
+        onnx_model_E,
+        input_names=['embed_0', 'embed_1'],
+        output_names=['concat_embed', 'concat_len'],
+        dynamic_axes={
+            'embed_0': {1: 'embed_len_0', 2: 'embed_size'},
+            'embed_1': {1: 'embed_len_1', 2: 'embed_size'},
+            'concat_embed': {1: 'concat_len', 2: 'embed_size'}
+        },
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_E
+    del embed_0
+    del embed_1
+
+    # ============================================================================
+    # Model F: Main Model (with KV cache)
+    # ============================================================================
+    model_F = VOXCPM_MAIN(model, MAX_SEQ_LEN)
+
+    # Extract model dimensions
+    base_lm_head_dim = model.base_lm.layers._modules['0'].self_attn.head_dim
+    base_lm_num_key_value_heads = model.base_lm.layers._modules['0'].self_attn.num_key_value_heads
+    residual_lm_head_dim = model.residual_lm.layers._modules['0'].self_attn.head_dim
+    residual_lm_num_key_value_heads = model.residual_lm.layers._modules['0'].self_attn.num_key_value_heads
+    base_lm_num_attn_layers = model.base_lm.config.num_hidden_layers
+    residual_lm_num_attn_layers = model.residual_lm.config.num_hidden_layers
+
+    # Create dummy inputs
+    ids_len = torch.tensor([25], dtype=torch.int64)              # "25" is just a dummy value.
+    concat_text_len = torch.tensor([10], dtype=torch.int64)      # "10" is just a dummy value.
+    feat_embed = torch.zeros([1, ids_len - concat_text_len, model.feat_encoder.config.hidden_size], dtype=torch.float32)
+    hidden_states = torch.ones((1, ids_len, model.base_lm.embed_tokens.embedding_dim), dtype=torch.float32)
+    history_len = torch.tensor([0], dtype=torch.int64)
+    attention_mask = torch.tensor([1], dtype=torch.int8)
+
+    if USE_F16_KV:
+        kv_dtype = torch.float16
+    else:
+        kv_dtype = torch.float32
+    base_lm_past_keys = torch.zeros((base_lm_num_key_value_heads, 1, base_lm_head_dim, 0), dtype=kv_dtype)
+    base_lm_past_values = torch.zeros((base_lm_num_key_value_heads, 1, 0, base_lm_head_dim), dtype=kv_dtype)
+    residual_lm_past_keys = torch.zeros((residual_lm_num_key_value_heads, 1, residual_lm_head_dim, 0), dtype=kv_dtype)
+    residual_lm_past_values = torch.zeros((residual_lm_num_key_value_heads, 1, 0, residual_lm_head_dim), dtype=kv_dtype)
+
+    # Prepare input and output names
+    all_inputs = []
+    input_names = []
+    output_names = []
+    dynamic_axes = {}
+
+    # Base LM keys
+    for i in range(base_lm_num_attn_layers):
+        name = f'in_key_{i}'
+        input_names.append(name)
+        all_inputs.append(base_lm_past_keys)
+        dynamic_axes[name] = {3: 'history_len'}
+
+        name = f'out_key_{i}'
+        output_names.append(name)
+        dynamic_axes[name] = {3: 'kv_seq_len'}
+
+    # Residual LM keys
+    for i in range(base_lm_num_attn_layers, base_lm_num_attn_layers + residual_lm_num_attn_layers):
+        name = f'in_key_{i}'
+        input_names.append(name)
+        all_inputs.append(residual_lm_past_keys)
+        dynamic_axes[name] = {3: 'history_len'}
+
+        name = f'out_key_{i}'
+        output_names.append(name)
+        dynamic_axes[name] = {3: 'kv_seq_len'}
+
+    # Base LM values
+    for i in range(base_lm_num_attn_layers):
+        name = f'in_value_{i}'
+        input_names.append(name)
+        all_inputs.append(base_lm_past_values)
+        dynamic_axes[name] = {2: 'history_len'}
+
+        name = f'out_value_{i}'
+        output_names.append(name)
+        dynamic_axes[name] = {2: 'kv_seq_len'}
+
+    # Residual LM values
+    for i in range(base_lm_num_attn_layers, base_lm_num_attn_layers + residual_lm_num_attn_layers):
+        name = f'in_value_{i}'
+        input_names.append(name)
+        all_inputs.append(residual_lm_past_values)
+        dynamic_axes[name] = {2: 'history_len'}
+
+        name = f'out_value_{i}'
+        output_names.append(name)
+        dynamic_axes[name] = {2: 'kv_seq_len'}
+
+    # Other inputs
+    input_names.append('history_len')
+    all_inputs.append(history_len)
+
+    input_names.append('feat_embed')
+    all_inputs.append(feat_embed)
+    dynamic_axes["feat_embed"] = {1: 'audio_feat_len'}
+
+    input_names.append('concat_text_len')
+    all_inputs.append(concat_text_len)
+
+    input_names.append('hidden_states')
+    all_inputs.append(hidden_states)
+    dynamic_axes["hidden_states"] = {1: 'ids_len'}
+
+    input_names.append('ids_len')
+    all_inputs.append(ids_len)
+
+    input_names.append('attention_mask')
+    all_inputs.append(attention_mask)
+
+    # Other outputs
+    output_names.append('kv_seq_len')
+    output_names.append('random')
+    output_names.append('dit_hidden')
+    output_names.append('stop_flag')
+
+    torch.onnx.export(
+        model_F,
+        tuple(all_inputs),
+        onnx_model_F,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        opset_version=OPSET,
+        dynamo=False
+    )
+
+    del model_F
+    del all_inputs
+    del base_lm_past_keys
+    del base_lm_past_values
+    del residual_lm_past_keys
+    del residual_lm_past_values
+    del base_lm_num_attn_layers
+    del residual_lm_num_attn_layers
+    del feat_embed
+    del hidden_states
+    del ids_len
+    del history_len
+    del input_names
+    del output_names
+    del dynamic_axes
+    del base_lm_head_dim
+    del base_lm_num_key_value_heads
+    del residual_lm_head_dim
+    del residual_lm_num_key_value_heads
+
+    # ============================================================================
+    # Model G: Feature Decoder (Diffusion)
+    # ============================================================================
+    model_G = VOXCPM_FEAT_DECODER(model, FIXED_TIMESTEPS)
+    step = torch.tensor([0], dtype=torch.int32)
+    random = torch.ones((1, model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
+    dit_hidden = torch.zeros((1, 1, model.base_lm.embed_tokens.embedding_dim), dtype=torch.float32)
+    feat_cond = torch.zeros((2, model.patch_size, model.feat_decoder.estimator.cond_proj.out_features), dtype=torch.float32)
+    cfg_value = torch.tensor([CFG_VALUE], dtype=torch.float32)
+    cfg_value_minus = torch.tensor([1.0 - CFG_VALUE], dtype=torch.float32)
+    torch.onnx.export(
+        model_G,
+        (step, random, dit_hidden, feat_cond, cfg_value, cfg_value_minus),
+        onnx_model_G,
+        input_names=['step', 'random', 'dit_hidden', 'feat_cond', 'cfg_value', 'cfg_value_minus'],
+        output_names=['next_step', 'next_random'],
+        dynamic_axes=None,
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_G
+    del step
+    del random
+    del dit_hidden
+    del feat_cond
+    del cfg_value
+    del cfg_value_minus
+
+    # ============================================================================
+    # Model H: VAE Decoder
+    # ============================================================================
+    model_H = VOXCPM_VAE_DECODE(model, OUT_SAMPLE_RATE)
+    latent_pred = torch.ones((1, model.patch_size + model.patch_size, model.feat_decoder.in_channels), dtype=torch.float32)
+    torch.onnx.export(
+        model_H,
+        (latent_pred,),
+        onnx_model_H,
+        input_names=['latent_pred'],
+        output_names=['audio_out', 'audio_out_len'],
+        dynamic_axes={
+            'latent_pred': {1: 'latent_pred_len'},
+            'audio_out': {2: 'audio_out_len'}
+        } if DYNAMIC_SHAPE_VAE_DECODE else None,
+        opset_version=OPSET,
+        dynamo=False
+    )
+    del model_H
+    del latent_pred
+    del model
+    gc.collect()
 print('\nExport done!\n\nStart running the VoxCPM by ONNXRuntime.\nNow loading . . . it could cost minutes.')
 
 
