@@ -593,9 +593,9 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         hidden_states = self.voxcpm.feat_decoder.estimator.out_proj(hidden_states)
         dphi_dt, cfg_dphi_dt = hidden_states.split([1, 1], dim=0)
         positive_flat = dphi_dt.view(1, 1, -1)
-        negative_flat = cfg_dphi_dt.view(1, -1, 1)
-        dot_product = torch.matmul(positive_flat, negative_flat)
-        squared_norm = torch.matmul(negative_flat.transpose(1, 2), negative_flat)
+        negative_flat = cfg_dphi_dt.view(1, 1, -1)
+        dot_product = (positive_flat * negative_flat).sum(-1, keepdim=True)
+        squared_norm = negative_flat.square().sum(-1, keepdim=True)
         st_star = dot_product / squared_norm
         dphi_dt = cfg_value_minus * cfg_dphi_dt * st_star + cfg_value * dphi_dt
         next_random = random - dt * dphi_dt
