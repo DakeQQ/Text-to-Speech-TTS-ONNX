@@ -1212,7 +1212,7 @@ if use_prompt_audio:
 else:
     # Use Defaults
     init_feat_cond = init_feat_cond_0
-    prompt_text_len = 0.0
+    prompt_text_len = 0
 
 # ==============================================================================
 # 5. Main Generation Loop
