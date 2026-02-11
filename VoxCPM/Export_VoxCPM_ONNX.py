@@ -39,7 +39,7 @@ MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples
 
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower. Free to edit it.
-CFG_VALUE = 2.2                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
+CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
 RANDOM_SEED = 1                          # Global random seed. Free to edit it.
 
 # === Feature flags ===
@@ -130,10 +130,9 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         position_ids = torch.arange(self.q_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.feat_encoder.encoder.rope_emb(position_ids)
         rope_emb_sin[:, :self.voxcpm.feat_encoder.encoder.rope_emb.dim // 2] *= -1.0
-        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2)
-        self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2)
+        self.rope_emb_cos = rope_emb_cos.unsqueeze(1).unsqueeze(1).unsqueeze(0)
+        self.rope_emb_sin = rope_emb_sin.unsqueeze(1).unsqueeze(1).unsqueeze(0)
+
         self.split_size = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim // 2
         norm_factor = self.voxcpm.feat_encoder.encoder.config.hidden_size ** 0.5
         scale_factor = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.head_dim ** -0.25
@@ -215,12 +214,15 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
                 hidden_states = hidden_states * self.overflow_scale
             hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             qkv = layer.self_attn.qkv(hidden_states)
-            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
-            q = q.view(-1, self.q_len, layer.self_attn.num_key_value_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim).permute(0, 2, 3, 1, 4)
-            k = k.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
-            v = v.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
-            q = q * self.rope_emb_cos_q + self.rotate_half(q, -1) * self.rope_emb_sin_q
-            k = k * self.rope_emb_cos_k + self.rotate_half(k, -2) * self.rope_emb_sin_k
+            num_total_heads = layer.self_attn.num_key_value_heads + layer.self_attn.num_key_value_heads * layer.self_attn.num_key_value_groups
+            qkv = qkv.view(-1, self.q_len, 1, num_total_heads + layer.self_attn.num_key_value_heads, layer.self_attn.head_dim)
+            qk, v = torch.split(qkv, [num_total_heads, layer.self_attn.num_key_value_heads], dim=3)
+            qk = qk * self.rope_emb_cos + self.rotate_half(qk, -1) * self.rope_emb_sin
+            q, k = torch.split(qk, [layer.self_attn.num_key_value_heads * layer.self_attn.num_key_value_groups, layer.self_attn.num_key_value_heads], dim=3)
+            q = q.view(-1, self.q_len, layer.self_attn.num_key_value_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim)
+            q = q.permute(0, 2, 3, 1, 4)
+            k = k.permute(0, 3, 2, 4, 1)
+            v = v.transpose(1, 3)
             attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
             attn = torch.matmul(attn, v).permute(0, 3, 1, 2, 4).reshape(-1, self.q_len, layer.self_attn.o_proj.in_features)
             attn_out = layer.self_attn.o_proj(attn)
@@ -271,8 +273,8 @@ class VOXCPM_MAIN(torch.nn.Module):
         position_ids = torch.arange(max_seq_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.base_lm.rope_emb(position_ids)
         rope_emb_sin[:, :self.voxcpm.base_lm.rope_emb.dim // 2] *= -1.0
-        self.cos_rotary_pos_emb = rope_emb_cos.unsqueeze(0).unsqueeze(0).half()
-        self.sin_rotary_pos_emb = rope_emb_sin.unsqueeze(0).unsqueeze(0).half()
+        self.cos_rotary_pos_emb = rope_emb_cos.unsqueeze(1).unsqueeze(1).half()
+        self.sin_rotary_pos_emb = rope_emb_sin.unsqueeze(1).unsqueeze(1).half()
         self.total_layers = self.voxcpm.base_lm.config.num_hidden_layers + self.voxcpm.residual_lm.config.num_hidden_layers
         self.save_key = [None] * self.total_layers
         self.save_value = [None] * self.total_layers
@@ -355,26 +357,27 @@ class VOXCPM_MAIN(torch.nn.Module):
         ids_len = all_inputs[-2]
         mask = all_inputs[-1]
         kv_seq_len = history_len + ids_len
-        rotary_pos_emb_cos_q = self.cos_rotary_pos_emb[..., history_len:kv_seq_len, :].float()
-        rotary_pos_emb_sin_q = self.sin_rotary_pos_emb[..., history_len:kv_seq_len, :].float()
-        rotary_pos_emb_cos_k = rotary_pos_emb_cos_q.transpose(-1, -2)
-        rotary_pos_emb_sin_k = rotary_pos_emb_sin_q.transpose(-1, -2)
+        rotary_pos_emb_cos = self.cos_rotary_pos_emb[history_len:kv_seq_len].float()
+        rotary_pos_emb_sin = self.sin_rotary_pos_emb[history_len:kv_seq_len].float()
         attention_mask = (self.attention_mask[..., :ids_len, :kv_seq_len] * mask).float()
         for i, layer in enumerate(self.voxcpm.base_lm.layers):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
-            qkv = layer.self_attn.qkv(hidden_states_norm)
-            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
-            q = q.view(-1, layer.self_attn.num_key_value_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim).permute(1, 2, 0, 3)
-            k = k.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
-            q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1) * rotary_pos_emb_sin_q
-            k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2) * rotary_pos_emb_sin_k
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
+            qkv = layer.self_attn.qkv(hidden_states)
+            num_q_heads = layer.self_attn.num_key_value_heads * layer.self_attn.num_key_value_groups
+            num_kv_heads = layer.self_attn.num_key_value_heads
+            qkv = qkv.view(-1, 1, num_q_heads + 2 * num_kv_heads, layer.self_attn.head_dim)
+            qk, v = torch.split(qkv, [num_q_heads + num_kv_heads, num_kv_heads], dim=2)
+            qk = qk * rotary_pos_emb_cos + self.rotate_half(qk, -1) * rotary_pos_emb_sin
+            q, k = torch.split(qk, [num_q_heads, num_kv_heads], dim=2)
+            q = q.view(-1, num_kv_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim).permute(1, 2, 0, 3)
+            k = k.permute(2, 1, 3, 0)
             if USE_F16_KV:
                 k = k.half()
                 v = v.half()
-            v = v.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
+            v = v.transpose(0, 2)
             k = torch.cat((all_inputs[i], k), dim=-1)
             v = torch.cat((all_inputs[i + self.total_layers], v), dim=-2)
             self.save_key[i] = k
@@ -404,17 +407,20 @@ class VOXCPM_MAIN(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
-            qkv = layer.self_attn.qkv(hidden_states_norm)
-            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
-            q = q.view(-1, layer.self_attn.num_key_value_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim).permute(1, 2, 0, 3)
-            k = k.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(2, 1, 3, 0)
-            q = q * rotary_pos_emb_cos_q + self.rotate_half(q, -1) * rotary_pos_emb_sin_q
-            k = k * rotary_pos_emb_cos_k + self.rotate_half(k, -2) * rotary_pos_emb_sin_k
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
+            qkv = layer.self_attn.qkv(hidden_states)
+            num_q_heads = layer.self_attn.num_key_value_heads * layer.self_attn.num_key_value_groups
+            num_kv_heads = layer.self_attn.num_key_value_heads
+            qkv = qkv.view(-1, 1, num_q_heads + 2 * num_kv_heads, layer.self_attn.head_dim)
+            qk, v = torch.split(qkv, [num_q_heads + num_kv_heads, num_kv_heads], dim=2)
+            qk = qk * rotary_pos_emb_cos + self.rotate_half(qk, -1) * rotary_pos_emb_sin
+            q, k = torch.split(qk, [num_q_heads, num_kv_heads], dim=2)
+            q = q.view(-1, num_kv_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim).permute(1, 2, 0, 3)
+            k = k.permute(2, 1, 3, 0)
             if USE_F16_KV:
                 k = k.half()
                 v = v.half()
-            v = v.view(-1, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(0, 2)
+            v = v.transpose(0, 2)
             k = torch.cat((all_inputs[i], k), dim=-1)
             v = torch.cat((all_inputs[i + self.total_layers], v), dim=-2)
             self.save_key[i] = k
@@ -469,10 +475,8 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         position_ids = torch.arange(self.q_len, dtype=torch.int32)
         rope_emb_cos, rope_emb_sin = self.voxcpm.feat_decoder.estimator.decoder.rope_emb(position_ids)
         rope_emb_sin[:, :self.voxcpm.feat_decoder.estimator.decoder.rope_emb.dim // 2] *= -1.0
-        self.rope_emb_cos_q = rope_emb_cos.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        self.rope_emb_sin_q = rope_emb_sin.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        self.rope_emb_cos_k = self.rope_emb_cos_q.transpose(-1, -2)
-        self.rope_emb_sin_k = self.rope_emb_sin_q.transpose(-1, -2)
+        self.rope_emb_cos = rope_emb_cos.view(1, self.q_len, 1, 1, -1)
+        self.rope_emb_sin = rope_emb_sin.view(1, self.q_len, 1, 1, -1)
         self.split_size = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim // 2
         scale_factor = self.voxcpm.feat_decoder.estimator.decoder.layers._modules['0'].self_attn.head_dim ** -0.25
         norm_factor = self.voxcpm.feat_decoder.estimator.config.hidden_size ** 0.5
@@ -557,12 +561,15 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
                 hidden_states = hidden_states * self.overflow_scale
             hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
             qkv = layer.self_attn.qkv(hidden_states_norm)
-            q, k, v = torch.split(qkv, [layer.self_attn.q_out_features, layer.self_attn.k_out_features, layer.self_attn.v_out_features], dim=-1)
-            q = q.view(-1, self.q_len, layer.self_attn.num_key_value_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim).permute(0, 2, 3, 1, 4)
-            k = k.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).permute(0, 3, 2, 4, 1)
-            v = v.view(-1, self.q_len, 1, layer.self_attn.num_key_value_heads, layer.self_attn.head_dim).transpose(1, 3)
-            q = q * self.rope_emb_cos_q + self.rotate_half(q, -1) * self.rope_emb_sin_q
-            k = k * self.rope_emb_cos_k + self.rotate_half(k, -2) * self.rope_emb_sin_k
+            num_total_heads = layer.self_attn.num_key_value_heads + layer.self_attn.num_key_value_heads * layer.self_attn.num_key_value_groups
+            qkv = qkv.view(-1, self.q_len, 1, num_total_heads + layer.self_attn.num_key_value_heads, layer.self_attn.head_dim)
+            qk, v = torch.split(qkv, [num_total_heads, layer.self_attn.num_key_value_heads], dim=3)
+            qk = qk * self.rope_emb_cos + self.rotate_half(qk, -1) * self.rope_emb_sin
+            q, k = torch.split(qk, [layer.self_attn.num_key_value_heads * layer.self_attn.num_key_value_groups, layer.self_attn.num_key_value_heads], dim=3)
+            q = q.view(-1, self.q_len, layer.self_attn.num_key_value_heads, layer.self_attn.num_key_value_groups, layer.self_attn.head_dim)
+            q = q.permute(0, 2, 3, 1, 4)
+            k = k.permute(0, 3, 2, 4, 1)
+            v = v.transpose(1, 3)
             attn = torch.nn.functional.softmax(torch.matmul(q, k), dim=-1, dtype=torch.float32)
             attn = torch.matmul(attn, v).permute(0, 3, 1, 2, 4).reshape(-1, self.q_len, layer.self_attn.o_proj.in_features)
             attn_out = layer.self_attn.o_proj(attn)
