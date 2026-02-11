@@ -204,7 +204,7 @@ for model_name in model_names:
             model_output=quanted_model_path,
             per_channel=True,
             reduce_range=False,
-            weight_type=QuantType.QInt8,
+            weight_type=QuantType.QUInt8,
             extra_options={
                 'ActivationSymmetric': False,
                 'WeightSymmetric': False,
