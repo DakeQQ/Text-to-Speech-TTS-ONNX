@@ -576,8 +576,8 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
             residual = hidden_states
             if PREVENT_F16_OVERFLOW:
                 hidden_states = hidden_states * self.overflow_scale
-            hidden_states_norm = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
-            qkv = layer.self_attn.qkv(hidden_states_norm)
+            hidden_states = hidden_states * torch.rsqrt(hidden_states.square().sum(-1, keepdim=True))
+            qkv = layer.self_attn.qkv(hidden_states)
             qkv = qkv.view(-1, self.q_len, 1, self.qk_heads + self.num_key_value_heads, self.head_dim)
             qk, v = torch.split(qkv, [self.qk_heads, self.num_key_value_heads], dim=-2)
             qk = qk * self.rope_emb_cos + self.rotate_half(qk) * self.rope_emb_sin
