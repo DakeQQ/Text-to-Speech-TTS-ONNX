@@ -1,8 +1,6 @@
 import os
 import gc
 import glob
-import torch
-import subprocess
 import onnx
 import onnx.version_converter
 from pathlib import Path
@@ -27,7 +25,7 @@ lazy_setting_CPU = True                     # Set true to auto-select CPU settin
 lazy_setting_GPU = False                    # Set true to auto-select GPU settings.
 
 use_openvino = False                        # Set true for OpenVINO optimization.
-use_low_memory_mode_in_Android = False      # If True, save the model into 2 parts.
+SAVE_TWO_PARTS = False      # If True, save the model into 2 parts.
 upgrade_opset = 0                           # Optional process. Set 0 for close.
 
 
@@ -238,7 +236,7 @@ for model_name in model_names:
             max_finite_val=65504.0,
             op_block_list=['DynamicQuantizeLinear', 'DequantizeLinear', 'DynamicQuantizeMatMul', 'Range', 'MatMulIntegerToFloat']
         )
-        model.save_model_to_file(quanted_model_path, use_external_data_format=use_low_memory_mode_in_Android)
+        model.save_model_to_file(quanted_model_path, use_external_data_format=SAVE_TWO_PARTS)
 
     else:
         # Float32 path (no quantization) -> just optimize
@@ -254,7 +252,7 @@ for model_name in model_names:
             model_type='bert',
             only_onnxruntime=use_openvino
         )
-        model.save_model_to_file(quanted_model_path, use_external_data_format=use_low_memory_mode_in_Android)
+        model.save_model_to_file(quanted_model_path, use_external_data_format=SAVE_TWO_PARTS)
 
     # Extra optimization pass if quantization branch didn't already optimize
     if not be_optimized:
@@ -269,7 +267,7 @@ for model_name in model_names:
             model_type='bert',
             only_onnxruntime=use_openvino
         )
-        model.save_model_to_file(quanted_model_path, use_external_data_format=use_low_memory_mode_in_Android)
+        model.save_model_to_file(quanted_model_path, use_external_data_format=SAVE_TWO_PARTS)
 
     # Slim the model
     slim(
@@ -278,7 +276,7 @@ for model_name in model_names:
         no_shape_infer=False,
         skip_fusion_patterns=False,
         no_constant_folding=False,
-        save_as_external_data=use_low_memory_mode_in_Android,
+        save_as_external_data=SAVE_TWO_PARTS,
         verbose=False
     )
 
@@ -288,18 +286,18 @@ for model_name in model_names:
         try:
             model = onnx.load(quanted_model_path)
             converted_model = onnx.version_converter.convert_version(model, upgrade_opset)
-            onnx.save(converted_model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
+            onnx.save(converted_model, quanted_model_path, save_as_external_data=SAVE_TWO_PARTS)
             del model, converted_model
             gc.collect()
         except Exception as e:
             print(f"Could not upgrade opset due to an error: {e}. Saving model with original opset.")
             model = onnx.load(quanted_model_path)
-            onnx.save(model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
+            onnx.save(model, quanted_model_path, save_as_external_data=SAVE_TWO_PARTS)
             del model
             gc.collect()
     else:
         model = onnx.load(quanted_model_path)
-        onnx.save(model, quanted_model_path, save_as_external_data=use_low_memory_mode_in_Android)
+        onnx.save(model, quanted_model_path, save_as_external_data=SAVE_TWO_PARTS)
         del model
         gc.collect()
 
