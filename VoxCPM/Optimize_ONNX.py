@@ -39,9 +39,12 @@ model_names = [             # Recommended quantize dtype. The int8 is best for C
     "VoxCPM_Feat_Encoder",  # [int8, float32, float16]
     "VoxCPM_Feat_Cond",     # [float32, float16]
     "VoxCPM_Concat",        # [float32, float16]
+    "VoxCPM_Rotary_Mask_Text_Prefill", # [float32, float16]
+    "VoxCPM_Rotary_Mask_Text_Decode" # [float32, float16]
     "VoxCPM_Main",          # [int8, float32, float16]
     "VoxCPM_Feat_Decoder",  # [float32, int8, float16]
     "VoxCPM_VAE_Decoder"    # [float32, float16]
+    
 ]
 
 # Manual Settings
@@ -68,6 +71,8 @@ if lazy_setting_CPU:
             "VoxCPM_Feat_Encoder": "float32",
             "VoxCPM_Feat_Cond": "float32",
             "VoxCPM_Concat": "float32",
+            "VoxCPM_Rotary_Mask_Text_Prefill": "float32",
+            "VoxCPM_Rotary_Mask_Text_Decode": "float32",
             "VoxCPM_Main": "int8",
             "VoxCPM_Feat_Decoder": "float32", # int8 can also work, but it will affect the quality.
             "VoxCPM_VAE_Decoder": "float32",
@@ -79,6 +84,8 @@ if lazy_setting_CPU:
             "VoxCPM_Feat_Encoder": "int8",
             "VoxCPM_Feat_Cond": "float32",
             "VoxCPM_Concat": "float32",
+            "VoxCPM_Rotary_Mask_Text_Prefill": "float32",
+            "VoxCPM_Rotary_Mask_Text_Decode": "float32",
             "VoxCPM_Main": "int8",
             "VoxCPM_Feat_Decoder": "int8",   # int8 = speed / float32 = quality.
             "VoxCPM_VAE_Decoder": "float32",
@@ -90,6 +97,8 @@ elif lazy_setting_GPU:
         "VoxCPM_Feat_Encoder": "float16",
         "VoxCPM_Feat_Cond": "float16",
         "VoxCPM_Concat": "float16",
+        "VoxCPM_Rotary_Mask_Text_Prefill": "float16",
+        "VoxCPM_Rotary_Mask_Text_Decode": "float16",
         "VoxCPM_Main": "float16",
         "VoxCPM_Feat_Decoder": "float16",
         "VoxCPM_VAE_Decoder": "float16",
