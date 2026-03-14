@@ -40,7 +40,7 @@ model_names = [             # Recommended quantize dtype. The int8 is best for C
     "VoxCPM_Feat_Cond",     # [float32, float16]
     "VoxCPM_Concat",        # [float32, float16]
     "VoxCPM_Rotary_Mask_Text_Prefill", # [float32, float16]
-    "VoxCPM_Rotary_Mask_Text_Decode" # [float32, float16]
+    "VoxCPM_Rotary_Mask_Text_Decode",  # [float32, float16]
     "VoxCPM_Main",          # [int8, float32, float16]
     "VoxCPM_Feat_Decoder",  # [float32, int8, float16]
     "VoxCPM_VAE_Decoder"    # [float32, float16]
