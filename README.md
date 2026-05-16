@@ -6,7 +6,8 @@
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
    - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (It is part of the TTS module.)
-   - [VoxCPM](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5)
+   - [VoxCPM-1.5](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5)
+   - [Qwen3-TTS-Base](https://github.com/QwenLM/Qwen3-TTS)
 
 3. **End-to-End Processing**:  
    - The solution includes internal `STFT/ISTFT` processing.  
@@ -32,12 +33,15 @@
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q4F32   |        5.2                                                                | 0.87 |
 | Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        9                                                               | 1.5 |
 | Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        1.03                                                            | 0.17 |
+| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        19                                                               | 3.1 |
 
 
 ---
 
 ### To-Do List  
-- [ ] Beam Search
+- [ ] Qwen3-TTS-Custom_Voice
+- [ ] Qwen3-TTS-Voice_Design
+- [ ] VoxCPM-2
 ---
 
 # Text-to-Speech-TTS-ONNX
@@ -49,7 +53,8 @@
    - [F5-TTS](https://github.com/SWivid/F5-TTS)
    - [IndexTTS](https://github.com/index-tts/index-tts)
    - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (它是TTS模块的一部分)
-   - [VoxCPM](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5)
+   - [VoxCPM-1.5](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5)
+   - [Qwen3-TTS-Base](https://github.com/QwenLM/Qwen3-TTS)
 
 3. **端到端处理**：  
    - 解决方案内置 `STFT/ISTFT` 处理。  
