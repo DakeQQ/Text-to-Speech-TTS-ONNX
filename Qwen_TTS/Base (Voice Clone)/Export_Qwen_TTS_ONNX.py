@@ -909,18 +909,17 @@ class TTS_MAIN(torch.nn.Module):
         rotary_pos_emb_cos = all_inputs[-3]
         rotary_pos_emb_sin = all_inputs[-2]
         attention_mask     = all_inputs[-1]
-        batch_size         = hidden_states.shape[0].unsqueeze(0)
 
         for i, layer in enumerate(self.tts.model.layers):
             residual      = hidden_states
             hidden_states = self._rms_norm(hidden_states)
             qkv           = layer.self_attn.qkv(hidden_states)
-            qkv           = qkv.reshape(batch_size, -1, 1, self.qk_heads + self.num_key_value_heads, self.head_dim)
+            qkv           = qkv.reshape(1, -1, 1, self.qk_heads + self.num_key_value_heads, self.head_dim)
             qk, v         = torch.split(qkv, [self.qk_heads, self.num_key_value_heads], dim=-2)
             qk            = self._rms_norm(qk) * layer.self_attn.qk_norm_weight
-            qk_rot        = qk * rotary_pos_emb_cos + self.rotate_half(qk, batch_size) * rotary_pos_emb_sin
+            qk_rot        = qk * rotary_pos_emb_cos + self.rotate_half(qk, 1) * rotary_pos_emb_sin
             q, k          = torch.split(qk_rot, [self.num_heads, self.num_key_value_heads], dim=-2)
-            q             = q.reshape(batch_size, -1, self.num_key_value_heads, self.num_key_value_groups, self.head_dim)
+            q             = q.reshape(1, -1, self.num_key_value_heads, self.num_key_value_groups, self.head_dim)
             q             = q.permute(0, 2, 3, 1, 4)
 
             if USE_F16_KV:
@@ -935,7 +934,7 @@ class TTS_MAIN(torch.nn.Module):
                 k, v = k.float(), v.float()
 
             attn          = torch.softmax(torch.matmul(q, k) + attention_mask, dim=-1)
-            attn          = torch.matmul(attn, v).permute(0, 3, 1, 2, 4).reshape(batch_size, -1, layer.self_attn.o_proj.in_features)
+            attn          = torch.matmul(attn, v).permute(0, 3, 1, 2, 4).reshape(1, -1, layer.self_attn.o_proj.in_features)
             hidden_states = residual + layer.self_attn.o_proj(attn)
 
             residual      = hidden_states
@@ -1268,11 +1267,11 @@ if DO_EXPORT:
         num_code_groups       = model.model.talker.code_predictor.config.num_code_groups
         NUM_CODE_GROUPS_MINUS = num_code_groups - 1
 
-        batch_size  = BEAM_SIZE
+        batch_size  = 1
         ids_len     = torch.tensor([10],        dtype=torch.int64)
         history_len = torch.tensor([0],         dtype=torch.int64)
         kv_seq_len  = ids_len + history_len
-        beam_size   = torch.tensor([BEAM_SIZE], dtype=torch.int64)
+        beam_size   = torch.tensor([batch_size], dtype=torch.int64)
 
         kv_specs   = [('key', 4), ('value', 3)]
         kv_dtype   = torch.float16 if USE_F16_KV else torch.float32
@@ -1566,12 +1565,10 @@ if DO_EXPORT:
             output_names=kv_out_names + ['last_hidden_state', 'max_ids'],
             dynamic_axes={
                 **kv_axes,
-                'hidden_states':     {0: 'batch', 1: 'ids_len'},
+                'hidden_states':     {1: 'ids_len'},
                 'rotary_cos':        {1: 'ids_len'},
                 'rotary_sin':        {1: 'ids_len'},
-                'attention_mask':    {3: 'ids_len', 4: 'kv_seq_len'},
-                'last_hidden_state': {0: 'batch'},
-                'logits':            {0: 'batch'}
+                'attention_mask':    {3: 'ids_len', 4: 'kv_seq_len'}
             },
             opset_version=OPSET,
             dynamo=False
@@ -1604,8 +1601,8 @@ if DO_EXPORT:
         del decoder, ref_code, ref_code_len, generated_codec
 
         # ── Phase 10 : Decoding strategy & beam-search exports ───────────────
-        logits     = torch.ones((BEAM_SIZE, vocab_size), dtype=torch.float32)
-        save_id_in = torch.zeros((BEAM_SIZE, 10),        dtype=torch.int32)
+        logits     = torch.ones((beam_size, vocab_size), dtype=torch.float32)
+        save_id_in = torch.zeros((beam_size, 10),        dtype=torch.int32)
 
         torch.onnx.export(
             GREEDY_SEARCH(),
@@ -1684,7 +1681,7 @@ if DO_EXPORT:
         kv_ins, kv_in_names, kv_out_names, kv_axes = get_kv_io(
             kv_tensors, num_layers_predictor, 'batch', 'history_len', 'kv_seq_len'
         )
-        previous_prob = torch.zeros((BEAM_SIZE, 1), dtype=torch.float32)
+        previous_prob = torch.zeros((beam_size, 1), dtype=torch.float32)
         topK_t        = torch.tensor([TOP_K],        dtype=torch.int64)
         torch.onnx.export(
             SECOND_BEAM_SEARCH(num_layers_beam),
@@ -2452,3 +2449,4 @@ if save_generated_wav:
 
     save_generated_wav = np.concatenate(save_generated_wav)
     sf.write(generated_audio_path, save_generated_wav, OUT_SAMPLE_RATE, format='WAVEX')
+    
