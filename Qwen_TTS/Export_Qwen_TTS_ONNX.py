@@ -801,15 +801,8 @@ class TTS_DECODER(torch.nn.Module):
         x = x.flip(-2)
         return x.view(1, -1, self.qk_heads, self.head_dim)
 
-    def forward(self, *args):
-        if self.mode == "voice_clone":
-            ref_code, ref_code_len, generated_codec = args
-            # Prepend reference codec tokens to the generated sequence
-            concat_codec = torch.cat([ref_code.unsqueeze(0), generated_codec.reshape(1, -1, self.num_code_groups).transpose(1, 2)], dim=-1)
-        else:
-            # custom_voice: no ref_code, decode generated_codec directly
-            generated_codec = args[0]
-            concat_codec = generated_codec.reshape(1, -1, self.num_code_groups).transpose(1, 2)
+    def forward(self, generated_codec):
+        concat_codec = generated_codec.reshape(1, -1, self.num_code_groups).transpose(1, 2)
 
         hidden_states = self.decoder.quantizer.decode(concat_codec)
         hidden_states = self.decoder.pre_conv(hidden_states).transpose(1, 2)
@@ -851,11 +844,7 @@ class TTS_DECODER(torch.nn.Module):
         for block in self.decoder.decoder:
             generated_wav = block(generated_wav)
 
-        if self.mode == "voice_clone":
-            generated_wav = generated_wav[..., ref_code_len * self.upsample_rate: ids_len * self.upsample_rate]
-        else:
-            # custom_voice: use entire generated waveform
-            generated_wav = generated_wav[..., : ids_len * self.upsample_rate]
+        generated_wav = generated_wav[..., : ids_len * self.upsample_rate]
 
         if self.scale < 1.0:
             generated_wav = torch.nn.functional.interpolate(generated_wav, scale_factor=self.scale, mode='linear', align_corners=False)
@@ -1691,36 +1680,19 @@ if DO_EXPORT:
         del model
         gc.collect()
 
-        if MODE == "voice_clone":
-            torch.onnx.export(
-                decoder,
-                (ref_code, ref_code_len, generated_codec),
-                onnx_model_Decoder,
-                input_names=['ref_code', 'ref_code_len', 'generated_codec'],
-                output_names=['generated_wav', 'generated_len'],
-                dynamic_axes={
-                    'ref_code':        {1: 'ref_code_len'},
-                    'generated_codec': {1: 'generated_codec_len'},
-                    'generated_wav':   {2: 'generated_wav_len'}
-                },
-                opset_version=OPSET,
-                dynamo=False
-            )
-        else:
-            # custom_voice / voice_design: decoder takes only generated_codec (no ref_code)
-            torch.onnx.export(
-                decoder,
-                (generated_codec,),
-                onnx_model_Decoder,
-                input_names=['generated_codec'],
-                output_names=['generated_wav', 'generated_len'],
-                dynamic_axes={
-                    'generated_codec': {1: 'generated_codec_len'},
-                    'generated_wav':   {2: 'generated_wav_len'}
-                },
-                opset_version=OPSET,
-                dynamo=False
-            )
+        torch.onnx.export(
+            decoder,
+            (generated_codec,),
+            onnx_model_Decoder,
+            input_names=['generated_codec'],
+            output_names=['generated_wav', 'generated_len'],
+            dynamic_axes={
+                'generated_codec': {1: 'generated_codec_len'},
+                'generated_wav':   {2: 'generated_wav_len'}
+            },
+            opset_version=OPSET,
+            dynamo=False
+        )
         del decoder, ref_code, ref_code_len, generated_codec
 
         # ── Phase 10 : Decoding strategy & beam-search exports ───────────────
@@ -2364,14 +2336,6 @@ else:
     input_feed_Preprocess[in_name_Preprocess[2]] = language_embed
     input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed
 
-# Decoder fixed inputs
-if MODE == "voice_clone":
-    input_feed_Decoder[in_name_Decoder[0]] = ref_code
-    input_feed_Decoder[in_name_Decoder[1]] = ref_code_len
-    decoder_codec_idx = 2
-else:
-    decoder_codec_idx = 0
-
 # Predictor Rotary Text Prefill fixed inputs
 input_feed_Predictor_Rotary_Text_Prefill[in_name_Predictor_Rotary_Text_Prefill[0]] = init_predictor_ids_len
 input_feed_Predictor_Rotary_Text_Prefill[in_name_Predictor_Rotary_Text_Prefill[1]] = init_history_len
@@ -2622,7 +2586,7 @@ for target_idx, target in enumerate(target_tts):
         num_decode_Main += 1
 
     # Decoder: feed generated_codec (voice_clone has ref_code/ref_code_len pre-populated at indices 0,1)
-    input_feed_Decoder[in_name_Decoder[decoder_codec_idx]] = generated_codec
+    input_feed_Decoder[in_name_Decoder[0]] = generated_codec
     decoder_start = time.perf_counter()
     generated_wav = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
     decoder_time = time.perf_counter() - decoder_start

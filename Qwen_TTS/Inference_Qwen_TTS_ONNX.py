@@ -11,28 +11,28 @@ from transformers import AutoTokenizer
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
 download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                # Source model folder [0.6B-Base / 1.7B-Base / 1.7B-CustomVoice / 1.7B-VoiceDesign]
-onnx_model_Embed_A                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_A.onnx'
-onnx_model_Embed_B                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_B.onnx'
-onnx_model_Embed_C                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_C.onnx'
-onnx_model_Embed_D                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_D.onnx'
+onnx_model_Embed_A                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_A.onnx'
+onnx_model_Embed_B                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_B.onnx'
+onnx_model_Embed_C                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_C.onnx'
+onnx_model_Embed_D                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_D.onnx'
 onnx_model_Preprocess                    = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Preprocess.onnx'
-onnx_model_Encoder                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Encoder.onnx'
-onnx_model_Predictor                     = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Predictor.onnx'
-onnx_model_Pred_LmHead                   = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Predictor_LmHead.onnx'
-onnx_model_Main                          = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Main.onnx'
-onnx_model_Decoder                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Decoder.onnx'
-onnx_model_Main_Rotary_Mask_Text_Prefill = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Main_Rotary_Mask_Text_Prefill.onnx'
-onnx_model_Main_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Main_Rotary_Mask_Text_Decode.onnx'
-onnx_model_Pred_Rotary_Mask_Text_Prefill = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Predictor_Rotary_Mask_Text_Prefill.onnx'
-onnx_model_Pred_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Predictor_Rotary_Mask_Text_Decode.onnx'
-onnx_model_Gather_0                      = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Gather_0.onnx'
-onnx_model_Concat_Embed                  = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Concat_Embed.onnx'
-onnx_model_Concat_Ids                    = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Concat_Ids.onnx'
-onnx_model_Greedy                        = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Greedy_Search.onnx'
-onnx_model_First_Beam                    = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/First_Beam_Search.onnx'
-onnx_model_Second_Beam                   = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Second_Beam_Search.onnx'
-onnx_model_Penalty                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Apply_Penalty.onnx'
-onnx_model_Argmax                        = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Argmax.onnx'
+onnx_model_Encoder                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Encoder.onnx'
+onnx_model_Predictor                     = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Predictor.onnx'
+onnx_model_Pred_LmHead                   = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Predictor_LmHead.onnx'
+onnx_model_Main                          = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Main.onnx'
+onnx_model_Decoder                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Decoder.onnx'
+onnx_model_Main_Rotary_Mask_Text_Prefill = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Main_Rotary_Mask_Text_Prefill.onnx'
+onnx_model_Main_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Main_Rotary_Mask_Text_Decode.onnx'
+onnx_model_Pred_Rotary_Mask_Text_Prefill = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Predictor_Rotary_Mask_Text_Prefill.onnx'
+onnx_model_Pred_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Predictor_Rotary_Mask_Text_Decode.onnx'
+onnx_model_Gather_0                      = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Gather_0.onnx'
+onnx_model_Concat_Embed                  = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Concat_Embed.onnx'
+onnx_model_Concat_Ids                    = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Concat_Ids.onnx'
+onnx_model_Greedy                        = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Greedy_Search.onnx'
+onnx_model_First_Beam                    = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/First_Beam_Search.onnx'
+onnx_model_Second_Beam                   = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Second_Beam_Search.onnx'
+onnx_model_Penalty                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Apply_Penalty.onnx'
+onnx_model_Argmax                        = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Argmax.onnx'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -638,14 +638,6 @@ else:
     input_feed_Preprocess[in_name_Preprocess[2]] = language_embed
     input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed
 
-# Decoder fixed inputs
-if MODE == "voice_clone":
-    input_feed_Decoder[in_name_Decoder[0]] = ref_code
-    input_feed_Decoder[in_name_Decoder[1]] = ref_code_len
-    decoder_codec_idx = 2
-else:
-    decoder_codec_idx = 0
-
 # Predictor Rotary Text Prefill fixed inputs
 input_feed_Predictor_Rotary_Text_Prefill[in_name_Predictor_Rotary_Text_Prefill[0]] = init_predictor_ids_len
 input_feed_Predictor_Rotary_Text_Prefill[in_name_Predictor_Rotary_Text_Prefill[1]] = init_history_len
@@ -896,7 +888,7 @@ for target_idx, target in enumerate(target_tts):
         num_decode_Main += 1
 
     # Decoder: feed generated_codec (voice_clone has ref_code/ref_code_len pre-populated at indices 0,1)
-    input_feed_Decoder[in_name_Decoder[decoder_codec_idx]] = generated_codec
+    input_feed_Decoder[in_name_Decoder[0]] = generated_codec
     decoder_start = time.perf_counter()
     generated_wav = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
     decoder_time = time.perf_counter() - decoder_start
