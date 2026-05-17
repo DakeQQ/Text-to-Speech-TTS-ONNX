@@ -15,7 +15,7 @@ from onnxruntime.quantization import (
 # ==============================================================================
 # Path Settings
 # ==============================================================================
-model_main_size      = "0.6B"                                      # Model size: "0.6B" or "1.7B".
+model_type           = "0.6B-Base"                                   # [0.6B-Base, 1.7B-Base, 1.7B-CustomVoice, 1.7B-VoiceDesign]
 original_folder_path = r"/home/DakeQQ/Downloads/QwenTTS_ONNX"        # The original exported folder.
 quanted_folder_path  = r"/home/DakeQQ/Downloads/QwenTTS_Optimized"   # The optimized folder.
 
@@ -126,7 +126,7 @@ GPU_MODEL_DTYPE = {
     "QwenTTS_Embed_B":                            "float16",
     "QwenTTS_Embed_C":                            "float32",
     "QwenTTS_Embed_D":                            "float16",
-    "QwenTTS_Preprocess":                         "float16" if "0.6B" in model_main_size else "float32",
+    "QwenTTS_Preprocess":                         "float32" if "1.7B-Base" in model_type else "float16",
     "QwenTTS_Encoder":                            "float16",
     "QwenTTS_Predictor":                          "int8",
     "QwenTTS_Predictor_LmHead":                   "float16",
@@ -287,7 +287,7 @@ def process_single_model(
             use_gpu=False,
             opt_level=_opt_level(model_name),
             num_heads=_num_heads(model_name),
-            hidden_size=_hidden_size(model_name, model_main_size),
+            hidden_size=_hidden_size(model_name, model_type),
             verbose=False,
             model_type='bert',
             only_onnxruntime=use_openvino,
@@ -315,7 +315,7 @@ def process_single_model(
             use_gpu=False,
             opt_level=_opt_level(model_name),
             num_heads=_num_heads(model_name),
-            hidden_size=_hidden_size(model_name, model_main_size),
+            hidden_size=_hidden_size(model_name, model_type),
             verbose=False,
             model_type='bert',
             only_onnxruntime=use_openvino,
@@ -332,7 +332,7 @@ def process_single_model(
             use_gpu=False,
             opt_level=_opt_level(model_name),
             num_heads=_num_heads(model_name),
-            hidden_size=_hidden_size(model_name, model_main_size),
+            hidden_size=_hidden_size(model_name, model_type),
             verbose=False,
             model_type='bert',
             only_onnxruntime=use_openvino,
