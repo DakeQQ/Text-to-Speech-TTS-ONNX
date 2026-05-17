@@ -16,7 +16,7 @@ from STFT_Process import STFT_Process
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                         # Source model folder
+download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                         # Source model folder [Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-1.7B-Base]
 onnx_model_Embed_A                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_A.onnx'
 onnx_model_Embed_B                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_B.onnx'
 onnx_model_Embed_C                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_C.onnx'
@@ -1262,6 +1262,7 @@ if DO_EXPORT:
         # ── Phase 2 : Shared constants & KV-cache helpers ────────────────────
         head_dim              = model.model.talker.config.head_dim
         hidden_size           = model.model.talker.config.hidden_size
+        hidden_size_pred      = model.model.talker.code_predictor.config.hidden_size
         num_heads             = model.model.talker.config.num_attention_heads
         num_kv_heads          = model.model.talker.config.num_key_value_heads
         vocab_size            = model.model.talker.code_predictor.config.vocab_size
@@ -1533,9 +1534,10 @@ if DO_EXPORT:
             opset_version=OPSET,
             dynamo=False
         )
-        del ids_len, kv_seq_len
+        del kv_seq_len
 
         path_name         = onnx_model_Pred_LmHead.split('.')[0]
+        hidden_states = torch.ones([batch_size, ids_len, hidden_size_pred], dtype=torch.float32)
         last_hidden_state = hidden_states[:, -1]
         for i in range(NUM_CODE_GROUPS_MINUS):
             torch.onnx.export(
@@ -1555,6 +1557,7 @@ if DO_EXPORT:
 
         # ── Phase 8 : Main talker transformer export ─────────────────────────
         num_layers = model.model.talker.config.num_hidden_layers
+        hidden_states = torch.ones([batch_size, ids_len, hidden_size], dtype=torch.float32)
         kv_ins, kv_in_names, kv_out_names, kv_axes = get_kv_io(kv_tensors, num_layers, 'batch', 'history_len', 'kv_seq_len')
         all_inputs_base  = kv_ins + [hidden_states, rotary_cos, rotary_sin, attention_mask]
         input_names_base = kv_in_names + ['hidden_states', 'rotary_cos', 'rotary_sin', 'attention_mask']
@@ -1574,7 +1577,7 @@ if DO_EXPORT:
             opset_version=OPSET,
             dynamo=False
         )
-        del hidden_states, rotary_cos, rotary_sin, attention_mask
+        del ids_len, hidden_states, rotary_cos, rotary_sin, attention_mask
         del all_inputs_base, input_names_base
         del kv_ins, kv_in_names, kv_out_names, kv_axes
 
