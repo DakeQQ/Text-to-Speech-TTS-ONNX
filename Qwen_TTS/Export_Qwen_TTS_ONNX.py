@@ -17,7 +17,7 @@ from STFT_Process import STFT_Process
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                  # Source model folder [0.6B-Base / 1.7B-Base / 1.7B-CustomVoice]
+download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                  # Source model folder [0.6B-Base / 1.7B-Base / 1.7B-CustomVoice / 1.7B-VoiceDesign]
 onnx_model_Embed_A                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_A.onnx'
 onnx_model_Embed_B                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_B.onnx'
 onnx_model_Embed_C                       = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/QwenTTS_Embed_C.onnx'
@@ -45,36 +45,37 @@ onnx_model_Argmax                        = r'/home/DakeQQ/Downloads/QwenTTS_ONNX
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts & targets
 # ─────────────────────────────────────────────────────────────────────────────
-generated_audio_path = r"./generated.wav"                     # Output file
-prompt_audio_path    = "./example/basic_ref_zh.wav"           # Reference audio for voice cloning (voice_clone only)
-prompt_text          = "对，这就是我，万人敬仰的太乙真人。"         # Transcription of the reference audio (voice_clone only)
-target_tts           = [                                      # Texts to synthesize
+generated_audio_path = r"./generated.wav"          # Output file
+target_tts           = [                           # Texts to synthesize
     "大家好，我现在正在大可奇奇体验AI科技。",
     "Hello everyone, I'm currently experiencing DakeQQ's AI technology."
 ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mode Selection (mutually exclusive)
-# ─────────────────────────────────────────────────────────────────────────────
-MODE = "custom_voice" if "custom" in download_path.lower() else "voice_clone"   # Options: "voice_clone" or "custom_voice" (one per export run)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Language & generation settings
 # ─────────────────────────────────────────────────────────────────────────────
-TTS_LANGUAGE  = "Chinese"                       # Options: [English, German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian, Portuguese]
-SPEAKER_NAME  = "Vivian"                        # only used when MODE == "custom_voice". Supported: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
-INSTRUCT_TEXT = "Speak very happily"            # Optional style instruction. Empty string = no instruct.
-                                                # English examples: "Speak cheerfully.", "Whisper gently.", "Speak slowly and calmly.",
-                                                #                   "Read with excitement.", "Speak in a sad tone.", "Narrate like a storyteller.",
-                                                #                   "Speak with anger.", "Talk softly.", "Speak fast with urgency."
-                                                # 中文示例:          "开心地说。", "轻声细语。", "慢慢地、平静地说。",
-                                                #                   "兴奋地朗读。", "用悲伤的语气说。", "像讲故事一样叙述。",
-                                                #                   "愤怒地说。", "温柔地说。", "急促而紧迫地说。"
-MAX_SEQ_LEN   = 1024                            # Maximum decode length (fixed at export time)
-MIN_SEQ_LEN   = 2                               # Minimum decode length (editable at runtime)
-STOP_TOKEN    = [2150]                          # EOS token id for QwenTTS — Do not change
+TTS_LANGUAGE = "Chinese"                            # Options: [English, German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian, Portuguese]
+
+# For Voice Clone
+prompt_audio_path = "./example/basic_ref_zh.wav"    # Reference audio for voice cloning
+prompt_text       = "对，这就是我，万人敬仰的太乙真人。"  # Transcription of the reference audio
+
+# For Custom Voice
+SPEAKER_NAME  = "Vivian"                            # only used when MODE == "custom_voice". Supported: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
+INSTRUCT_TEXT = "Speak very happily"                # Optional style instruction. Empty string = no instruct.
+                                                    # English examples: "Speak cheerfully.", "Whisper gently.", "Speak slowly and calmly.",
+                                                    #                   "Read with excitement.", "Speak in a sad tone.", "Narrate like a storyteller.",
+                                                    #                   "Speak with anger.", "Talk softly.", "Speak fast with urgency."
+                                                    # 中文示例:          "开心地说。", "轻声细语。", "慢慢地、平静地说。",
+                                                    #                   "兴奋地朗读。", "用悲伤的语气说。", "像讲故事一样叙述。",
+                                                    #                   "愤怒地说。", "温柔地说。", "急促而紧迫地说。"
+# For Voice Design
+VOICE_DESCRIPTION = "A young female with a warm, gentle tone and slight breathiness"  # Natural language voice description.
+
+MAX_SEQ_LEN   = 1024                                # Maximum decode length (fixed at export time)
+MIN_SEQ_LEN   = 2                                   # Minimum decode length (editable at runtime)
+STOP_TOKEN    = [2150]                              # EOS token id for QwenTTS — Do not change
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,7 +83,7 @@ STOP_TOKEN    = [2150]                          # EOS token id for QwenTTS — D
 # ─────────────────────────────────────────────────────────────────────────────
 IN_SAMPLE_RATE       = 24000                    # Prompt audio sample rate  (fixed at export time)
 OUT_SAMPLE_RATE      = 24000                    # Output audio sample rate  (fixed at export time)
-MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE      # Maximum prompt audio length in samples (fixed at export time, '20' means 20 seconds)
+MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE      # Maximum prompt audio length in samples (fixed at export time, '20' means 20 seconds, Voice Clone only)
 
 WINDOW_TYPE          = 'hann'                   # Window function      — edit carefully
 N_MELS               = 128                      # Number of Mel bands  — Do not edit
@@ -136,9 +137,20 @@ from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Mode Selection (mutually exclusive)
+# ─────────────────────────────────────────────────────────────────────────────
+# Options: "voice_clone", "custom_voice", or "voice_design" (one per export run)
+if "custom" in download_path.lower():
+    MODE = "custom_voice"
+elif "design" in download_path.lower():
+    MODE = "voice_design"
+else:
+    MODE = "voice_clone"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helper: Tensor Utility Modules
 # ─────────────────────────────────────────────────────────────────────────────
-
 class GATHER_0(torch.nn.Module):
     """Get the first codec from a batch."""
 
@@ -172,7 +184,6 @@ class CONCAT_EMBED(torch.nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # Embedding Modules
 # ─────────────────────────────────────────────────────────────────────────────
-
 class TTS_EMBED_A(torch.nn.Module):
     """Text token → projected text embedding (used for both reference and target text)."""
 
@@ -236,7 +247,6 @@ class TTS_EMBED_D(torch.nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # Rotary Position Embedding & Attention Mask Modules
 # ─────────────────────────────────────────────────────────────────────────────
-
 class TTS_MAIN_ROTARY_MASK_PREFILL(torch.nn.Module):
     """
     Compute rotary position embeddings and a causal attention mask for the
@@ -384,7 +394,6 @@ class TTS_PREDICTOR_ROTARY_MASK_DECODE(torch.nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio Pipeline Modules
 # ─────────────────────────────────────────────────────────────────────────────
-
 class TTS_ENCODER(torch.nn.Module):
     """
     Encode a raw audio waveform into:
@@ -572,11 +581,17 @@ class TTS_PREPROCESS(torch.nn.Module):
       - target text embedding
 
     Returns talker_input_embed, trailing_text_hidden, and the sequence length.
+
+    Modes:
+      - voice_clone:  speaker_embed is from speaker encoder (x-vector), codec_embed from ref audio.
+      - custom_voice: speaker_embed is from speaker id token, codec_embed is empty.
+      - voice_design: no speaker_embed at all, codec_embed is empty. Voice identity comes from instruct.
     """
 
-    def __init__(self, tts):
+    def __init__(self, tts, mode="voice_clone"):
         super().__init__()
         self.tts = tts
+        self.mode = mode
         self.talker_text_embed  = self.tts.model.talker.model.text_embedding
         self.talker_input_embed = self.tts.model.talker.model.codec_embedding
 
@@ -588,7 +603,13 @@ class TTS_PREPROCESS(torch.nn.Module):
             self.tts.model.talker.text_projection(self.talker_text_embed(sp_tokens)).chunk(3, dim=1)
 
         # Pre-compute fixed codec prefix / suffix embeddings
-        self._talker_input_embed = torch.cat([self.tts_pad_embed.expand(-1, 5, -1), self.tts_bos_embed], dim=1)
+        if mode == "voice_design":
+            # voice_design: no speaker token → codec prefix is [think, think_bos, language, think_eos, pad, bos]
+            # The pad portion aligns with: pad*4 + bos = 5 positions
+            self._talker_input_embed = torch.cat([self.tts_pad_embed.expand(-1, 4, -1), self.tts_bos_embed], dim=1)
+        else:
+            # voice_clone / custom_voice: codec prefix includes speaker → pad*5 + bos = 6 positions
+            self._talker_input_embed = torch.cat([self.tts_pad_embed.expand(-1, 5, -1), self.tts_bos_embed], dim=1)
         self.codec_bos_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_bos_id]],                                            dtype=torch.int32))
         self.codec_think_embed   = self.talker_input_embed(torch.tensor([[config.talker_config.codec_think_id, config.talker_config.codec_think_bos_id]], dtype=torch.int32))
         self.codec_eos_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_think_eos_id]],                                      dtype=torch.int32))
@@ -599,7 +620,17 @@ class TTS_PREPROCESS(torch.nn.Module):
         system_head_ids = self.tts.processor(text=system_head, return_tensors="pt", padding=True)["input_ids"].int()
         self._talker_input_embed_role = self.tts.model.talker.text_projection(self.talker_text_embed(system_head_ids))
 
-    def forward(self, codec_embed, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed):
+    def forward(self, *args):
+        if self.mode == "voice_design":
+            # voice_design: forward(language_embed, target_text_embed)
+            language_embed, target_text_embed = args
+            return self._forward_voice_design(language_embed, target_text_embed)
+        else:
+            # voice_clone / custom_voice: forward(codec_embed, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed)
+            codec_embed, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed = args
+            return self._forward_default(codec_embed, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed)
+
+    def _forward_default(self, codec_embed, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed):
         # Prepend BOS to the codec sequence
         codec_embed = torch.cat([self.codec_bos_embed, codec_embed], dim=1)
         codec_len   = codec_embed.shape[1].unsqueeze(0)
@@ -619,6 +650,27 @@ class TTS_PREPROCESS(torch.nn.Module):
         trailing_text_hidden = torch.cat([text_embed[:, codec_len:], self.tts_pad_embed], dim=1)
         trailing_len_minus   = trailing_text_hidden.shape[1].unsqueeze(0).int() - 1
         hidden_states        = torch.cat([talker_input_embed, icl_input_embed], dim=1)
+        ids_len              = hidden_states.shape[1].unsqueeze(0)
+        return hidden_states, ids_len, trailing_text_hidden, trailing_len_minus
+
+    def _forward_voice_design(self, language_embed, target_text_embed):
+        # voice_design: no ref audio, no speaker → streaming-style text + codec interleave
+        # Build text sequence: target_text + eos
+        text_embed = torch.cat([target_text_embed, self.tts_eos_embed], dim=1)
+
+        # Build codec conditioning prefix (no speaker): [think, think_bos, language, think_eos, pad]
+        codec_input_embed   = torch.cat([self.codec_think_embed, language_embed, self.codec_eos_embed, self.codec_pad_embed], dim=1)
+        _talker_input_embed = self._talker_input_embed + codec_input_embed
+        talker_input_embed  = torch.cat([self._talker_input_embed_role, _talker_input_embed], dim=1)
+
+        # For voice_design with no ref_code, the first text token is combined with codec_bos
+        first_text_token    = text_embed[:, :1] + self.codec_bos_embed
+        talker_input_embed  = torch.cat([talker_input_embed, first_text_token], dim=1)
+
+        # Remaining text tokens become trailing_text_hidden for streaming
+        trailing_text_hidden = torch.cat([text_embed[:, 1:], self.tts_pad_embed], dim=1)
+        trailing_len_minus   = trailing_text_hidden.shape[1].unsqueeze(0).int() - 1
+        hidden_states        = talker_input_embed
         ids_len              = hidden_states.shape[1].unsqueeze(0)
         return hidden_states, ids_len, trailing_text_hidden, trailing_len_minus
 
@@ -819,7 +871,6 @@ class TTS_DECODER(torch.nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # Transformer Model Modules
 # ─────────────────────────────────────────────────────────────────────────────
-
 class TTS_MAIN(torch.nn.Module):
     """
     Main talker auto-regressive transformer.
@@ -1149,7 +1200,6 @@ class TTS_PREDICTOR_LM_HEAD(torch.nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoding Strategy Modules
 # ─────────────────────────────────────────────────────────────────────────────
-
 class GREEDY_SEARCH(torch.nn.Module):
     """Select the token with the highest logit (greedy decoding)."""
 
@@ -1444,49 +1494,69 @@ if DO_EXPORT:
         del codec_0, codec_1
 
         # ── Phase 5 : Pre-processing & speech encoder exports ────────────────
-        speaker_embed         = torch.zeros([1, 1,  hidden_size], dtype=torch.float32)
         language_embed        = torch.zeros([1, 1,  hidden_size], dtype=torch.float32)
         target_text_embed     = torch.zeros([1, 10, hidden_size], dtype=torch.float32)
-        ref_prompt_text_embed = torch.zeros([1, 10, hidden_size], dtype=torch.float32)
-        torch.onnx.export(
-            TTS_PREPROCESS(model),
-            (codec_embed_0, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed),
-            onnx_model_Preprocess,
-            input_names=['codec_embed', 'speaker_embed', 'language_embed', 'ref_prompt_text_embed', 'target_text_embed'],
-            output_names=['hidden_states', 'ids_len', 'trailing_text_hidden', 'trailing_len_minus'],
-            dynamic_axes={
-                'codec_embed':           {1: 'ids_len'},
-                'ref_prompt_text_embed': {1: 'ids_len'},
-                'target_text_embed':     {1: 'ids_len'},
-                'hidden_states':         {1: 'ids_len'},
-                'trailing_text_hidden':  {1: 'trailing_len'}
-            },
-            opset_version=OPSET,
-            dynamo=False
-        )
-        del codec_embed_0, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed
 
-        # Encoder: only exported for voice_clone mode
-        if MODE == "voice_clone":
-            prompt_audio = torch.zeros([1, 1, MAX_PROMPT_AUDIO_LEN], dtype=torch.int16)
-            with torch.amp.autocast('cpu', dtype=torch.float16, enabled=USE_F16_ENCODER):
-                torch.onnx.export(
-                    TTS_ENCODER(model, IN_SAMPLE_RATE, MAX_SEQ_LEN, stft_model, NFFT_STFT, N_MELS),
-                    (prompt_audio,),
-                    onnx_model_Encoder,
-                    input_names=['prompt_audio'],
-                    output_names=['ref_code', 'ref_code_len', 'speaker_embed'],
-                    dynamic_axes={
-                        'prompt_audio': {2: 'audio_len'},
-                        'ref_code':     {1: 'ref_code_len'}
-                    },
-                    opset_version=OPSET,
-                    dynamo=False
-                )
-                del prompt_audio, stft_model
-        else:
-            # custom_voice: encoder not needed
+        if MODE == "voice_design":
+            # voice_design: no speaker, no ref audio — only language_embed + target_text_embed
+            torch.onnx.export(
+                TTS_PREPROCESS(model, mode="voice_design"),
+                (language_embed, target_text_embed),
+                onnx_model_Preprocess,
+                input_names=['language_embed', 'target_text_embed'],
+                output_names=['hidden_states', 'ids_len', 'trailing_text_hidden', 'trailing_len_minus'],
+                dynamic_axes={
+                    'target_text_embed':    {1: 'ids_len'},
+                    'hidden_states':        {1: 'ids_len'},
+                    'trailing_text_hidden': {1: 'trailing_len'}
+                },
+                opset_version=OPSET,
+                dynamo=False
+            )
+            del codec_embed_0, language_embed, target_text_embed
             del stft_model
+        else:
+            speaker_embed         = torch.zeros([1, 1,  hidden_size], dtype=torch.float32)
+            ref_prompt_text_embed = torch.zeros([1, 10, hidden_size], dtype=torch.float32)
+            torch.onnx.export(
+                TTS_PREPROCESS(model, mode=MODE),
+                (codec_embed_0, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed),
+                onnx_model_Preprocess,
+                input_names=['codec_embed', 'speaker_embed', 'language_embed', 'ref_prompt_text_embed', 'target_text_embed'],
+                output_names=['hidden_states', 'ids_len', 'trailing_text_hidden', 'trailing_len_minus'],
+                dynamic_axes={
+                    'codec_embed':           {1: 'ids_len'},
+                    'ref_prompt_text_embed': {1: 'ids_len'},
+                    'target_text_embed':     {1: 'ids_len'},
+                    'hidden_states':         {1: 'ids_len'},
+                    'trailing_text_hidden':  {1: 'trailing_len'}
+                },
+                opset_version=OPSET,
+                dynamo=False
+            )
+            del codec_embed_0, speaker_embed, language_embed, ref_prompt_text_embed, target_text_embed
+
+            # Encoder: only exported for voice_clone mode
+            if MODE == "voice_clone":
+                prompt_audio = torch.zeros([1, 1, MAX_PROMPT_AUDIO_LEN], dtype=torch.int16)
+                with torch.amp.autocast('cpu', dtype=torch.float16, enabled=USE_F16_ENCODER):
+                    torch.onnx.export(
+                        TTS_ENCODER(model, IN_SAMPLE_RATE, MAX_SEQ_LEN, stft_model, NFFT_STFT, N_MELS),
+                        (prompt_audio,),
+                        onnx_model_Encoder,
+                        input_names=['prompt_audio'],
+                        output_names=['ref_code', 'ref_code_len', 'speaker_embed'],
+                        dynamic_axes={
+                            'prompt_audio': {2: 'audio_len'},
+                            'ref_code':     {1: 'ref_code_len'}
+                        },
+                        opset_version=OPSET,
+                        dynamo=False
+                    )
+                    del prompt_audio, stft_model
+            else:
+                # custom_voice: encoder not needed
+                del stft_model
 
         # ── Phase 6 : Rotary embedding & attention-mask exports ──────────────
         torch.onnx.export(
@@ -1617,7 +1687,7 @@ if DO_EXPORT:
         ref_code        = torch.zeros([num_code_groups, 10], dtype=torch.int32)
         ref_code_len    = torch.tensor([10],                 dtype=torch.int64)
         generated_codec = torch.zeros([1, num_code_groups * 10], dtype=torch.int32)
-        decoder = TTS_DECODER(model, OUT_SAMPLE_RATE, MAX_SEQ_LEN, mode=MODE)
+        decoder = TTS_DECODER(model, OUT_SAMPLE_RATE, MAX_SEQ_LEN, mode="voice_clone" if MODE == "voice_clone" else "custom_voice")
         del model
         gc.collect()
 
@@ -1637,7 +1707,7 @@ if DO_EXPORT:
                 dynamo=False
             )
         else:
-            # custom_voice: decoder takes only generated_codec (no ref_code)
+            # custom_voice / voice_design: decoder takes only generated_codec (no ref_code)
             torch.onnx.export(
                 decoder,
                 (generated_codec,),
@@ -1863,6 +1933,10 @@ if MODE == "custom_voice":
     dialect = SPEAKER_DIALECT_MAP.get(speaker_key, False)
     if dialect and TTS_LANGUAGE.lower() in ('chinese', 'auto'):
         language_id = DIALECT_LANGUAGE_ID_MAP[dialect]
+elif MODE == "voice_design":
+    # voice_design: no speaker needed, voice identity comes from VOICE_DESCRIPTION
+    if not VOICE_DESCRIPTION or not VOICE_DESCRIPTION.strip():
+        raise ValueError("VOICE_DESCRIPTION is required for voice_design mode.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2234,9 +2308,14 @@ input_feed_Decoder                       = {}
 # ══════════════════════════════════════════════════════════════════════════════
 save_generated_wav = []
 empty_segment = np.zeros(int(OUT_SAMPLE_RATE * 0.2), dtype=np.int16)  # 200ms
+encoder_time = 0.0
+
+# Common: compute language_embed for all modes
+input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[language_id]], np.int32, device_type, DEVICE_ID)
+language_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
 if MODE == "voice_clone":
-    # voice_clone: encode reference audio to obtain ref_code, speaker_embed
+    # Encode reference audio to obtain ref_code, speaker_embed
     prompt_audio = np.array(AudioSegment.from_file(prompt_audio_path).set_channels(1).set_frame_rate(IN_SAMPLE_RATE).get_array_of_samples(), dtype=np.int16)
     if USE_AUDIO_NORMALIZER:
         prompt_audio = audio_normalizer(prompt_audio)
@@ -2257,27 +2336,17 @@ if MODE == "voice_clone":
     input_feed_Embed_B[in_name_Embed_B[0]] = ref_ids_0
     codec_embed_0 = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
-    input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[language_id]], np.int32, device_type, DEVICE_ID)
-    language_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
-
     input_feed_Embed_C[in_name_Embed_C[0]] = ref_code
     input_feed_Embed_C[in_name_Embed_C[1]] = codec_embed_0
     input_feed_Embed_C[in_name_Embed_C[2]] = init_trailing_text_hidden
     input_feed_Embed_C[in_name_Embed_C[3]] = gather_id_0
     codec_embed = ort_session_Embed_C.run_with_ort_values(out_name_Embed_C, input_feed_Embed_C, run_options=run_options)[0]
 
-else:
-    # custom_voice: obtain speaker_embed by passing speaker_id through TTS_Embed_B
-    # (Mirrors inference_custom_voice.py: speaker_embed = talker.get_input_embeddings()(spk_id))
-    encoder_time = 0.0
-
+elif MODE == "custom_voice":
+    # Obtain speaker_embed by passing speaker_id through Embed_B
     input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[speaker_id_value]], np.int32, device_type, DEVICE_ID)
     speaker_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
-    input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[language_id]], np.int32, device_type, DEVICE_ID)
-    language_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
-
-    # For custom_voice: empty codec_embed and empty ref_prompt_text_embed
     codec_embed           = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
     ref_prompt_text_embed = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
 
@@ -2286,19 +2355,22 @@ else:
 # PRE-POPULATE FIXED INPUT FEED ENTRIES
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Preprocess fixed inputs (same for all targets)
-input_feed_Preprocess[in_name_Preprocess[0]] = codec_embed
-input_feed_Preprocess[in_name_Preprocess[1]] = speaker_embed
-input_feed_Preprocess[in_name_Preprocess[2]] = language_embed
-if MODE == "voice_clone":
-    input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed
+# Preprocess fixed inputs
+if MODE == "voice_design":
+    input_feed_Preprocess[in_name_Preprocess[0]] = language_embed
 else:
-    input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed  # empty [1,0,D] for custom_voice
+    input_feed_Preprocess[in_name_Preprocess[0]] = codec_embed
+    input_feed_Preprocess[in_name_Preprocess[1]] = speaker_embed
+    input_feed_Preprocess[in_name_Preprocess[2]] = language_embed
+    input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed
 
 # Decoder fixed inputs
 if MODE == "voice_clone":
     input_feed_Decoder[in_name_Decoder[0]] = ref_code
     input_feed_Decoder[in_name_Decoder[1]] = ref_code_len
+    decoder_codec_idx = 2
+else:
+    decoder_codec_idx = 0
 
 # Predictor Rotary Text Prefill fixed inputs
 input_feed_Predictor_Rotary_Text_Prefill[in_name_Predictor_Rotary_Text_Prefill[0]] = init_predictor_ids_len
@@ -2446,11 +2518,16 @@ total_audio_samples = 0
 total_generation_time = 0.0
 total_decoder_time = 0.0
 
-# custom_voice: pre-compute instruct embed once (shared across all targets)
-# (Mirrors inference_custom_voice.py: instruct_ids embedded via text_projection(text_embedding(ids)))
+# custom_voice / voice_design: pre-compute instruct embed once (shared across all targets)
 instruct_embed = None
+instruct_text = ""
 if MODE == "custom_voice" and INSTRUCT_TEXT:
-    instruct_prompt = "<|im_start|>system\n" + INSTRUCT_TEXT + "<|im_end|>\n"
+    instruct_text = INSTRUCT_TEXT
+elif MODE == "voice_design":
+    instruct_text = VOICE_DESCRIPTION
+
+if instruct_text:
+    instruct_prompt = "<|im_start|>system\n" + instruct_text + "<|im_end|>\n"
     instruct_tokens = tokenizer(instruct_prompt, return_tensors='np')['input_ids'].astype(np.int32)
     input_ids_instruct = onnxruntime.OrtValue.ortvalue_from_numpy(instruct_tokens, device_type, DEVICE_ID)
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_instruct
@@ -2467,12 +2544,15 @@ for target_idx, target in enumerate(target_tts):
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_target
     target_text_embed = ort_session_Embed_A.run_with_ort_values(out_name_Embed_A, input_feed_Embed_A, run_options=run_options)[0]
 
-    input_feed_Preprocess[in_name_Preprocess[4]] = target_text_embed
+    if MODE == "voice_design":
+        # voice_design preprocess: inputs are (language_embed, target_text_embed)
+        input_feed_Preprocess[in_name_Preprocess[1]] = target_text_embed
+    else:
+        input_feed_Preprocess[in_name_Preprocess[4]] = target_text_embed
     hidden_states, ids_len, trailing_text_hidden, trailing_len_minus = ort_session_Preprocess.run_with_ort_values(out_name_Preprocess, input_feed_Preprocess, run_options=run_options)
 
-    # custom_voice: prepend instruct embed before hidden_states if INSTRUCT_TEXT is set
-    # (Mirrors inference_custom_voice.py: instruct_embed is prepended to talker_input_embeds)
-    if MODE == "custom_voice" and INSTRUCT_TEXT:
+    # custom_voice / voice_design: prepend instruct embed before hidden_states
+    if instruct_embed is not None:
         input_feed_Concat_Embed[in_name_Concat_Embed[0]] = instruct_embed
         input_feed_Concat_Embed[in_name_Concat_Embed[1]] = hidden_states
         hidden_states = ort_session_Concat_Embed.run_with_ort_values(out_name_Concat_Embed, input_feed_Concat_Embed, run_options=run_options)[0]
@@ -2541,11 +2621,8 @@ for target_idx, target in enumerate(target_tts):
 
         num_decode_Main += 1
 
-    # Decoder: voice_clone passes ref_code+ref_code_len+generated_codec; custom_voice passes only generated_codec
-    if MODE == "voice_clone":
-        input_feed_Decoder[in_name_Decoder[2]] = generated_codec
-    else:
-        input_feed_Decoder[in_name_Decoder[0]] = generated_codec
+    # Decoder: feed generated_codec (voice_clone has ref_code/ref_code_len pre-populated at indices 0,1)
+    input_feed_Decoder[in_name_Decoder[decoder_codec_idx]] = generated_codec
     decoder_start = time.perf_counter()
     generated_wav = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
     decoder_time = time.perf_counter() - decoder_start

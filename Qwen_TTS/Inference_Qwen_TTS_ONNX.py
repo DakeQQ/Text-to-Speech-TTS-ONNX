@@ -10,7 +10,7 @@ from transformers import AutoTokenizer
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'
+download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                # Source model folder [0.6B-Base / 1.7B-Base / 1.7B-CustomVoice / 1.7B-VoiceDesign]
 onnx_model_Embed_A                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_A.onnx'
 onnx_model_Embed_B                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_B.onnx'
 onnx_model_Embed_C                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_C.onnx'
@@ -38,31 +38,38 @@ onnx_model_Argmax                        = r'/home/DakeQQ/Downloads/QwenTTS_Opti
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts & targets
 # ─────────────────────────────────────────────────────────────────────────────
-generated_audio_path = r"./generated.wav"                     # Output file
-prompt_audio_path    = "./example/basic_ref_zh.wav"           # Reference audio for voice cloning (voice_clone only)
-prompt_text          = "对，这就是我，万人敬仰的太乙真人。"         # Transcription of the reference audio (voice_clone only)
-target_tts           = [                                      # Texts to synthesize
+generated_audio_path = r"./generated.wav"          # Output file
+target_tts           = [                           # Texts to synthesize
     "大家好，我现在正在大可奇奇体验AI科技。",
     "Hello everyone, I'm currently experiencing DakeQQ's AI technology."
 ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mode Selection (mutually exclusive)
-# ─────────────────────────────────────────────────────────────────────────────
-MODE = "custom_voice" if "custom" in download_path.lower() else "voice_clone"   # Options: "voice_clone" or "custom_voice"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Language & generation settings
 # ─────────────────────────────────────────────────────────────────────────────
-TTS_LANGUAGE  = "Chinese"          # Options: [English, German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian, Portuguese]
-SPEAKER_NAME  = "Vivian"           # only used when MODE == "custom_voice". Supported: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
-INSTRUCT_TEXT = "Speak very happily"  # Optional style instruction. Empty string = no instruct.
-MAX_SEQ_LEN  = 1024               # Maximum decode length (fixed at export time)
-MIN_SEQ_LEN  = 2                  # Minimum decode length (editable at runtime)
-STOP_TOKEN   = [2150]             # EOS token id for QwenTTS — Do not change
-NUM_CODE_GROUPS_MINUS = 15        # Fixed value for the Qwen3-TTS
+TTS_LANGUAGE = "Chinese"                            # Options: [English, German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian, Portuguese]
+
+# For Voice Clone
+prompt_audio_path = "./example/basic_ref_zh.wav"    # Reference audio for voice cloning
+prompt_text       = "对，这就是我，万人敬仰的太乙真人。"  # Transcription of the reference audio
+
+# For Custom Voice
+SPEAKER_NAME  = "Vivian"                            # only used when MODE == "custom_voice". Supported: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
+INSTRUCT_TEXT = "Speak very happily"                # Optional style instruction. Empty string = no instruct.
+                                                    # English examples: "Speak cheerfully.", "Whisper gently.", "Speak slowly and calmly.",
+                                                    #                   "Read with excitement.", "Speak in a sad tone.", "Narrate like a storyteller.",
+                                                    #                   "Speak with anger.", "Talk softly.", "Speak fast with urgency."
+                                                    # 中文示例:          "开心地说。", "轻声细语。", "慢慢地、平静地说。",
+                                                    #                   "兴奋地朗读。", "用悲伤的语气说。", "像讲故事一样叙述。",
+                                                    #                   "愤怒地说。", "温柔地说。", "急促而紧迫地说。"
+# For Voice Design
+VOICE_DESCRIPTION = "A young female with a warm, gentle tone and slight breathiness"  # Natural language voice description.
+
+MAX_SEQ_LEN   = 1024                                # Maximum decode length (fixed at export time)
+MIN_SEQ_LEN   = 2                                   # Minimum decode length (editable at runtime)
+STOP_TOKEN    = [2150]                              # EOS token id for QwenTTS — Do not change
+NUM_CODE_GROUPS_MINUS = 15                          # Fixed value for the Qwen3-TTS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio settings
@@ -90,6 +97,18 @@ ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer requ
 ORT_Accelerate_Providers = []     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
 MAX_THREADS              = 0      # CPU thread count (0 = auto)
 DEVICE_ID                = 0      # Device index
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mode Selection (mutually exclusive)
+# ─────────────────────────────────────────────────────────────────────────────
+# Options: "voice_clone", "custom_voice", or "voice_design"
+if "custom" in download_path.lower():
+    MODE = "custom_voice"
+elif "design" in download_path.lower():
+    MODE = "voice_design"
+else:
+    MODE = "voice_clone"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,6 +208,10 @@ if MODE == "custom_voice":
     dialect = SPEAKER_DIALECT_MAP.get(speaker_key, False)
     if dialect and TTS_LANGUAGE.lower() in ('chinese', 'auto'):
         language_id = DIALECT_LANGUAGE_ID_MAP[dialect]
+elif MODE == "voice_design":
+    # voice_design: no speaker needed, voice identity comes from VOICE_DESCRIPTION
+    if not VOICE_DESCRIPTION or not VOICE_DESCRIPTION.strip():
+        raise ValueError("VOICE_DESCRIPTION is required for voice_design mode.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -559,9 +582,14 @@ input_feed_Decoder                       = {}
 # ══════════════════════════════════════════════════════════════════════════════
 save_generated_wav = []
 empty_segment = np.zeros(int(OUT_SAMPLE_RATE * 0.2), dtype=np.int16)  # 200ms
+encoder_time = 0.0
+
+# Common: compute language_embed for all modes
+input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[language_id]], np.int32, device_type, DEVICE_ID)
+language_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
 if MODE == "voice_clone":
-    # voice_clone: encode reference audio to obtain ref_code, speaker_embed
+    # Encode reference audio to obtain ref_code, speaker_embed
     prompt_audio = np.array(AudioSegment.from_file(prompt_audio_path).set_channels(1).set_frame_rate(IN_SAMPLE_RATE).get_array_of_samples(), dtype=np.int16)
     if USE_AUDIO_NORMALIZER:
         prompt_audio = audio_normalizer(prompt_audio)
@@ -573,10 +601,6 @@ if MODE == "voice_clone":
     encoder_time = time.perf_counter() - encoder_start
     print(f'\nEncoder time: {encoder_time:.2f} s')
 
-    # Convert speaker_embed from fp16 to fp32 if needed (Preprocess expects fp32)
-    if speaker_embed.data_type() == 'tensor(float16)':
-        speaker_embed = onnxruntime.OrtValue.ortvalue_from_numpy(speaker_embed.numpy().astype(np.float32), device_type, DEVICE_ID)
-
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_prompt
     ref_prompt_text_embed = ort_session_Embed_A.run_with_ort_values(out_name_Embed_A, input_feed_Embed_A, run_options=run_options)[0]
 
@@ -586,26 +610,17 @@ if MODE == "voice_clone":
     input_feed_Embed_B[in_name_Embed_B[0]] = ref_ids_0
     codec_embed_0 = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
-    input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[language_id]], np.int32, device_type, DEVICE_ID)
-    language_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
-
     input_feed_Embed_C[in_name_Embed_C[0]] = ref_code
     input_feed_Embed_C[in_name_Embed_C[1]] = codec_embed_0
     input_feed_Embed_C[in_name_Embed_C[2]] = init_trailing_text_hidden
     input_feed_Embed_C[in_name_Embed_C[3]] = gather_id_0
     codec_embed = ort_session_Embed_C.run_with_ort_values(out_name_Embed_C, input_feed_Embed_C, run_options=run_options)[0]
 
-else:
-    # custom_voice: obtain speaker_embed by passing speaker_id through TTS_Embed_B
-    encoder_time = 0.0
-
+elif MODE == "custom_voice":
+    # Obtain speaker_embed by passing speaker_id through Embed_B
     input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[speaker_id_value]], np.int32, device_type, DEVICE_ID)
     speaker_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
-    input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[language_id]], np.int32, device_type, DEVICE_ID)
-    language_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
-
-    # For custom_voice: empty codec_embed and empty ref_prompt_text_embed
     codec_embed           = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
     ref_prompt_text_embed = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
 
@@ -614,16 +629,22 @@ else:
 # PRE-POPULATE FIXED INPUT FEED ENTRIES
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Preprocess fixed inputs (same for all targets)
-input_feed_Preprocess[in_name_Preprocess[0]] = codec_embed
-input_feed_Preprocess[in_name_Preprocess[1]] = speaker_embed
-input_feed_Preprocess[in_name_Preprocess[2]] = language_embed
-input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed
+# Preprocess fixed inputs
+if MODE == "voice_design":
+    input_feed_Preprocess[in_name_Preprocess[0]] = language_embed
+else:
+    input_feed_Preprocess[in_name_Preprocess[0]] = codec_embed
+    input_feed_Preprocess[in_name_Preprocess[1]] = speaker_embed
+    input_feed_Preprocess[in_name_Preprocess[2]] = language_embed
+    input_feed_Preprocess[in_name_Preprocess[3]] = ref_prompt_text_embed
 
 # Decoder fixed inputs
 if MODE == "voice_clone":
     input_feed_Decoder[in_name_Decoder[0]] = ref_code
     input_feed_Decoder[in_name_Decoder[1]] = ref_code_len
+    decoder_codec_idx = 2
+else:
+    decoder_codec_idx = 0
 
 # Predictor Rotary Text Prefill fixed inputs
 input_feed_Predictor_Rotary_Text_Prefill[in_name_Predictor_Rotary_Text_Prefill[0]] = init_predictor_ids_len
@@ -771,10 +792,16 @@ total_audio_samples = 0
 total_generation_time = 0.0
 total_decoder_time = 0.0
 
-# custom_voice: pre-compute instruct embed once (shared across all targets)
+# custom_voice / voice_design: pre-compute instruct embed once (shared across all targets)
 instruct_embed = None
+instruct_text = ""
 if MODE == "custom_voice" and INSTRUCT_TEXT:
-    instruct_prompt = "<|im_start|>system\n" + INSTRUCT_TEXT + "<|im_end|>\n"
+    instruct_text = INSTRUCT_TEXT
+elif MODE == "voice_design":
+    instruct_text = VOICE_DESCRIPTION
+
+if instruct_text:
+    instruct_prompt = "<|im_start|>system\n" + instruct_text + "<|im_end|>\n"
     instruct_tokens = tokenizer(instruct_prompt, return_tensors='np')['input_ids'].astype(np.int32)
     input_ids_instruct = onnxruntime.OrtValue.ortvalue_from_numpy(instruct_tokens, device_type, DEVICE_ID)
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_instruct
@@ -791,11 +818,15 @@ for target_idx, target in enumerate(target_tts):
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_target
     target_text_embed = ort_session_Embed_A.run_with_ort_values(out_name_Embed_A, input_feed_Embed_A, run_options=run_options)[0]
 
-    input_feed_Preprocess[in_name_Preprocess[4]] = target_text_embed
+    if MODE == "voice_design":
+        # voice_design preprocess: inputs are (language_embed, target_text_embed)
+        input_feed_Preprocess[in_name_Preprocess[1]] = target_text_embed
+    else:
+        input_feed_Preprocess[in_name_Preprocess[4]] = target_text_embed
     hidden_states, ids_len, trailing_text_hidden, trailing_len_minus = ort_session_Preprocess.run_with_ort_values(out_name_Preprocess, input_feed_Preprocess, run_options=run_options)
 
-    # custom_voice: prepend instruct embed before hidden_states if INSTRUCT_TEXT is set
-    if MODE == "custom_voice" and instruct_embed is not None:
+    # custom_voice / voice_design: prepend instruct embed before hidden_states
+    if instruct_embed is not None:
         input_feed_Concat_Embed[in_name_Concat_Embed[0]] = instruct_embed
         input_feed_Concat_Embed[in_name_Concat_Embed[1]] = hidden_states
         hidden_states = ort_session_Concat_Embed.run_with_ort_values(out_name_Concat_Embed, input_feed_Concat_Embed, run_options=run_options)[0]
@@ -864,11 +895,8 @@ for target_idx, target in enumerate(target_tts):
 
         num_decode_Main += 1
 
-    # Decoder: voice_clone passes ref_code+ref_code_len+generated_codec; custom_voice passes only generated_codec
-    if MODE == "voice_clone":
-        input_feed_Decoder[in_name_Decoder[2]] = generated_codec
-    else:
-        input_feed_Decoder[in_name_Decoder[0]] = generated_codec
+    # Decoder: feed generated_codec (voice_clone has ref_code/ref_code_len pre-populated at indices 0,1)
+    input_feed_Decoder[in_name_Decoder[decoder_codec_idx]] = generated_codec
     decoder_start = time.perf_counter()
     generated_wav = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
     decoder_time = time.perf_counter() - decoder_start
