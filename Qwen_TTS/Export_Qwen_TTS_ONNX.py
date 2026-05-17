@@ -69,9 +69,9 @@ INSTRUCT_TEXT = "Speak very happily"            # Optional style instruction. Em
                                                 # English examples: "Speak cheerfully.", "Whisper gently.", "Speak slowly and calmly.",
                                                 #                   "Read with excitement.", "Speak in a sad tone.", "Narrate like a storyteller.",
                                                 #                   "Speak with anger.", "Talk softly.", "Speak fast with urgency."
-                                                # 中文示例: "开心地说。", "轻声细语。", "慢慢地、平静地说。",
-                                                #           "兴奋地朗读。", "用悲伤的语气说。", "像讲故事一样叙述。",
-                                                #           "愤怒地说。", "温柔地说。", "急促而紧迫地说。"
+                                                # 中文示例:          "开心地说。", "轻声细语。", "慢慢地、平静地说。",
+                                                #                   "兴奋地朗读。", "用悲伤的语气说。", "像讲故事一样叙述。",
+                                                #                   "愤怒地说。", "温柔地说。", "急促而紧迫地说。"
 MAX_SEQ_LEN   = 1024                            # Maximum decode length (fixed at export time)
 MIN_SEQ_LEN   = 2                               # Minimum decode length (editable at runtime)
 STOP_TOKEN    = [2150]                          # EOS token id for QwenTTS — Do not change
@@ -589,10 +589,10 @@ class TTS_PREPROCESS(torch.nn.Module):
 
         # Pre-compute fixed codec prefix / suffix embeddings
         self._talker_input_embed = torch.cat([self.tts_pad_embed.expand(-1, 5, -1), self.tts_bos_embed], dim=1)
-        self.codec_bos_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_bos_id]],                                          dtype=torch.int32))
+        self.codec_bos_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_bos_id]],                                            dtype=torch.int32))
         self.codec_think_embed   = self.talker_input_embed(torch.tensor([[config.talker_config.codec_think_id, config.talker_config.codec_think_bos_id]], dtype=torch.int32))
-        self.codec_eos_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_think_eos_id]],                                     dtype=torch.int32))
-        self.codec_pad_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_pad_id]],                                           dtype=torch.int32))
+        self.codec_eos_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_think_eos_id]],                                      dtype=torch.int32))
+        self.codec_pad_embed     = self.talker_input_embed(torch.tensor([[config.talker_config.codec_pad_id]],                                            dtype=torch.int32))
 
         # Role header embedding
         system_head     = "<|im_start|>assistant\n"
@@ -952,7 +952,7 @@ class TTS_MAIN(torch.nn.Module):
             if USE_F16_KV:
                 k, v = k.half(), v.half()
 
-            k = torch.cat((all_inputs[i],                  k.permute(0, 3, 2, 4, 1)), dim=-1)
+            k = torch.cat((all_inputs[i],                   k.permute(0, 3, 2, 4, 1)), dim=-1)
             v = torch.cat((all_inputs[i + self.num_layers], v.transpose(1, 3)),        dim=-2)
             self.save_key[i]   = k
             self.save_value[i] = v
@@ -2187,13 +2187,13 @@ if USE_PENALTY:
 # ══════════════════════════════════════════════════════════════════════════════
 if MODE == "voice_clone":
     input_ids_prompt = onnxruntime.OrtValue.ortvalue_from_numpy(prompt_tokens, device_type, DEVICE_ID)
-init_history_len          = create_ort_with_data([0],                               np.int64,    device_type, DEVICE_ID)
-init_predictor_ids_len    = create_ort_with_data([2],                               np.int64,    device_type, DEVICE_ID)
-init_generated_codec      = create_ort_with_shape([1, 0],                           np.int32,    device_type, DEVICE_ID)
-top_k                     = create_ort_with_data([TOP_K],                           np.int64,    device_type, DEVICE_ID)
-beam_size                 = create_ort_with_data([BEAM_SIZE],                       np.int64,    device_type, DEVICE_ID)
-gather_id_0               = create_ort_with_data([0],                               np.int32,    device_type, DEVICE_ID)
-gather_id_cache           = [create_ort_with_data([i],                               np.int32,   device_type, DEVICE_ID) for i in range(MAX_SEQ_LEN)]
+init_history_len          = create_ort_with_data([0],                                           np.int64,          device_type, DEVICE_ID)
+init_predictor_ids_len    = create_ort_with_data([2],                                           np.int64,          device_type, DEVICE_ID)
+init_generated_codec      = create_ort_with_shape([1, 0],                                       np.int32,          device_type, DEVICE_ID)
+top_k                     = create_ort_with_data([TOP_K],                                       np.int64,          device_type, DEVICE_ID)
+beam_size                 = create_ort_with_data([BEAM_SIZE],                                   np.int64,          device_type, DEVICE_ID)
+gather_id_0               = create_ort_with_data([0],                                           np.int32,          device_type, DEVICE_ID)
+gather_id_cache           = [create_ort_with_data([i],                                          np.int32,          device_type, DEVICE_ID) for i in range(MAX_SEQ_LEN)]
 init_trailing_text_hidden = create_ort_with_shape([1, 1, in_meta_Embed_C[2].shape[2]],          hidden_dtype_Main, device_type, DEVICE_ID)
 init_predictor_save_id    = create_ort_with_shape([BEAM_SIZE if USE_BEAM_SEARCH else 1, 0],     np.int32,          device_type, DEVICE_ID)
 init_main_greedy_ids      = create_ort_with_shape([1, 0],                                       np.int32,          device_type, DEVICE_ID)
