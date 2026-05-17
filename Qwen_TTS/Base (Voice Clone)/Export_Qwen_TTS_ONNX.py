@@ -1058,6 +1058,7 @@ class TTS_PREDICTOR(torch.nn.Module):
         rotary_pos_emb_sin = all_inputs[-2]
         attention_mask     = all_inputs[-1]
         batch_size         = hidden_states.shape[0].unsqueeze(0)
+        hidden_states = self.tts.small_to_mtp_projection(hidden_states)
 
         for i, layer in enumerate(self.tts.model.layers):
             residual      = hidden_states
