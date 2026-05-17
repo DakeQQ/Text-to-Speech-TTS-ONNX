@@ -178,7 +178,7 @@ def _num_heads(name):
 
 def _hidden_size(name, model_size):
     if "Main" in name or "Predictor" in name:
-        return 1024 if "0.6" in model_size else 1536
+        return 1024 if "0.6" in model_size else 2048
     return 0
 
 
