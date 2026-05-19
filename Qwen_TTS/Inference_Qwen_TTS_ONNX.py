@@ -94,11 +94,11 @@ REPEAT_PENALTY  = 0.8             # Repetition penalty coefficient (1.0 = disabl
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
-STREAMING                = True  # True → streaming decode with static N-frame Decoder (sliding window)
+STREAMING                = False  # True → streaming decode with static N-frame Decoder (sliding window)
 USE_AUDIO_NORMALIZER     = False  # Normalize output loudness (may alter voice characteristics)
 ORT_LOG                  = False  # Enable ONNX Runtime logging (disable for best performance)
 ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
-ORT_Accelerate_Providers = ["CUDAExecutionProvider"]     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
+ORT_Accelerate_Providers = []     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
 MAX_THREADS              = 0      # CPU thread count (0 = auto)
 DEVICE_ID                = 0      # Device index
 
