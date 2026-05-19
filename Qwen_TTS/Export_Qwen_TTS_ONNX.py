@@ -92,7 +92,7 @@ N_MELS               = 128                      # Number of Mel bands  — Do no
 NFFT_STFT            = 1024                     # FFT size             — Do not edit
 WINDOW_LENGTH        = 1024                     # Window length        — Do not edit
 HOP_LENGTH           = 256                      # Hop length (samples) — Do not edit
-
+SAMPLES_PER_CODEC_FRAME = 1920                  # # Fixed value for the Qwen3-TTS — Do not edit
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoding settings
@@ -2130,9 +2130,7 @@ if STREAMING:
     ort_session_Decoder_Stream = create_session(onnx_model_Decoder_Stream, **packed_settings)
     in_name_Decoder_Stream     = get_in_names(ort_session_Decoder_Stream)
     out_name_Decoder_Stream    = get_out_names(ort_session_Decoder_Stream)
-    SAMPLES_PER_CODEC_FRAME    = 1920                                                         # Single-frame output audio length (fixed)
-    assert ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME == STREAM_WINDOW_FRAMES, \
-        f"Decoder_Stream output last dim {ort_session_Decoder_Stream.get_outputs()[0].shape[-1]} / {SAMPLES_PER_CODEC_FRAME} != STREAM_WINDOW_FRAMES {STREAM_WINDOW_FRAMES}"
+    STREAM_WINDOW_FRAMES = ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME
 
 # --- Main Rotary ---
 ort_session_Main_Rotary_Text_Prefill = create_session(onnx_model_Main_Rotary_Mask_Text_Prefill, **packed_settings)

@@ -72,6 +72,7 @@ MAX_SEQ_LEN   = 1024                                # Maximum decode length (fix
 MIN_SEQ_LEN   = 2                                   # Minimum decode length (editable at runtime)
 STOP_TOKEN    = [2150]                              # EOS token id for QwenTTS — Do not change
 NUM_CODE_GROUPS_MINUS = 15                          # Fixed value for the Qwen3-TTS
+SAMPLES_PER_CODEC_FRAME = 1920                      # Fixed value for the Qwen3-TTS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio settings
@@ -93,11 +94,11 @@ REPEAT_PENALTY  = 0.8             # Repetition penalty coefficient (1.0 = disabl
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
-STREAMING                = False  # True → streaming decode with static N-frame Decoder (sliding window)
+STREAMING                = True  # True → streaming decode with static N-frame Decoder (sliding window)
 USE_AUDIO_NORMALIZER     = False  # Normalize output loudness (may alter voice characteristics)
 ORT_LOG                  = False  # Enable ONNX Runtime logging (disable for best performance)
 ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
-ORT_Accelerate_Providers = []     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
+ORT_Accelerate_Providers = ["CUDAExecutionProvider"]     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
 MAX_THREADS              = 0      # CPU thread count (0 = auto)
 DEVICE_ID                = 0      # Device index
 
@@ -414,9 +415,7 @@ if STREAMING:
     ort_session_Decoder_Stream = create_session(onnx_model_Decoder_Stream, **packed_settings)
     in_name_Decoder_Stream     = get_in_names(ort_session_Decoder_Stream)
     out_name_Decoder_Stream    = get_out_names(ort_session_Decoder_Stream)
-    SAMPLES_PER_CODEC_FRAME    = 1920                                                         # Single-frame output audio length (fixed)
-    assert ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME == STREAM_WINDOW_FRAMES, \
-        f"Decoder_Stream output last dim {ort_session_Decoder_Stream.get_outputs()[0].shape[-1]} / {SAMPLES_PER_CODEC_FRAME} != STREAM_WINDOW_FRAMES {STREAM_WINDOW_FRAMES}"
+    STREAM_WINDOW_FRAMES       = ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME
 
 # --- Main Rotary ---
 ort_session_Main_Rotary_Text_Prefill = create_session(onnx_model_Main_Rotary_Mask_Text_Prefill, **packed_settings)

@@ -30,7 +30,7 @@ lazy_setting_GPU = False                 # Set True to auto-select GPU settings.
 use_openvino     = False                 # Set True for OpenVINO optimization.
 SAVE_TWO_PARTS   = False                 # If True, save the model into 2 parts.
 upgrade_opset    = 0                     # Optional opset upgrade. Set 0 to disable.
-NUM_CODE_GROUPS_MINUS = 15               # Number of Embed_D / LmHead sub-models.
+NUM_CODE_GROUPS_MINUS = 15               # Number of Embed_D / LmHead sub-models. Fixed value for the Qwen3-TTS
 
 
 # ==============================================================================
@@ -172,6 +172,8 @@ def _is_decoder_block(name):
 def _opt_level(name):
     if ("Predictor" in name) and not ("Rotary" in name or "LmHead" in name):
         return 1
+    elif "Stream" in name:
+        return 0
     return 1 if use_openvino else 2
 
 
