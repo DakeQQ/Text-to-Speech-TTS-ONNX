@@ -182,7 +182,7 @@ def _num_heads(name):
 
 
 def _hidden_size(name, model_size):
-    if "Main" in name and not "Rotary" in name:
+    if "Main" in name and "Rotary" not in name:
         if "0.6B" in model_size:
             return 1024
         else:
