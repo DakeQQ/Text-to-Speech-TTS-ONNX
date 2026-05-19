@@ -94,7 +94,6 @@ REPEAT_PENALTY  = 0.8             # Repetition penalty coefficient (1.0 = disabl
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
 STREAMING                = False  # True → streaming decode with static N-frame Decoder (sliding window)
-STREAM_WINDOW_FRAMES     = 3      # Streaming sliding window frame count (≥ 3)
 USE_AUDIO_NORMALIZER     = False  # Normalize output loudness (may alter voice characteristics)
 ORT_LOG                  = False  # Enable ONNX Runtime logging (disable for best performance)
 ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
