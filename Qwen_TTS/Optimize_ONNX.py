@@ -15,7 +15,7 @@ from onnxruntime.quantization import (
 # ==============================================================================
 # Path Settings
 # ==============================================================================
-model_type           = "0.6B-Base"                                   # [0.6B-Base, 1.7B-Base, 1.7B-CustomVoice, 1.7B-VoiceDesign]
+model_type           = "0.6B-Base"                                   # [0.6B-Base, 1.7B-Base, 0.6B-CustomVoice, 1.7B-CustomVoice, 1.7B-VoiceDesign]
 original_folder_path = r"/home/DakeQQ/Downloads/QwenTTS_ONNX"        # The original exported folder.
 quanted_folder_path  = r"/home/DakeQQ/Downloads/QwenTTS_Optimized"   # The optimized folder.
 
@@ -47,6 +47,7 @@ model_names = [                                             # Recommended dtype:
     "QwenTTS_Predictor_LmHead",                             # [int8, float32, float16]
     "QwenTTS_Main",                                         # [int8, float32, float16]
     "QwenTTS_Decoder",                                      # [int8, float32, float16]
+    "QwenTTS_Decoder_Stream",                               # [int8, float32, float16]
     "QwenTTS_Main_Rotary_Mask_Text_Prefill",                # [float32, float16]
     "QwenTTS_Main_Rotary_Mask_Text_Decode",                 # [float32, float16]
     "QwenTTS_Predictor_Rotary_Mask_Text_Prefill",           # [float32, float16]
@@ -98,11 +99,12 @@ CPU_MODEL_DTYPE = {
     "QwenTTS_Embed_C":                            "float32",
     "QwenTTS_Embed_D":                            "float32",
     "QwenTTS_Preprocess":                         "float32",
-    "QwenTTS_Encoder":                            "int8",
+    "QwenTTS_Encoder":                            "float32",
     "QwenTTS_Predictor":                          "int8",
     "QwenTTS_Predictor_LmHead":                   "int8",
     "QwenTTS_Main":                               "int8",
-    "QwenTTS_Decoder":                            "int8",
+    "QwenTTS_Decoder":                            "float32",
+    "QwenTTS_Decoder_Stream":                     "float32",
     "QwenTTS_Main_Rotary_Mask_Text_Prefill":      "float32",
     "QwenTTS_Main_Rotary_Mask_Text_Decode":       "float32",
     "QwenTTS_Predictor_Rotary_Mask_Text_Prefill": "float32",
@@ -132,6 +134,7 @@ GPU_MODEL_DTYPE = {
     "QwenTTS_Predictor_LmHead":                   "float16",
     "QwenTTS_Main":                               "int8",
     "QwenTTS_Decoder":                            "float16",
+    "QwenTTS_Decoder_Stream":                     "float16",
     "QwenTTS_Main_Rotary_Mask_Text_Prefill":      "float16",
     "QwenTTS_Main_Rotary_Mask_Text_Decode":       "float16",
     "QwenTTS_Predictor_Rotary_Mask_Text_Prefill": "float16",

@@ -1,4 +1,5 @@
 import time
+import concurrent.futures
 import numpy as np
 import soundfile as sf
 import onnxruntime
@@ -10,7 +11,7 @@ from transformers import AutoTokenizer
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                # Source model folder [0.6B-Base / 1.7B-Base / 1.7B-CustomVoice / 1.7B-VoiceDesign]
+download_path                            = r'/home/DakeQQ/Downloads/Qwen3-TTS-12Hz-0.6B-Base'                # Source model folder [0.6B-Base / 1.7B-Base / 0.6B-CustomVoice / 1.7B-CustomVoice / 1.7B-VoiceDesign]
 onnx_model_Embed_A                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_A.onnx'
 onnx_model_Embed_B                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_B.onnx'
 onnx_model_Embed_C                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Embed_C.onnx'
@@ -21,6 +22,7 @@ onnx_model_Predictor                     = r'/home/DakeQQ/Downloads/QwenTTS_Opti
 onnx_model_Pred_LmHead                   = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Predictor_LmHead.onnx'
 onnx_model_Main                          = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Main.onnx'
 onnx_model_Decoder                       = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Decoder.onnx'
+onnx_model_Decoder_Stream                = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Decoder_Stream.onnx'
 onnx_model_Main_Rotary_Mask_Text_Prefill = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Main_Rotary_Mask_Text_Prefill.onnx'
 onnx_model_Main_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Main_Rotary_Mask_Text_Decode.onnx'
 onnx_model_Pred_Rotary_Mask_Text_Prefill = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/QwenTTS_Predictor_Rotary_Mask_Text_Prefill.onnx'
@@ -91,6 +93,8 @@ REPEAT_PENALTY  = 0.8             # Repetition penalty coefficient (1.0 = disabl
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
+STREAMING                = False  # True → streaming decode with static N-frame Decoder (sliding window)
+STREAM_WINDOW_FRAMES     = 3      # Streaming sliding window frame count (≥ 3)
 USE_AUDIO_NORMALIZER     = False  # Normalize output loudness (may alter voice characteristics)
 ORT_LOG                  = False  # Enable ONNX Runtime logging (disable for best performance)
 ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
@@ -406,6 +410,15 @@ ort_session_Decoder = create_session(onnx_model_Decoder, **packed_settings)
 in_name_Decoder     = get_in_names(ort_session_Decoder)
 out_name_Decoder    = get_out_names(ort_session_Decoder)
 
+# --- Decoder Stream (streaming mode only) ---
+if STREAMING:
+    ort_session_Decoder_Stream = create_session(onnx_model_Decoder_Stream, **packed_settings)
+    in_name_Decoder_Stream     = get_in_names(ort_session_Decoder_Stream)
+    out_name_Decoder_Stream    = get_out_names(ort_session_Decoder_Stream)
+    SAMPLES_PER_CODEC_FRAME    = 1920                                                         # Single-frame output audio length (fixed)
+    assert ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME == STREAM_WINDOW_FRAMES, \
+        f"Decoder_Stream output last dim {ort_session_Decoder_Stream.get_outputs()[0].shape[-1]} / {SAMPLES_PER_CODEC_FRAME} != STREAM_WINDOW_FRAMES {STREAM_WINDOW_FRAMES}"
+
 # --- Main Rotary ---
 ort_session_Main_Rotary_Text_Prefill = create_session(onnx_model_Main_Rotary_Mask_Text_Prefill, **packed_settings)
 in_name_Main_Rotary_Text_Prefill     = get_in_names(ort_session_Main_Rotary_Text_Prefill)
@@ -575,6 +588,7 @@ input_feed_First_Beam                    = {}
 input_feed_Second_Beam                   = {}
 input_feed_Penalty                       = {}
 input_feed_Decoder                       = {}
+_stream_concat_feed                      = {}  # dedicated feed dict for streaming window concat
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -657,6 +671,29 @@ if USE_BEAM_SEARCH:
     input_feed_First_Beam[in_name_First_Beam[num_keys_values_Predictor_plus_2]]   = beam_size
     input_feed_Second_Beam[in_name_Second_Beam[num_keys_values_Predictor_plus_3]] = beam_size
     input_feed_Second_Beam[in_name_Second_Beam[num_keys_values_Predictor_plus_4]] = top_k
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STREAMING DECODE HELPER
+# ══════════════════════════════════════════════════════════════════════════════
+def _stream_decode(window_ort, is_first_decode):
+    """
+    Decode one 3-frame sliding-window codec chunk with the static-shape Decoder_Stream.
+    Called from a background thread; uses only module-level globals for thread safety.
+
+    Args:
+        window_ort (OrtValue): shape (1, num_code_groups * STREAM_WINDOW_FRAMES), dtype int32.
+        is_first_decode (bool): True for the very first window (frames 0-1-2) → keep all
+                                audio.  False for subsequent windows → keep only the last
+                                SAMPLES_PER_CODEC_FRAME samples (newest frame).
+
+    Returns:
+        tuple[OrtValue, bool, float]: (wav OrtValue, is_first_decode flag, elapsed seconds).
+                                      Numpy conversion is deferred to the collection phase.
+    """
+    _t0 = time.perf_counter()
+    wav_ort = ort_session_Decoder_Stream.run_with_ort_values(out_name_Decoder_Stream,{in_name_Decoder_Stream[0]: window_ort}, run_options=run_options)[0]
+    return wav_ort, is_first_decode, time.perf_counter() - _t0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -774,7 +811,7 @@ def predictor_steps(codec_token_main, last_hidden_state_Main, gather_id):
     input_feed_Concat_Ids[in_name_Concat_Ids[1]] = frame_codec_ids
     generated_codec = ort_session_Concat_Ids.run_with_ort_values(out_name_Concat_Ids, input_feed_Concat_Ids, run_options=run_options)[0]
 
-    return hidden_states_main, generated_codec
+    return hidden_states_main, generated_codec, frame_codec_ids
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -806,6 +843,13 @@ for target_idx, target in enumerate(target_tts):
     is_prefill_step_Main = True
     main_time_total = 0.0
     predictor_time_total = 0.0
+
+    if STREAMING:
+        # Per-sentence streaming state: sliding window of STREAM_WINDOW_FRAMES frames + async decoder futures.
+        _stream_frame_window = []   # list of OrtValues, each shape (1, num_code_groups) = (1, 16)
+        _stream_futures      = []   # Future objects from background decoder calls
+        _stream_decode_count = 0    # counts completed window dispatches
+        _stream_executor     = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_target
     target_text_embed = ort_session_Embed_A.run_with_ort_values(out_name_Embed_A, input_feed_Embed_A, run_options=run_options)[0]
@@ -877,9 +921,32 @@ for target_idx, target in enumerate(target_tts):
 
         gather_id = gather_id_cache[num_decode_Main] if num_decode_Main <= trailing_len_minus_numpy else trailing_len_minus
         predictor_step_start = time.perf_counter()
-        hidden_states, generated_codec = predictor_steps(codec_token_main, last_hidden_state_Main, gather_id)
+        hidden_states, generated_codec, _frame_codec = predictor_steps(codec_token_main, last_hidden_state_Main, gather_id)
         predictor_time_total += time.perf_counter() - predictor_step_start
         input_feed_Concat_Ids[in_name_Concat_Ids[0]] = generated_codec
+
+        if STREAMING:
+            # Maintain a sliding window of the last STREAM_WINDOW_FRAMES codec frame OrtValues (each (1, 16)).
+            # No numpy conversion; concatenation is done via the Concat_Ids ONNX session.
+            _stream_frame_window.append(_frame_codec)
+            if len(_stream_frame_window) > STREAM_WINDOW_FRAMES:
+                _stream_frame_window.pop(0)
+            # Launch async decoder as soon as STREAM_WINDOW_FRAMES frames are available.
+            if len(_stream_frame_window) == STREAM_WINDOW_FRAMES:
+                # Build (1, num_code_groups * STREAM_WINDOW_FRAMES) by chaining STREAM_WINDOW_FRAMES-1 Concat_Ids ops.
+                _window_ort = _stream_frame_window[0]
+                for _fi in range(1, STREAM_WINDOW_FRAMES):
+                    _stream_concat_feed[in_name_Concat_Ids[0]] = _window_ort
+                    _stream_concat_feed[in_name_Concat_Ids[1]] = _stream_frame_window[_fi]
+                    _window_ort = ort_session_Concat_Ids.run_with_ort_values(
+                        out_name_Concat_Ids, _stream_concat_feed, run_options=run_options
+                    )[0]
+                _is_first = (_stream_decode_count == 0)
+                _stream_decode_count += 1
+                # Submit to background thread; generation continues immediately.
+                _stream_futures.append(
+                    _stream_executor.submit(_stream_decode, _window_ort, _is_first)
+                )
 
         input_feed_Main_Rotary_Text_Decode[in_name_Main_Rotary_Text_Decode[0]] = kv_seq_len_Main
         rotary_cos_Main, rotary_sin_Main, kv_seq_len_Main = ort_session_Main_Rotary_Text_Decode.run_with_ort_values(out_name_Main_Rotary_Text_Decode, input_feed_Main_Rotary_Text_Decode, run_options=run_options)
@@ -887,14 +954,41 @@ for target_idx, target in enumerate(target_tts):
 
         num_decode_Main += 1
 
-    # Decoder: feed generated_codec (voice_clone has ref_code/ref_code_len pre-populated at indices 0,1)
-    input_feed_Decoder[in_name_Decoder[0]] = generated_codec
-    decoder_start = time.perf_counter()
-    generated_wav = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
-    decoder_time = time.perf_counter() - decoder_start
-    generated_wav = generated_wav.numpy().reshape(-1)
-    if USE_AUDIO_NORMALIZER:
-        generated_wav = audio_normalizer(generated_wav)
+    # Decoder
+    if STREAMING:
+        # Wait for all background decoder tasks to complete, then assemble the audio.
+        _stream_executor.shutdown(wait=True)
+        _stream_results = [f.result() for f in _stream_futures]
+        if _stream_results:
+            # Convert OrtValues to numpy only here (final assembly before soundfile write).
+            _wav_chunks = []
+            _stream_decoder_time = 0.0
+            for _wav_ort, _is_first, _elapsed in _stream_results:
+                _wav_arr = _wav_ort.numpy().reshape(-1)
+                _wav_chunks.append(_wav_arr if _is_first else _wav_arr[-SAMPLES_PER_CODEC_FRAME:])
+                _stream_decoder_time += _elapsed
+            generated_wav = np.concatenate(_wav_chunks)
+            if USE_AUDIO_NORMALIZER:
+                generated_wav = audio_normalizer(generated_wav)
+            decoder_time = _stream_decoder_time
+        else:
+            # Fewer than STREAM_WINDOW_FRAMES frames generated; fall back to the non-streaming decoder.
+            input_feed_Decoder[in_name_Decoder[0]] = generated_codec
+            _fb_start = time.perf_counter()
+            _fb = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
+            decoder_time = time.perf_counter() - _fb_start
+            generated_wav = _fb.numpy().reshape(-1)
+            if USE_AUDIO_NORMALIZER:
+                generated_wav = audio_normalizer(generated_wav)
+    else:
+        # Standard non-streaming: decode the full accumulated codec in one shot.
+        input_feed_Decoder[in_name_Decoder[0]] = generated_codec
+        decoder_start = time.perf_counter()
+        generated_wav = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
+        decoder_time = time.perf_counter() - decoder_start
+        generated_wav = generated_wav.numpy().reshape(-1)
+        if USE_AUDIO_NORMALIZER:
+            generated_wav = audio_normalizer(generated_wav)
 
     # Timing statistics for this target
     main_tokens_per_sec = num_decode_Main / main_time_total if main_time_total > 0 else 0
