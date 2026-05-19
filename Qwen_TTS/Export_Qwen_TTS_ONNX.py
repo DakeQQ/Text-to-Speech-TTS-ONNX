@@ -110,7 +110,7 @@ REPEAT_PENALTY  = 0.8                           # Repetition penalty coefficient
 # ─────────────────────────────────────────────────────────────────────────────
 DO_EXPORT                = True                 # Set True to run the export pipeline
 STREAMING                = False                # True → streaming decode with static N-frame Decoder (sliding window)
-STREAM_WINDOW_FRAMES     = 7                    # Streaming sliding window frame count (at least ≥ 3, recommended ≥ 7, fixed at export time)
+STREAM_WINDOW_FRAMES     = 7                    # Streaming sliding window frame count, Lower is faster but affects quality. (at least ≥ 3, recommended ≥ 7, fixed at export time)
 USE_F16_KV               = True                 # Use float16 KV cache (saves memory, may reduce quality)
 USE_F16_ENCODER          = False                # Pre-process the encoder in FP16 format for better GPU utilization.
 USE_AUDIO_NORMALIZER     = False                # Normalize output loudness (may alter voice characteristics)
