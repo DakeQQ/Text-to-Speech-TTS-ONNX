@@ -675,20 +675,6 @@ if USE_BEAM_SEARCH:
 # STREAMING DECODE HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 def _stream_decode(window_ort, is_first_decode):
-    """
-    Decode one 3-frame sliding-window codec chunk with the static-shape Decoder_Stream.
-    Called from a background thread; uses only module-level globals for thread safety.
-
-    Args:
-        window_ort (OrtValue): shape (1, num_code_groups * STREAM_WINDOW_FRAMES), dtype int32.
-        is_first_decode (bool): True for the very first window (frames 0-1-2) → keep all
-                                audio.  False for subsequent windows → keep only the last
-                                SAMPLES_PER_CODEC_FRAME samples (newest frame).
-
-    Returns:
-        tuple[OrtValue, bool, float]: (wav OrtValue, is_first_decode flag, elapsed seconds).
-                                      Numpy conversion is deferred to the collection phase.
-    """
     _t0 = time.perf_counter()
     wav_ort = ort_session_Decoder_Stream.run_with_ort_values(out_name_Decoder_Stream,{in_name_Decoder_Stream[0]: window_ort}, run_options=run_options)[0]
     return wav_ort, is_first_decode, time.perf_counter() - _t0
@@ -843,10 +829,9 @@ for target_idx, target in enumerate(target_tts):
     predictor_time_total = 0.0
 
     if STREAMING:
-        # Per-sentence streaming state: sliding window of STREAM_WINDOW_FRAMES frames + async decoder futures.
-        _stream_frame_window = []   # list of OrtValues, each shape (1, num_code_groups) = (1, 16)
-        _stream_futures      = []   # Future objects from background decoder calls
-        _stream_decode_count = 0    # counts completed window dispatches
+        _stream_frame_window = []  
+        _stream_futures      = []   
+        _stream_decode_count = 0   
         _stream_executor     = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     input_feed_Embed_A[in_name_Embed_A[0]] = input_ids_target
@@ -924,27 +909,18 @@ for target_idx, target in enumerate(target_tts):
         input_feed_Concat_Ids[in_name_Concat_Ids[0]] = generated_codec
 
         if STREAMING:
-            # Maintain a sliding window of the last STREAM_WINDOW_FRAMES codec frame OrtValues (each (1, 16)).
-            # No numpy conversion; concatenation is done via the Concat_Ids ONNX session.
             _stream_frame_window.append(_frame_codec)
             if len(_stream_frame_window) > STREAM_WINDOW_FRAMES:
                 _stream_frame_window.pop(0)
-            # Launch async decoder as soon as STREAM_WINDOW_FRAMES frames are available.
             if len(_stream_frame_window) == STREAM_WINDOW_FRAMES:
-                # Build (1, num_code_groups * STREAM_WINDOW_FRAMES) by chaining STREAM_WINDOW_FRAMES-1 Concat_Ids ops.
                 _window_ort = _stream_frame_window[0]
                 for _fi in range(1, STREAM_WINDOW_FRAMES):
                     _stream_concat_feed[in_name_Concat_Ids[0]] = _window_ort
                     _stream_concat_feed[in_name_Concat_Ids[1]] = _stream_frame_window[_fi]
-                    _window_ort = ort_session_Concat_Ids.run_with_ort_values(
-                        out_name_Concat_Ids, _stream_concat_feed, run_options=run_options
-                    )[0]
+                    _window_ort = ort_session_Concat_Ids.run_with_ort_values(out_name_Concat_Ids, _stream_concat_feed, run_options=run_options)[0]
                 _is_first = (_stream_decode_count == 0)
                 _stream_decode_count += 1
-                # Submit to background thread; generation continues immediately.
-                _stream_futures.append(
-                    _stream_executor.submit(_stream_decode, _window_ort, _is_first)
-                )
+                _stream_futures.append(_stream_executor.submit(_stream_decode, _window_ort, _is_first))
 
         input_feed_Main_Rotary_Text_Decode[in_name_Main_Rotary_Text_Decode[0]] = kv_seq_len_Main
         rotary_cos_Main, rotary_sin_Main, kv_seq_len_Main = ort_session_Main_Rotary_Text_Decode.run_with_ort_values(out_name_Main_Rotary_Text_Decode, input_feed_Main_Rotary_Text_Decode, run_options=run_options)
@@ -954,11 +930,9 @@ for target_idx, target in enumerate(target_tts):
 
     # Decoder
     if STREAMING:
-        # Wait for all background decoder tasks to complete, then assemble the audio.
         _stream_executor.shutdown(wait=True)
         _stream_results = [f.result() for f in _stream_futures]
         if _stream_results:
-            # Convert OrtValues to numpy only here (final assembly before soundfile write).
             _wav_chunks = []
             _stream_decoder_time = 0.0
             for _wav_ort, _is_first, _elapsed in _stream_results:
@@ -970,7 +944,6 @@ for target_idx, target in enumerate(target_tts):
                 generated_wav = audio_normalizer(generated_wav)
             decoder_time = _stream_decoder_time
         else:
-            # Fewer than STREAM_WINDOW_FRAMES frames generated; fall back to the non-streaming decoder.
             input_feed_Decoder[in_name_Decoder[0]] = generated_codec
             _fb_start = time.perf_counter()
             _fb = ort_session_Decoder.run_with_ort_values(out_name_Decoder, input_feed_Decoder, run_options=run_options)[0]
