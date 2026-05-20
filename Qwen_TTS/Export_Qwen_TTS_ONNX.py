@@ -37,6 +37,7 @@ onnx_model_Pred_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_ONNX
 onnx_model_Gather_0                      = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Gather_0.onnx'
 onnx_model_Concat_Embed                  = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Concat_Embed.onnx'
 onnx_model_Concat_Ids                    = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Concat_Ids.onnx'
+onnx_model_Slide_Window                  = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Slide_Window.onnx'
 onnx_model_Greedy                        = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Greedy_Search.onnx'
 onnx_model_First_Beam                    = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/First_Beam_Search.onnx'
 onnx_model_Second_Beam                   = r'/home/DakeQQ/Downloads/QwenTTS_ONNX/Second_Beam_Search.onnx'
@@ -45,17 +46,17 @@ onnx_model_Argmax                        = r'/home/DakeQQ/Downloads/QwenTTS_ONNX
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompts & targets
+# Targets TTS
 # ─────────────────────────────────────────────────────────────────────────────
-generated_audio_path = r"./generated.wav"          # Output file
-target_tts           = [                           # Texts to synthesize
+generated_audio_path = r"./generated.wav"           # Output audio file
+target_tts           = [                            # Texts to synthesize
     "大家好，我现在正在大可奇奇体验AI科技。",
     "Hello everyone, I'm currently experiencing DakeQQ's AI technology."
 ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Language & generation settings
+# Language & Generation Settings
 # ─────────────────────────────────────────────────────────────────────────────
 TTS_LANGUAGE = "Chinese"                            # Options: [English, German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian, Portuguese]
 
@@ -83,43 +84,43 @@ STOP_TOKEN    = [2150]                              # EOS token id for QwenTTS �
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio settings
 # ─────────────────────────────────────────────────────────────────────────────
-IN_SAMPLE_RATE       = 24000                    # Prompt audio sample rate  (fixed at export time)
-OUT_SAMPLE_RATE      = 24000                    # Output audio sample rate  (fixed at export time)
-MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE      # Maximum prompt audio length in samples (fixed at export time, '20' means 20 seconds, Voice Clone only)
+IN_SAMPLE_RATE       = 24000                        # Prompt audio sample rate  (fixed at export time)
+OUT_SAMPLE_RATE      = 24000                        # Output audio sample rate  (fixed at export time)
+MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE          # Maximum prompt audio length in samples (fixed at export time, '20' means 20 seconds, Voice Clone only)
 
-WINDOW_TYPE          = 'hann'                   # Window function      — edit carefully
-N_MELS               = 128                      # Number of Mel bands  — Do not edit
-NFFT_STFT            = 1024                     # FFT size             — Do not edit
-WINDOW_LENGTH        = 1024                     # Window length        — Do not edit
-HOP_LENGTH           = 256                      # Hop length (samples) — Do not edit
-SAMPLES_PER_CODEC_FRAME = 1920                  # # Fixed value for the Qwen3-TTS — Do not edit
+WINDOW_TYPE          = 'hann'                       # Window function      — edit carefully
+N_MELS               = 128                          # Number of Mel bands  — Do not edit
+NFFT_STFT            = 1024                         # FFT size             — Do not edit
+WINDOW_LENGTH        = 1024                         # Window length        — Do not edit
+HOP_LENGTH           = 256                          # Hop length (samples) — Do not edit
+SAMPLES_PER_CODEC_FRAME = 1920                      # # Fixed value for the Qwen3-TTS — Do not edit
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoding settings
 # ─────────────────────────────────────────────────────────────────────────────
-USE_BEAM_SEARCH = False                         # False → greedy decoding
-MAX_BEAM_SIZE   = 10                            # Maximum beam width (fixed at export time)
-BEAM_SIZE       = 3                             # Active beam width
-TOP_K           = 3                             # Top-K sampling parameter
-PENALTY_RANGE   = 5                             # Recent-token window for repetition penalty
-REPEAT_PENALTY  = 0.8                           # Repetition penalty coefficient (1.0 = disabled)
+USE_BEAM_SEARCH = False                             # False → greedy decoding
+MAX_BEAM_SIZE   = 10                                # Maximum beam width (fixed at export time)
+BEAM_SIZE       = 3                                 # Active beam width
+TOP_K           = 3                                 # Top-K sampling parameter
+PENALTY_RANGE   = 5                                 # Recent-token window for repetition penalty
+REPEAT_PENALTY  = 0.8                               # Repetition penalty coefficient (1.0 = disabled)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
-DO_EXPORT                = True                 # Set True to run the export pipeline
-STREAMING                = False                # True → streaming decode with static N-frame Decoder (sliding window)
-STREAM_WINDOW_FRAMES     = 7                    # Streaming sliding window frame count, Lower is faster but affects quality. (at least ≥ 3, recommended ≥ 7, fixed at export time)
-USE_F16_KV               = True                 # Use float16 KV cache (saves memory, may reduce quality)
-USE_F16_ENCODER          = False                # Pre-process the encoder in FP16 format for better GPU utilization.
-USE_AUDIO_NORMALIZER     = False                # Normalize output loudness (may alter voice characteristics)
-ORT_LOG                  = False                # Enable ONNX Runtime logging (disable for best performance)
-ORT_FP16                 = False                # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
-ORT_Accelerate_Providers = []                   # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
-OPSET                    = 18                   # ONNX opset version
-MAX_THREADS              = 0                    # CPU thread count (0 = auto)
-DEVICE_ID                = 0                    # Device index
+DO_EXPORT                = True                     # Set True to run the export pipeline
+STREAMING                = False                    # True → streaming decode with static N-frame Decoder (sliding window)
+STREAM_WINDOW_FRAMES     = 7                        # Streaming sliding window frame count, Lower is faster but affects quality. (at least ≥ 3, recommended ≥ 7, fixed at export time)
+USE_F16_KV               = True                     # Use float16 KV cache (saves memory, may reduce quality)
+USE_F16_ENCODER          = False                    # Pre-process the encoder in FP16 format for better GPU utilization.
+USE_AUDIO_NORMALIZER     = False                    # Normalize output loudness (may alter voice characteristics)
+ORT_LOG                  = False                    # Enable ONNX Runtime logging (disable for best performance)
+ORT_FP16                 = False                    # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
+ORT_Accelerate_Providers = []                       # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
+OPSET                    = 18                       # ONNX opset version
+MAX_THREADS              = 0                        # CPU thread count (0 = auto)
+DEVICE_ID                = 0                        # Device index
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +184,15 @@ class CONCAT_EMBED(torch.nn.Module):
 
     def forward(self, codec_embed_0, codec_embed_1):
         return torch.cat([codec_embed_0, codec_embed_1], dim=1)
+
+
+class SLIDE_WINDOW(torch.nn.Module):
+    def __init__(self, tts):
+        super().__init__()
+        self.num_code_groups = tts.model.talker.code_predictor.model.config.num_code_groups
+
+    def forward(self, codec_0, codec_1):
+        return torch.cat([codec_0[:, self.num_code_groups:], codec_1], dim=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1486,6 +1496,24 @@ if DO_EXPORT:
         )
         del codec_0, codec_1
 
+        slide_window_input_0 = torch.zeros([1, num_code_groups * STREAM_WINDOW_FRAMES], dtype=torch.int32)
+        slide_window_input_1 = torch.zeros([1, num_code_groups], dtype=torch.int32)
+        torch.onnx.export(
+            SLIDE_WINDOW(model),
+            (slide_window_input_0, slide_window_input_1),
+            onnx_model_Slide_Window,
+            input_names=['codec_0', 'codec_1'],
+            output_names=['codec_slide'],
+            dynamic_axes={
+                'codec_0':     {1: 'window_len'},
+                'codec_1':     {1: 'frame_len'},
+                'codec_slide': {1: 'window_len'}
+            },
+            opset_version=OPSET,
+            dynamo=False
+        )
+        del slide_window_input_0, slide_window_input_1
+
         # ── Phase 5 : Pre-processing & speech encoder exports ────────────────
         language_embed        = torch.zeros([1, 1,  hidden_size], dtype=torch.float32)
         target_text_embed     = torch.zeros([1, 10, hidden_size], dtype=torch.float32)
@@ -2132,6 +2160,10 @@ if STREAMING:
     out_name_Decoder_Stream    = get_out_names(ort_session_Decoder_Stream)
     STREAM_WINDOW_FRAMES = ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME
 
+    ort_session_Slide_Window = create_session(onnx_model_Slide_Window, **packed_settings)
+    in_name_Slide_Window     = get_in_names(ort_session_Slide_Window)
+    out_name_Slide_Window    = get_out_names(ort_session_Slide_Window)
+
 # --- Main Rotary ---
 ort_session_Main_Rotary_Text_Prefill = create_session(onnx_model_Main_Rotary_Mask_Text_Prefill, **packed_settings)
 in_name_Main_Rotary_Text_Prefill     = get_in_names(ort_session_Main_Rotary_Text_Prefill)
@@ -2629,12 +2661,19 @@ for target_idx, target in enumerate(target_tts):
                 _stream_frame_window.pop(0)
             # Launch async decoder as soon as STREAM_WINDOW_FRAMES frames are available.
             if len(_stream_frame_window) == STREAM_WINDOW_FRAMES:
-                _window_ort = _stream_frame_window[0]
-                for _fi in range(1, STREAM_WINDOW_FRAMES):
-                    _stream_concat_feed[in_name_Concat_Ids[0]] = _window_ort
-                    _stream_concat_feed[in_name_Concat_Ids[1]] = _stream_frame_window[_fi]
-                    _window_ort = ort_session_Concat_Ids.run_with_ort_values(out_name_Concat_Ids, _stream_concat_feed, run_options=run_options)[0]
                 _is_first = (_stream_decode_count == 0)
+                if _is_first:
+                    # First window: build by concatenating all frames
+                    _window_ort = _stream_frame_window[0]
+                    for _fi in range(1, STREAM_WINDOW_FRAMES):
+                        _stream_concat_feed[in_name_Concat_Ids[0]] = _window_ort
+                        _stream_concat_feed[in_name_Concat_Ids[1]] = _stream_frame_window[_fi]
+                        _window_ort = ort_session_Concat_Ids.run_with_ort_values(out_name_Concat_Ids, _stream_concat_feed, run_options=run_options)[0]
+                else:
+                    # Subsequent windows: slide by dropping first frame and appending new frame
+                    _stream_concat_feed[in_name_Slide_Window[0]] = _window_ort
+                    _stream_concat_feed[in_name_Slide_Window[1]] = _frame_codec
+                    _window_ort = ort_session_Slide_Window.run_with_ort_values(out_name_Slide_Window, _stream_concat_feed, run_options=run_options)[0]
                 _stream_decode_count += 1
                 _stream_futures.append(_stream_executor.submit(_stream_decode, _window_ort, _is_first))
 

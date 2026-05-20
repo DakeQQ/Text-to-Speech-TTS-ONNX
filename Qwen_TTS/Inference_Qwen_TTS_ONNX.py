@@ -30,6 +30,7 @@ onnx_model_Pred_Rotary_Mask_Text_Decode  = r'/home/DakeQQ/Downloads/QwenTTS_Opti
 onnx_model_Gather_0                      = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Gather_0.onnx'
 onnx_model_Concat_Embed                  = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Concat_Embed.onnx'
 onnx_model_Concat_Ids                    = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Concat_Ids.onnx'
+onnx_model_Slide_Window                  = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Slide_Window.onnx'
 onnx_model_Greedy                        = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Greedy_Search.onnx'
 onnx_model_First_Beam                    = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/First_Beam_Search.onnx'
 onnx_model_Second_Beam                   = r'/home/DakeQQ/Downloads/QwenTTS_Optimized/Second_Beam_Search.onnx'
@@ -38,7 +39,7 @@ onnx_model_Argmax                        = r'/home/DakeQQ/Downloads/QwenTTS_Opti
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompts & targets
+# Targets TTS
 # ─────────────────────────────────────────────────────────────────────────────
 generated_audio_path = r"./generated.wav"          # Output file
 target_tts           = [                           # Texts to synthesize
@@ -48,7 +49,7 @@ target_tts           = [                           # Texts to synthesize
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Language & generation settings
+# Language & Generation Settings
 # ─────────────────────────────────────────────────────────────────────────────
 TTS_LANGUAGE = "Chinese"                            # Options: [English, German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian, Portuguese]
 
@@ -77,30 +78,30 @@ SAMPLES_PER_CODEC_FRAME = 1920                      # Fixed value for the Qwen3-
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio settings
 # ─────────────────────────────────────────────────────────────────────────────
-IN_SAMPLE_RATE  = 24000           # Prompt audio sample rate  (fixed at export time)
-OUT_SAMPLE_RATE = 24000           # Output audio sample rate  (fixed at export time)
+IN_SAMPLE_RATE  = 24000                             # Prompt audio sample rate  (fixed at export time)
+OUT_SAMPLE_RATE = 24000                             # Output audio sample rate  (fixed at export time)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoding settings
 # ─────────────────────────────────────────────────────────────────────────────
-USE_BEAM_SEARCH = False           # False → greedy decoding
-BEAM_SIZE       = 3               # Active beam width
-TOP_K           = 3               # Top-K sampling parameter
-PENALTY_RANGE   = 5               # Recent-token window for repetition penalty
-REPEAT_PENALTY  = 0.8             # Repetition penalty coefficient (1.0 = disabled)
+USE_BEAM_SEARCH = False                             # False → greedy decoding
+BEAM_SIZE       = 3                                 # Active beam width
+TOP_K           = 3                                 # Top-K sampling parameter
+PENALTY_RANGE   = 5                                 # Recent-token window for repetition penalty
+REPEAT_PENALTY  = 0.8                               # Repetition penalty coefficient (1.0 = disabled)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
-STREAMING                = False  # True → streaming decode with static N-frame Decoder (sliding window)
-USE_AUDIO_NORMALIZER     = False  # Normalize output loudness (may alter voice characteristics)
-ORT_LOG                  = False  # Enable ONNX Runtime logging (disable for best performance)
-ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
-ORT_Accelerate_Providers = []     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
-MAX_THREADS              = 0      # CPU thread count (0 = auto)
-DEVICE_ID                = 0      # Device index
+STREAMING                = False                    # True → streaming decode with static N-frame Decoder (sliding window)
+USE_AUDIO_NORMALIZER     = False                    # Normalize output loudness (may alter voice characteristics)
+ORT_LOG                  = False                    # Enable ONNX Runtime logging (disable for best performance)
+ORT_FP16                 = False                    # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
+ORT_Accelerate_Providers = []                       # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
+MAX_THREADS              = 0                        # CPU thread count (0 = auto)
+DEVICE_ID                = 0                        # Device index
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -416,6 +417,10 @@ if STREAMING:
     in_name_Decoder_Stream     = get_in_names(ort_session_Decoder_Stream)
     out_name_Decoder_Stream    = get_out_names(ort_session_Decoder_Stream)
     STREAM_WINDOW_FRAMES       = ort_session_Decoder_Stream.get_outputs()[0].shape[-1] // SAMPLES_PER_CODEC_FRAME
+
+    ort_session_Slide_Window = create_session(onnx_model_Slide_Window, **packed_settings)
+    in_name_Slide_Window     = get_in_names(ort_session_Slide_Window)
+    out_name_Slide_Window    = get_out_names(ort_session_Slide_Window)
 
 # --- Main Rotary ---
 ort_session_Main_Rotary_Text_Prefill = create_session(onnx_model_Main_Rotary_Mask_Text_Prefill, **packed_settings)
@@ -913,12 +918,19 @@ for target_idx, target in enumerate(target_tts):
             if len(_stream_frame_window) > STREAM_WINDOW_FRAMES:
                 _stream_frame_window.pop(0)
             if len(_stream_frame_window) == STREAM_WINDOW_FRAMES:
-                _window_ort = _stream_frame_window[0]
-                for _fi in range(1, STREAM_WINDOW_FRAMES):
-                    _stream_concat_feed[in_name_Concat_Ids[0]] = _window_ort
-                    _stream_concat_feed[in_name_Concat_Ids[1]] = _stream_frame_window[_fi]
-                    _window_ort = ort_session_Concat_Ids.run_with_ort_values(out_name_Concat_Ids, _stream_concat_feed, run_options=run_options)[0]
                 _is_first = (_stream_decode_count == 0)
+                if _is_first:
+                    # First window: build by concatenating all frames
+                    _window_ort = _stream_frame_window[0]
+                    for _fi in range(1, STREAM_WINDOW_FRAMES):
+                        _stream_concat_feed[in_name_Concat_Ids[0]] = _window_ort
+                        _stream_concat_feed[in_name_Concat_Ids[1]] = _stream_frame_window[_fi]
+                        _window_ort = ort_session_Concat_Ids.run_with_ort_values(out_name_Concat_Ids, _stream_concat_feed, run_options=run_options)[0]
+                else:
+                    # Subsequent windows: slide by dropping first frame and appending new frame
+                    _stream_concat_feed[in_name_Slide_Window[0]] = _window_ort
+                    _stream_concat_feed[in_name_Slide_Window[1]] = _frame_codec
+                    _window_ort = ort_session_Slide_Window.run_with_ort_values(out_name_Slide_Window, _stream_concat_feed, run_options=run_options)[0]
                 _stream_decode_count += 1
                 _stream_futures.append(_stream_executor.submit(_stream_decode, _window_ort, _is_first))
 

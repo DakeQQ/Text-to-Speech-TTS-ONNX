@@ -55,6 +55,7 @@ model_names = [                                             # Recommended dtype:
     "Gather_0",                                             # [float32, float16]
     "Concat_Embed",                                         # [float32, float16]
     "Concat_Ids",                                           # [float32, float16]
+    "Slide_Window",                                         # [float32, float16]
     "Greedy_Search",                                        # [float32, float16]
     "First_Beam_Search",                                    # [float32, float16]
     "Second_Beam_Search",                                   # [float32, float16]
@@ -112,6 +113,7 @@ CPU_MODEL_DTYPE = {
     "Gather_0":                                   "float32",
     "Concat_Embed":                               "float32",
     "Concat_Ids":                                 "float32",
+    "Slide_Window":                               "float32",
     "Greedy_Search":                              "float32",
     "First_Beam_Search":                          "float32",
     "Second_Beam_Search":                         "float32",
@@ -142,6 +144,7 @@ GPU_MODEL_DTYPE = {
     "Gather_0":                                   "float16",
     "Concat_Embed":                               "float16",
     "Concat_Ids":                                 "float16",
+    "Slide_Window":                               "float16",
     "Greedy_Search":                              "float16",
     "First_Beam_Search":                          "float16",
     "Second_Beam_Search":                         "float16",
