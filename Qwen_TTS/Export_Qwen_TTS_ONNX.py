@@ -366,7 +366,8 @@ class TTS_PREDICTOR_ROTARY_MASK_PREFILL(torch.nn.Module):
         inv_freq     = tts.model.talker.code_predictor.model.rotary_emb.inv_freq
         idx_theta    = (position_ids * inv_freq).unsqueeze(1).unsqueeze(1).unsqueeze(0)
         cos          = torch.cat([torch.cos(idx_theta)] * 2, dim=-1).half()
-        sin          = torch.cat([-torch.sin(idx_theta), torch.sin(idx_theta)], dim=-1).half()
+        sin          = torch.sin(idx_theta)
+        sin          = torch.cat([-sin, sin], dim=-1).half()
 
         # Causal mask: -128 for masked positions (used with int8 KV cache arithmetic)
         self.attention_mask = (1 - torch.tril(torch.ones([1, 1, 1, max_seq_len, max_seq_len], dtype=torch.int8))) * -128
@@ -393,7 +394,8 @@ class TTS_PREDICTOR_ROTARY_MASK_DECODE(torch.nn.Module):
         inv_freq     = tts.model.talker.code_predictor.model.rotary_emb.inv_freq
         idx_theta    = (position_ids * inv_freq).unsqueeze(1).unsqueeze(1).unsqueeze(0)
         cos          = torch.cat([torch.cos(idx_theta)] * 2, dim=-1).half()
-        sin          = torch.cat([-torch.sin(idx_theta), torch.sin(idx_theta)], dim=-1).half()
+        sin          = torch.sin(idx_theta)
+        sin          = torch.cat([-sin, sin], dim=-1).half()
 
         self.register_buffer("cos_rotary_pos_emb", cos, persistent=False)
         self.register_buffer("sin_rotary_pos_emb", sin, persistent=False)
