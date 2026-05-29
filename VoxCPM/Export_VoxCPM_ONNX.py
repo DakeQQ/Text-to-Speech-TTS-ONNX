@@ -147,6 +147,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         self.num_key_value_groups = self.voxcpm.feat_encoder.encoder.layers._modules['0'].self_attn.num_key_value_groups
         self.qk_heads = self.num_heads + self.num_key_value_heads
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
+        self.rms_eps = torch.tensor([self.voxcpm.feat_encoder.encoder.config.rms_norm_eps * self.voxcpm.feat_encoder.encoder.config.hidden_size], dtype=torch.float32)
         max_prompt_feat_len = (max_prompt_audio_len // in_sample_rate * 44100) // (self.voxcpm.patch_size * self.voxcpm.chunk_size) + 1
         self.special_tokens = self.voxcpm.feat_encoder.special_token.expand(1, max_prompt_feat_len, 1, -1).squeeze(0).half()
         self.q_len = self.voxcpm.patch_size + 1  # Fixed to 5 for VoxCPM1.5
@@ -225,7 +226,7 @@ class VOXCPM_FEAT_ENCODER(torch.nn.Module):
         """Apply modified RMS normalization (with optional overflow scaling)."""
         if PREVENT_F16_OVERFLOW:
             x = x * self.overflow_scale
-        return x * torch.rsqrt(x.square().sum(-1, keepdim=True))
+        return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + self.rms_eps)
 
     def rotate_half(self, x):
         x = x.view(-1, self.q_len, 1, self.qk_heads, 2, self.head_dim_half)
@@ -372,6 +373,7 @@ class VOXCPM_MAIN(torch.nn.Module):
 
         # ── Overflow guard ───────────────────────────────────────────────
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
+        self.rms_eps = torch.tensor([self.voxcpm.base_lm.config.rms_norm_eps * self.voxcpm.base_lm.config.hidden_size], dtype=torch.float32)
 
         # ── Layer counts ─────────────────────────────────────────────────
         self.total_layers = self.voxcpm.base_lm.config.num_hidden_layers + self.voxcpm.residual_lm.config.num_hidden_layers
@@ -471,7 +473,7 @@ class VOXCPM_MAIN(torch.nn.Module):
         """Apply modified RMS normalization (with optional overflow scaling)."""
         if PREVENT_F16_OVERFLOW:
             x = x * self.overflow_scale
-        return x * torch.rsqrt(x.square().sum(-1, keepdim=True))
+        return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + self.rms_eps)
 
     def _rotate_half(self, x):
         """Rotate the last dimension by swapping and negating halves (for RoPE).
@@ -601,6 +603,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self.qk_heads = self.num_heads + self.num_key_value_heads
         self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
+        self.rms_eps = torch.tensor([self.voxcpm.feat_decoder.estimator.config.rms_norm_eps * self.voxcpm.feat_decoder.estimator.config.hidden_size], dtype=torch.float32)
         sway_sampling_coef = 1.0
         t_span = torch.linspace(1, 0, fixed_timesteps + 1, dtype=torch.float32)
         t_span = (t_span + sway_sampling_coef * (torch.cos(torch.pi / 2 * t_span) - 1 + t_span))[1:]
@@ -689,7 +692,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         """Apply modified RMS normalization (with optional overflow scaling)."""
         if PREVENT_F16_OVERFLOW:
             x = x * self.overflow_scale
-        return x * torch.rsqrt(x.square().sum(-1, keepdim=True))
+        return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + self.rms_eps)
 
     def rotate_half(self, x):
         x = x.view(-1, self.q_len, 1, self.qk_heads, 2, self.head_dim_half)
