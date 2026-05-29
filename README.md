@@ -33,14 +33,12 @@
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | KaniTTS<br>Q4F32   |        5.2                                                                | 0.87 |
 | Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        9                                                               | 1.5 |
 | Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        1.03                                                            | 0.17 |
-| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | Qwen3-TTS-0.6B-Base<br>Q8F32   |        19                                                               | 3.1 |
+| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | Qwen3-TTS-0.6B-Base<br>Q8F32   |        19                                                     | 3.1 |
 
 
 ---
 
 ### To-Do List  
-- [ ] Qwen3-TTS-Custom_Voice
-- [ ] Qwen3-TTS-Voice_Design
 - [ ] VoxCPM-2
 ---
 
