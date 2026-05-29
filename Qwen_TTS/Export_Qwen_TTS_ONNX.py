@@ -716,6 +716,8 @@ class TTS_DECODER(torch.nn.Module):
         for param in self.decoder.pre_transformer.parameters():
             param.requires_grad = False
 
+        self.register_buffer("eps_hidden", torch.tensor(self.decoder.pre_transformer.config.rms_norm_eps * self.hidden_size, dtype=torch.float32), persistent=False)
+
         self._fuse_decoder_weights()
 
         self.num_heads     = self.decoder.pre_transformer.layers._modules['0'].self_attn.config.num_attention_heads
@@ -809,7 +811,7 @@ class TTS_DECODER(torch.nn.Module):
 
     def _rms_norm(self, x):
         """Apply modified RMS normalization (with optional overflow scaling)."""
-        return x * torch.rsqrt(x.square().sum(-1, keepdim=True))
+        return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + self.eps_hidden)
 
     def rotate_half(self, x):
         """Rotate using flip() — more efficient than split()+cat() in ONNX Runtime."""
@@ -912,6 +914,9 @@ class TTS_MAIN(torch.nn.Module):
         self.save_key   = [None] * self.num_layers
         self.save_value = [None] * self.num_layers
 
+        self.register_buffer("eps_hidden", torch.tensor(self.tts.config.rms_norm_eps * self.hidden_size, dtype=torch.float32), persistent=False)
+        self.register_buffer("eps_head", torch.tensor(self.tts.config.rms_norm_eps * self.head_dim, dtype=torch.float32), persistent=False)
+
         self._fuse_weights()
 
     # ── Weight Fusion ─────────────────────────────────────────────────────────
@@ -979,8 +984,8 @@ class TTS_MAIN(torch.nn.Module):
             else:
                 self._replace_gelu_with_tanh_approximation(child)
 
-    def _rms_norm(self, x):
-        return x * torch.rsqrt(x.square().sum(-1, keepdim=True))
+    def _rms_norm(self, x, eps):
+        return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + eps)
 
     def rotate_half(self, x, batch_size):
         x = x.view(batch_size, -1, 1, self.qk_heads, 2, self.head_dim_half)
@@ -995,11 +1000,11 @@ class TTS_MAIN(torch.nn.Module):
 
         for i, layer in enumerate(self.tts.model.layers):
             residual      = hidden_states
-            hidden_states = self._rms_norm(hidden_states)
+            hidden_states = self._rms_norm(hidden_states, self.eps_hidden)
             qkv           = layer.self_attn.qkv(hidden_states)
             qkv           = qkv.reshape(1, -1, 1, self.qk_heads + self.num_key_value_heads, self.head_dim)
             qk, v         = torch.split(qkv, [self.qk_heads, self.num_key_value_heads], dim=-2)
-            qk            = self._rms_norm(qk) * layer.self_attn.qk_norm_weight
+            qk            = self._rms_norm(qk, self.eps_head) * layer.self_attn.qk_norm_weight
             qk_rot        = qk * rotary_pos_emb_cos + self.rotate_half(qk, 1) * rotary_pos_emb_sin
             q, k          = torch.split(qk_rot, [self.num_heads, self.num_key_value_heads], dim=-2)
             q             = q.reshape(1, -1, self.num_key_value_heads, self.num_key_value_groups, self.head_dim)
@@ -1021,7 +1026,7 @@ class TTS_MAIN(torch.nn.Module):
             hidden_states = residual + layer.self_attn.o_proj(attn)
 
             residual      = hidden_states
-            hidden_states = self._rms_norm(hidden_states)
+            hidden_states = self._rms_norm(hidden_states, self.eps_hidden)
             gate_up       = layer.mlp.gate_up_proj(hidden_states)
             gate, up      = torch.split(gate_up, [layer.mlp.down_proj.in_features] * 2, dim=-1)
             hidden_states = residual + layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
@@ -1060,6 +1065,9 @@ class TTS_PREDICTOR(torch.nn.Module):
         self.save_key   = [None] * self.num_layers
         self.save_value = [None] * self.num_layers
 
+        self.register_buffer("eps_hidden", torch.tensor(self.tts.config.rms_norm_eps * self.hidden_size, dtype=torch.float32), persistent=False)
+        self.register_buffer("eps_head", torch.tensor(self.tts.config.rms_norm_eps * self.head_dim, dtype=torch.float32), persistent=False)
+
         self._fuse_weights()
 
     # ── Weight Fusion ─────────────────────────────────────────────────────────
@@ -1127,8 +1135,8 @@ class TTS_PREDICTOR(torch.nn.Module):
             else:
                 self._replace_gelu_with_tanh_approximation(child)
 
-    def _rms_norm(self, x):
-        return x * torch.rsqrt(x.square().sum(-1, keepdim=True))
+    def _rms_norm(self, x, eps):
+        return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + eps)
 
     def rotate_half(self, x, batch_size):
         x = x.view(batch_size, -1, 1, self.qk_heads, 2, self.head_dim_half)
@@ -1145,11 +1153,11 @@ class TTS_PREDICTOR(torch.nn.Module):
 
         for i, layer in enumerate(self.tts.model.layers):
             residual      = hidden_states
-            hidden_states = self._rms_norm(hidden_states)
+            hidden_states = self._rms_norm(hidden_states, self.eps_hidden)
             qkv           = layer.self_attn.qkv(hidden_states)
             qkv           = qkv.reshape(batch_size, -1, 1, self.qk_heads + self.num_key_value_heads, self.head_dim)
             qk, v         = torch.split(qkv, [self.qk_heads, self.num_key_value_heads], dim=-2)
-            qk            = self._rms_norm(qk) * layer.self_attn.qk_norm_weight
+            qk            = self._rms_norm(qk, self.eps_head) * layer.self_attn.qk_norm_weight
             qk_rot        = qk * rotary_pos_emb_cos + self.rotate_half(qk, batch_size) * rotary_pos_emb_sin
             q, k          = torch.split(qk_rot, [self.num_heads, self.num_key_value_heads], dim=-2)
             q             = q.reshape(batch_size, -1, self.num_key_value_heads, self.num_key_value_groups, self.head_dim)
@@ -1171,12 +1179,12 @@ class TTS_PREDICTOR(torch.nn.Module):
             hidden_states = residual + layer.self_attn.o_proj(attn)
 
             residual      = hidden_states
-            hidden_states = self._rms_norm(hidden_states)
+            hidden_states = self._rms_norm(hidden_states, self.eps_hidden)
             gate_up       = layer.mlp.gate_up_proj(hidden_states)
             gate, up      = torch.split(gate_up, [layer.mlp.down_proj.in_features] * 2, dim=-1)
             hidden_states = residual + layer.mlp.down_proj(layer.mlp.act_fn(gate) * up)
 
-        hidden_states = self._rms_norm(hidden_states[:, -1])
+        hidden_states = self._rms_norm(hidden_states[:, -1], self.eps_hidden)
         return *self.save_key, *self.save_value, hidden_states
 
 
