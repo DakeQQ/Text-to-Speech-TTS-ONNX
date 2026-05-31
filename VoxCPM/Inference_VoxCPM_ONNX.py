@@ -513,8 +513,7 @@ for sentence in target_tts:
 
         # --- 3. Fused Feat_Encoder_Cond (one call instead of two) ---
         input_feed_Feat_Encoder_Cond[in_name_Feat_Encoder_Cond] = latent_pred
-        feat_embed_new, feat_cond = ort_session_Feat_Encoder_Cond.run_with_ort_values(
-            out_name_Feat_Encoder_Cond, input_feed_Feat_Encoder_Cond, run_options=run_options)
+        feat_embed_new, feat_cond = ort_session_Feat_Encoder_Cond.run_with_ort_values(out_name_Feat_Encoder_Cond, input_feed_Feat_Encoder_Cond, run_options=run_options)
 
         # --- Update Main inputs for next decode step ---
         input_feed_Main.update(zip(in_name_Main[:num_keys_values], all_outputs_Main))
