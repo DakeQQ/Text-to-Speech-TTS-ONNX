@@ -1,7 +1,6 @@
 import os
 import gc
 import glob
-import onnx
 import onnx.version_converter
 from pathlib import Path
 from onnxslim import slim
@@ -25,26 +24,24 @@ lazy_setting_CPU = True                     # Set true to auto-select CPU settin
 lazy_setting_GPU = False                    # Set true to auto-select GPU settings.
 
 use_openvino = False                        # Set true for OpenVINO optimization.
-SAVE_TWO_PARTS = False      # If True, save the model into 2 parts.
+SAVE_TWO_PARTS = False                      # If True, save the model into 2 parts.
 upgrade_opset = 0                           # Optional process. Set 0 for close.
+use_nbits_for_int8 = True                   # If True, use matmul_nbits_quantizer (bits=8) instead of quantize_dynamic for int8.
 
 
 #------------------------------------------------------------------------------ 
 # Manual Settings
 #------------------------------------------------------------------------------ 
-# List of models to process
-model_names = [             # Recommended quantize dtype. The int8 is best for CPU.
-    "VoxCPM_Text_Embed",    # [int8, int4, float32, float16]
-    "VoxCPM_VAE_Encoder",   # [float32, float16]
-    "VoxCPM_Feat_Encoder",  # [int8, float32, float16]
-    "VoxCPM_Feat_Cond",     # [float32, float16]
-    "VoxCPM_Concat",        # [float32, float16]
-    "VoxCPM_Rotary_Mask_Text_Prefill", # [float32, float16]
-    "VoxCPM_Rotary_Mask_Text_Decode",  # [float32, float16]
-    "VoxCPM_Main",          # [int8, float32, float16]
-    "VoxCPM_Feat_Decoder",  # [float32, int8, float16]
-    "VoxCPM_VAE_Decoder"    # [float32, float16]
-    
+# List of models to process (fused architecture)
+model_names = [                         # Recommended quantize dtype. The int8 is best for CPU.
+    "VoxCPM_VAE_Encoder",               # [float32, float16]
+    "VoxCPM_Feat_Encoder_Cond",         # [int8, float32, float16]
+    "VoxCPM_Prefill",                   # [int8, float32, float16]
+    "VoxCPM_Rotary_Mask_Text_Decode",   # [float32, float16]
+    "VoxCPM_Main",                      # [int8, float32, float16]
+    "VoxCPM_Feat_Decoder",              # [float32, int8, float16]
+    "VoxCPM_VAE_Decoder",               # [float32, float16]
+    "VoxCPM_Concat",                    # [float32, float16] (streaming only)
 ]
 
 # Manual Settings
@@ -56,7 +53,7 @@ keep_io_dtype = True                     # Will be overridden when needed; must 
 # Int4 matmul_nbits_quantizer Settings
 algorithm = "k_quant"                    # ["DEFAULT", "RTN", "HQQ", "k_quant"]
 bits = 4                                 # [4, 8]; It is not recommended to use 8.
-block_size = 32                          # [16, 32, 64, 128, 256]; Smaller block_size => more accuracy, more time and size.
+block_size = 16                          # [16, 32, 64, 128, 256]; Smaller block_size => more accuracy, more time and size.
 accuracy_level = 4                       # 0:default, 1:fp32, 2:fp16, 3:bf16, 4:int8
 quant_symmetric = False                  # False may get more accuracy.
 nodes_to_exclude = None                  # Example: ["/layers.0/mlp/down_proj/MatMul"]
@@ -66,42 +63,36 @@ nodes_to_exclude = None                  # Example: ["/layers.0/mlp/down_proj/Ma
 if lazy_setting_CPU:
     if use_openvino:
         CPU_MODEL_DTYPE = {
-            "VoxCPM_Text_Embed": "int8",
-            "VoxCPM_VAE_Encoder": "float32",
-            "VoxCPM_Feat_Encoder": "float32",
-            "VoxCPM_Feat_Cond": "float32",
-            "VoxCPM_Concat": "float32",
-            "VoxCPM_Rotary_Mask_Text_Prefill": "float32",
+            "VoxCPM_VAE_Encoder":             "float32",
+            "VoxCPM_Feat_Encoder_Cond":       "float32",
+            "VoxCPM_Prefill":                 "int8",
             "VoxCPM_Rotary_Mask_Text_Decode": "float32",
-            "VoxCPM_Main": "int8",
-            "VoxCPM_Feat_Decoder": "float32", # int8 can also work, but it will affect the quality.
-            "VoxCPM_VAE_Decoder": "float32",
+            "VoxCPM_Main":                    "int8",
+            "VoxCPM_Feat_Decoder":            "float32",  # int8 can also work, but it will affect the quality.
+            "VoxCPM_VAE_Decoder":             "float32",
+            "VoxCPM_Concat":                  "float32",
         }
     else:
         CPU_MODEL_DTYPE = {
-            "VoxCPM_Text_Embed": "int8",
-            "VoxCPM_VAE_Encoder": "float32",
-            "VoxCPM_Feat_Encoder": "int8",
-            "VoxCPM_Feat_Cond": "float32",
-            "VoxCPM_Concat": "float32",
-            "VoxCPM_Rotary_Mask_Text_Prefill": "float32",
+            "VoxCPM_VAE_Encoder":             "float32",
+            "VoxCPM_Feat_Encoder_Cond":       "int8",
+            "VoxCPM_Prefill":                 "int8",
             "VoxCPM_Rotary_Mask_Text_Decode": "float32",
-            "VoxCPM_Main": "int8",
-            "VoxCPM_Feat_Decoder": "int8",   # int8 = speed / float32 = quality.
-            "VoxCPM_VAE_Decoder": "float32",
+            "VoxCPM_Main":                    "int8",
+            "VoxCPM_Feat_Decoder":            "int8",     # int8 = speed / float32 = quality.
+            "VoxCPM_VAE_Decoder":             "float32",
+            "VoxCPM_Concat":                  "float32",
         }
 elif lazy_setting_GPU:
     GPU_MODEL_DTYPE = {
-        "VoxCPM_Text_Embed": "float16",
-        "VoxCPM_VAE_Encoder": "float16",
-        "VoxCPM_Feat_Encoder": "float16",
-        "VoxCPM_Feat_Cond": "float16",
-        "VoxCPM_Concat": "float16",
-        "VoxCPM_Rotary_Mask_Text_Prefill": "float16",
+        "VoxCPM_VAE_Encoder":             "float16",
+        "VoxCPM_Feat_Encoder_Cond":       "float16",
+        "VoxCPM_Prefill":                 "float16",
         "VoxCPM_Rotary_Mask_Text_Decode": "float16",
-        "VoxCPM_Main": "float16",
-        "VoxCPM_Feat_Decoder": "float16",
-        "VoxCPM_VAE_Decoder": "float16",
+        "VoxCPM_Main":                    "float16",
+        "VoxCPM_Feat_Decoder":            "float16",
+        "VoxCPM_VAE_Decoder":             "float16",
+        "VoxCPM_Concat":                  "float16",
     }
 
 # Validate lazy settings (one of them should be True)
@@ -143,9 +134,9 @@ for model_name in model_names:
     print(f"quant_int8={quant_int8}, quant_float16={quant_float16}, keep_io_dtype={keep_io_dtype}")
 
     # Start Quantize / Optimize according to target dtype
-    if quant_int4 and ("Embed" in model_path or "Main" in model_path or "Encoder" in model_path or "Decoder" in model_path):
+    if quant_int4 and ("Prefill" in model_path or "Main" in model_path or "Encoder" in model_path or "Decoder" in model_path):
         # Int4 path (not used by current auto rules, but kept for completeness)
-        if "Embed" in model_path:
+        if "Prefill" in model_path:
             op_types = ["Gather"]
             quant_axes = [1]
             algorithm = "DEFAULT"  # Fallback to DEFAULT
@@ -204,24 +195,86 @@ for model_name in model_names:
         )
 
     elif quant_int8:
-        # INT8 dynamic weight quantization
-        print("Applying INT8 (dynamic) quantization...")
-        quantize_dynamic(
-            model_input=quant_utils.load_model_with_shape_infer(Path(model_path)),
-            model_output=quanted_model_path,
-            per_channel=True,
-            reduce_range=False,
-            weight_type=QuantType.QUInt8,
-            extra_options={
-                'ActivationSymmetric': False,
-                'WeightSymmetric': False,
-                'EnableSubgraph': True,
-                'ForceQuantizeNoInputCheck': False,
-                'MatMulConstBOnly': True
-            },
-            nodes_to_exclude=None,
-            use_external_data_format=True
-        )
+        if use_nbits_for_int8:
+            # INT8 weight-only quantization via matmul_nbits_quantizer (bits=8)
+            print("Applying INT8 (matmul_nbits_quantizer, bits=8) quantization...")
+            if "Prefill" in model_path:
+                op_types = ["Gather"]
+                quant_axes = [1]
+                algorithm = "DEFAULT"
+                nbits_bits = 4
+            else:
+                op_types = ["MatMul"]
+                quant_axes = [0]
+                algorithm = algorithm_copy
+                nbits_bits = 8
+
+            model = quant_utils.load_model_with_shape_infer(Path(model_path))
+
+            if algorithm == "RTN":
+                quant_config = matmul_nbits_quantizer.RTNWeightOnlyQuantConfig(
+                    quant_format=quant_utils.QuantFormat.QOperator,
+                    op_types_to_quantize=tuple(op_types)
+                )
+            elif algorithm == "HQQ":
+                quant_config = matmul_nbits_quantizer.HQQWeightOnlyQuantConfig(
+                    bits=nbits_bits,
+                    block_size=block_size,
+                    axis=quant_axes[0],
+                    quant_format=quant_utils.QuantFormat.QOperator,
+                    op_types_to_quantize=tuple(op_types),
+                    quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types)))
+                )
+            elif algorithm == "k_quant":
+                quant_config = matmul_nbits_quantizer.KQuantWeightOnlyQuantConfig(
+                    quant_format=quant_utils.QuantFormat.QOperator,
+                    op_types_to_quantize=tuple(op_types)
+                )
+            else:
+                quant_config = matmul_nbits_quantizer.DefaultWeightOnlyQuantConfig(
+                    block_size=block_size,
+                    is_symmetric=quant_symmetric,
+                    accuracy_level=accuracy_level,
+                    quant_format=quant_utils.QuantFormat.QOperator,
+                    op_types_to_quantize=tuple(op_types),
+                    quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types)))
+                )
+            quant_config.bits = nbits_bits
+            quant = matmul_nbits_quantizer.MatMulNBitsQuantizer(
+                model,
+                block_size=block_size,
+                is_symmetric=quant_symmetric,
+                accuracy_level=accuracy_level,
+                quant_format=quant_utils.QuantFormat.QOperator,
+                op_types_to_quantize=tuple(op_types),
+                quant_axes=tuple((op_types[i], quant_axes[i]) for i in range(len(op_types))),
+                algo_config=quant_config,
+                nodes_to_exclude=nodes_to_exclude
+            )
+            quant.process()
+            quant.model.save_model_to_file(
+                quanted_model_path,
+                True  # save_as_external_data
+            )
+        else:
+            # INT8 dynamic weight quantization
+            print("Applying INT8 (dynamic) quantization...")
+            quantize_dynamic(
+                model_input=quant_utils.load_model_with_shape_infer(Path(model_path)),
+                model_output=quanted_model_path,
+                per_channel=True,
+                reduce_range=False,
+                weight_type=QuantType.QUInt8,
+                extra_options={
+                    'ActivationSymmetric': False,
+                    'WeightSymmetric': False,
+                    'EnableSubgraph': True,
+                    'ForceQuantizeNoInputCheck': False,
+                    'MatMulConstBOnly': True
+                },
+                nodes_to_exclude=None,
+                use_external_data_format=True
+            )
 
     elif quant_float16:
         # Float16 path: optimize then convert to fp16
