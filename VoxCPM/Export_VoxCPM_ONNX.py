@@ -46,7 +46,7 @@ MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples
 
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower. Free to edit it.
-CFG_VALUE = 2.5                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
+CFG_VALUE = 2.0                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
 RANDOM_SEED = 1                          # Global random seed. Free to edit it.
 
 # === Feature flags ===
@@ -79,11 +79,24 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
         super(VOXCPM_VAE_ENCODER, self).__init__()
         self.voxcpm = voxcpm
         self._replace_gelu_with_tanh_approximation(self.voxcpm)
-        self.inv_int16 = torch.tensor(1.0 / 32768.0, dtype=torch.float32).view(1, 1, -1)
+        self._remove_weight_norm(self.voxcpm.audio_vae.encoder)
         self.patch_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
         self.pad_zeros = torch.zeros([1, 1, self.patch_len], dtype=torch.int8)
         self.in_sample_rate = in_sample_rate
         self.sr_scale = float(44100.0 / self.in_sample_rate)
+
+        # Fuse inv_int16 (1/32768) scaling into the first conv layer's weights to eliminate runtime multiply
+        with torch.no_grad():
+            first_conv = self.voxcpm.audio_vae.encoder.block[0]
+            first_conv.weight.mul_(1.0 / 32768.0)
+
+    @staticmethod
+    def _remove_weight_norm(module):
+        for child in module.modules():
+            try:
+                torch.nn.utils.remove_weight_norm(child)
+            except ValueError:
+                pass
 
     def _replace_gelu_with_tanh_approximation(self, module):
         for name, child in module.named_children():
@@ -94,13 +107,8 @@ class VOXCPM_VAE_ENCODER(torch.nn.Module):
 
     def forward(self, prompt_audio):
         prompt_audio = prompt_audio.float()
-        if self.sr_scale < 1.0:
-            prompt_audio = torch.nn.functional.interpolate(
-                prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
-        prompt_audio = prompt_audio * self.inv_int16
-        if self.sr_scale > 1.0:
-            prompt_audio = torch.nn.functional.interpolate(
-                prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
+        if self.sr_scale != 1.0:
+            prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
         padding_size = self.patch_len - prompt_audio.shape[-1] % self.patch_len
         prompt_audio = torch.cat([prompt_audio, self.pad_zeros[..., :padding_size].float()], dim=-1)
         audio_feat = self.voxcpm.audio_vae.encoder(prompt_audio)
@@ -333,6 +341,28 @@ class VOXCPM_MAIN(torch.nn.Module):
         self.norm_factor = self.voxcpm.base_lm.config.hidden_size ** 0.5
         self.scale_factor_base = float(self.voxcpm.base_lm.layers._modules['0'].self_attn.head_dim ** -0.25)
         self._fuse_weights()
+        self._fuse_dit_stop_proj()
+
+    def _fuse_dit_stop_proj(self):
+        """Fuse lm_to_dit_proj and stop_proj into a single linear to reduce two matmuls to one."""
+        with torch.no_grad():
+            dit_proj = self.voxcpm.lm_to_dit_proj
+            stop_proj = self.voxcpm.stop_proj
+            in_features = dit_proj.in_features
+            dit_out = dit_proj.out_features
+            stop_out = stop_proj.out_features
+            self.dit_out_features = dit_out
+            self.stop_out_features = stop_out
+            has_bias = (dit_proj.bias is not None) or (stop_proj.bias is not None)
+            fused = torch.nn.Linear(in_features, dit_out + stop_out, bias=has_bias)
+            fused.weight.copy_(torch.cat([dit_proj.weight, stop_proj.weight], dim=0))
+            if has_bias:
+                z = lambda feat: torch.zeros(feat, dtype=dit_proj.weight.dtype, device=dit_proj.weight.device)
+                db = dit_proj.bias if dit_proj.bias is not None else z(dit_out)
+                sb = stop_proj.bias if stop_proj.bias is not None else z(stop_out)
+                fused.bias.copy_(torch.cat([db, sb], dim=0))
+            self.fused_dit_stop_proj = fused
+            del self.voxcpm.lm_to_dit_proj, self.voxcpm.stop_proj
 
     def _fuse_weights(self):
         with torch.no_grad():
@@ -475,11 +505,12 @@ class VOXCPM_MAIN(torch.nn.Module):
 
         residual_hidden = hidden_states[:, [-1]]
         residual_hidden = self._rms_norm(residual_hidden)
-        dit_hidden_1 = self.voxcpm.lm_to_dit_proj(lm_hidden)
+        fused_out = self.fused_dit_stop_proj(lm_hidden)
+        dit_hidden_1, stop_intermediate = torch.split(fused_out, [self.dit_out_features, self.stop_out_features], dim=-1)
         dit_hidden_2 = self.voxcpm.res_to_dit_proj(residual_hidden)
         dit_hidden = dit_hidden_1 + dit_hidden_2
         random = torch.randn((1, self.voxcpm.patch_size, self.voxcpm.feat_decoder.in_channels), dtype=torch.float32)
-        stop_flag = self.voxcpm.stop_head(self.voxcpm.stop_actn(self.voxcpm.stop_proj(lm_hidden))).argmax(dim=-1, keepdims=False).int()
+        stop_flag = self.voxcpm.stop_head(self.voxcpm.stop_actn(stop_intermediate)).argmax(dim=-1, keepdims=False).int()
         return *self.save_key, *self.save_value, random, dit_hidden, stop_flag
 
 
@@ -641,8 +672,17 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
         super(VOXCPM_VAE_DECODE, self).__init__()
         self.voxcpm = voxcpm
         self._replace_gelu_with_tanh_approximation(self.voxcpm)
+        self._remove_weight_norm(self.voxcpm.audio_vae.decoder)
         self.scale = float(output_sample_rate / 44100.0)
         self.single_decode_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
+
+        # Fuse 32767 scale into the last conv layer's weights and replace Tanh with Hardtanh(-32767, 32767)
+        with torch.no_grad():
+            last_conv = self.voxcpm.audio_vae.decoder.model[-2]  # Conv1d before Tanh
+            last_conv.weight.mul_(32767.0)
+            if last_conv.bias is not None:
+                last_conv.bias.mul_(32767.0)
+            self.voxcpm.audio_vae.decoder.model[-1] = torch.nn.Hardtanh(min_val=-32767.0, max_val=32767.0)
 
     def _replace_gelu_with_tanh_approximation(self, module):
         for name, child in module.named_children():
@@ -651,19 +691,18 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
             else:
                 self._replace_gelu_with_tanh_approximation(child)
 
+    @staticmethod
+    def _remove_weight_norm(module):
+        for child in module.modules():
+            try:
+                torch.nn.utils.remove_weight_norm(child)
+            except ValueError:
+                pass
+
     def forward(self, latent_pred):
         decode_audio = self.voxcpm.audio_vae.decode(latent_pred.transpose(-1, -2))
-        if self.scale < 1.0:
-            decode_audio = torch.nn.functional.interpolate(
-                decode_audio, scale_factor=self.scale, mode='linear', align_corners=False)
-            decode_audio = (decode_audio * 32767.0).clamp(min=-32768.0, max=32767.0)
-        elif self.scale > 1.0:
-            decode_audio = decode_audio * 32767.0
-            decode_audio = torch.nn.functional.interpolate(
-                decode_audio, scale_factor=self.scale, mode='linear', align_corners=False)
-            decode_audio = decode_audio.clamp(min=-32768.0, max=32767.0)
-        else:
-            decode_audio = (decode_audio * 32767.0).clamp(min=-32768.0, max=32767.0)
+        if self.scale != 1.0:
+            decode_audio = torch.nn.functional.interpolate(decode_audio, scale_factor=self.scale, mode='linear', align_corners=False)
         audio_out_len = decode_audio.shape[-1].unsqueeze(0)
         return decode_audio.to(torch.int16), audio_out_len
 
