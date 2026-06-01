@@ -436,17 +436,11 @@ class TTS_ENCODER(torch.nn.Module):
 
         self._fuse_encoder_weights()
 
-        # Fuse int16 normalization scale into the first encoder conv weight
-        with torch.no_grad():
-            for module in self.encoder.encoder.modules():
-                if isinstance(module, torch.nn.Conv1d):
-                    module.weight.mul_(1.0 / 32768.0)
-                    break
-
         # Pre-computed values
         self.stft_model = stft_model
         self.in_sample_rate = in_sample_rate
         self.sr_scale   = float(24000.0 / self.in_sample_rate)
+        self.inv_int16 = torch.tensor([1.0 / 32768.0], dtype=torch.float32)
         self.eps        = torch.tensor([1e-5], dtype=torch.float32)
         self.fbank      = (torchaudio.functional.melscale_fbanks(nfft_stft // 2 + 1, 0, in_sample_rate // 2, n_mels, in_sample_rate, "slaney", 'slaney')).transpose(0, 1).unsqueeze(0)
 
@@ -550,7 +544,10 @@ class TTS_ENCODER(torch.nn.Module):
     def forward(self, prompt_audio):
         # Resample (int16 normalization is fused into the first conv weight)
         prompt_audio = prompt_audio.float()
-        if self.sr_scale != 1.0:
+        if self.sr_scale > 1.0:
+            prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
+        prompt_audio *= self.inv_int16
+        if self.sr_scale < 1.0:
             prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
 
         # Encode audio through the convolutional encoder
