@@ -31,7 +31,7 @@ target_tts = [                                                                  
 generated_audio_path = r"./generated.wav"                                       # The generated audio path.
 
 # Model Config
-DO_EXPORT = True                         # Whether to export the ONNX models
+DO_EXPORT = False                         # Whether to export the ONNX models
 
 # === Decoding limits & tokens ===
 STOP_TOKEN = [1]                         # The stop_id in VoxCPM is "1"
@@ -664,6 +664,7 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         return random
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # VAE Decoder Module
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1238,10 +1239,6 @@ init_past_keys_Main   = create_ort_with_shape(shape_keys, model_dtype_Main, devi
 init_past_values_Main = create_ort_with_shape(shape_vals, model_dtype_Main, device_type, DEVICE_ID)
 init_feat_embed       = create_ort_with_shape(shape_embed, model_dtype_Main, device_type, DEVICE_ID)
 
-# --- CFG Values ---
-cfg_value       = create_ort_with_data([CFG_VALUE],       model_dtype_Feat_Decoder, device_type, DEVICE_ID)
-cfg_value_minus = create_ort_with_data([1.0 - CFG_VALUE], model_dtype_Feat_Decoder, device_type, DEVICE_ID)
-
 # --- Audio Post-processing ---
 blank_segment = np.zeros((1, 1, int(OUT_SAMPLE_RATE * 0.1)), dtype=np.int16)
 
@@ -1258,11 +1255,11 @@ input_feed_Prefill                  = {}
 input_feed_Rotary_Mask_Text_Decode  = {}
 input_feed_Main                     = {}
 input_feed_Feat_Decoder             = {}
-input_feed_VAE_Decoder              = {}
 
-# Feat Decoder: Fixed CFG Inputs
-input_feed_Feat_Decoder[in_name_Feat_Decoder[3]] = cfg_value
-input_feed_Feat_Decoder[in_name_Feat_Decoder[4]] = cfg_value_minus
+# CFG Values
+cfg_value_ort = create_ort_with_data([CFG_VALUE], np.float32, device_type, DEVICE_ID)
+cfg_value_minus_ort = create_ort_with_data([1.0 - CFG_VALUE], np.float32, device_type, DEVICE_ID)
+input_feed_VAE_Decoder              = {}
 
 # Compute init_feat_cond (zero-input conditioning for no-prompt case)
 _meta_fec = ort_session_Feat_Encoder_Cond._inputs_meta[0]
@@ -1404,6 +1401,8 @@ for sentence in target_tts:
         input_feed_Feat_Decoder[in_name_Feat_Decoder[0]] = all_outputs_Main[num_keys_values]         # random
         input_feed_Feat_Decoder[in_name_Feat_Decoder[1]] = all_outputs_Main[num_keys_values_plus_1]  # dit_hidden
         input_feed_Feat_Decoder[in_name_Feat_Decoder[2]] = feat_cond
+        input_feed_Feat_Decoder[in_name_Feat_Decoder[3]] = cfg_value_ort
+        input_feed_Feat_Decoder[in_name_Feat_Decoder[4]] = cfg_value_minus_ort
 
         latent_pred = ort_session_Feat_Decoder.run_with_ort_values(out_name_Feat_Decoder, input_feed_Feat_Decoder, run_options=run_options)[0]
 
