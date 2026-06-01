@@ -84,7 +84,7 @@ OUT_SAMPLE_RATE = 24000           # Output audio sample rate  (fixed at export t
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoding settings
 # ─────────────────────────────────────────────────────────────────────────────
-USE_BEAM_SEARCH = True           # False → greedy decoding
+USE_BEAM_SEARCH = False           # False → greedy decoding
 BEAM_SIZE       = 3               # Active beam width
 TOP_K           = 3               # Top-K sampling parameter
 PENALTY_RANGE   = 5               # Recent-token window for repetition penalty
@@ -94,11 +94,11 @@ REPEAT_PENALTY  = 0.8             # Repetition penalty coefficient (1.0 = disabl
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime / optimisation flags
 # ─────────────────────────────────────────────────────────────────────────────
-STREAMING                = True  # True → streaming decode with static N-frame Decoder (sliding window)
+STREAMING                = False  # True → streaming decode with static N-frame Decoder (sliding window)
 USE_AUDIO_NORMALIZER     = False  # Normalize output loudness (may alter voice characteristics)
 ORT_LOG                  = False  # Enable ONNX Runtime logging (disable for best performance)
 ORT_FP16                 = False  # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
-ORT_Accelerate_Providers = ["CUDAExecutionProvider"]     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
+ORT_Accelerate_Providers = []     # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
 MAX_THREADS              = 0      # CPU thread count (0 = auto)
 DEVICE_ID                = 0      # Device index
 
@@ -633,8 +633,8 @@ elif MODE == "custom_voice":
     input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[speaker_id_value]], np.int32, device_type, DEVICE_ID)
     speaker_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
-    codec_embed           = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
-    ref_prompt_text_embed = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
+    codec_embed           = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], hidden_dtype_Main, device_type, DEVICE_ID)
+    ref_prompt_text_embed = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], hidden_dtype_Main, device_type, DEVICE_ID)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

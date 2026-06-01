@@ -115,6 +115,7 @@ STREAMING                = False                    # True → streaming decode 
 STREAM_WINDOW_FRAMES     = 7                        # Streaming sliding window frame count, Lower is faster but affects quality. (at least ≥ 3, recommended ≥ 7, fixed at export time)
 USE_F16_KV               = True                     # Use float16 KV cache (saves memory, may reduce quality)
 USE_F16_ENCODER          = False                    # Pre-process the encoder in FP16 format for better GPU utilization.
+PREVENT_F16_OVERFLOW     = False                    # Prevent float16 overflow. Currently, it didn't support pure float16.
 USE_AUDIO_NORMALIZER     = False                    # Normalize output loudness (may alter voice characteristics)
 ORT_LOG                  = False                    # Enable ONNX Runtime logging (disable for best performance)
 ORT_FP16                 = False                    # FP16 ORT settings (ARM64-v8.2a or newer required for CPU)
@@ -435,12 +436,18 @@ class TTS_ENCODER(torch.nn.Module):
 
         self._fuse_encoder_weights()
 
+        # Fuse int16 normalization scale into the first encoder conv weight
+        with torch.no_grad():
+            for module in self.encoder.encoder.modules():
+                if isinstance(module, torch.nn.Conv1d):
+                    module.weight.mul_(1.0 / 32768.0)
+                    break
+
         # Pre-computed values
         self.stft_model = stft_model
         self.in_sample_rate = in_sample_rate
         self.sr_scale   = float(24000.0 / self.in_sample_rate)
         self.eps        = torch.tensor([1e-5], dtype=torch.float32)
-        self.inv_int16  = torch.tensor(1.0 / 32768.0, dtype=torch.float32).view(1, 1, -1)
         self.fbank      = (torchaudio.functional.melscale_fbanks(nfft_stft // 2 + 1, 0, in_sample_rate // 2, n_mels, in_sample_rate, "slaney", 'slaney')).transpose(0, 1).unsqueeze(0)
 
         self.num_heads     = self.encoder.encoder_transformer.layers._modules['0'].self_attn.num_heads
@@ -541,12 +548,9 @@ class TTS_ENCODER(torch.nn.Module):
         return x.view(1, -1, self.qk_heads, self.head_dim)
 
     def forward(self, prompt_audio):
-        # Resample and normalize to [-1, 1]
+        # Resample (int16 normalization is fused into the first conv weight)
         prompt_audio = prompt_audio.float()
-        if self.sr_scale < 1.0:
-            prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
-        prompt_audio = prompt_audio * self.inv_int16
-        if self.sr_scale > 1.0:
+        if self.sr_scale != 1.0:
             prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
 
         # Encode audio through the convolutional encoder
@@ -616,8 +620,7 @@ class TTS_PREPROCESS(torch.nn.Module):
 
         # Pre-compute special-token embeddings
         sp_tokens = torch.tensor([[config.tts_bos_token_id, config.tts_eos_token_id, config.tts_pad_token_id]], dtype=torch.int32)
-        self.tts_bos_embed, self.tts_eos_embed, self.tts_pad_embed = \
-            self.tts.model.talker.text_projection(self.talker_text_embed(sp_tokens)).chunk(3, dim=1)
+        self.tts_bos_embed, self.tts_eos_embed, self.tts_pad_embed = self.tts.model.talker.text_projection(self.talker_text_embed(sp_tokens)).chunk(3, dim=1)
 
         # Pre-compute fixed codec prefix / suffix embeddings
         if mode == "voice_design":
@@ -716,8 +719,13 @@ class TTS_DECODER(torch.nn.Module):
             param.requires_grad = False
         for param in self.decoder.pre_transformer.parameters():
             param.requires_grad = False
-
-        self.register_buffer("eps_hidden", torch.tensor(self.decoder.pre_transformer.config.rms_norm_eps * self.hidden_size, dtype=torch.float32), persistent=False)
+        
+        self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
+        
+        eps_hidden = torch.tensor([self.decoder.pre_transformer.config.rms_norm_eps * self.hidden_size], dtype=torch.float32)
+        if PREVENT_F16_OVERFLOW:
+            eps_hidden *= self.overflow_scale.square()
+        self.register_buffer("eps_hidden", eps_hidden, persistent=False)
 
         self._fuse_decoder_weights()
 
@@ -732,6 +740,27 @@ class TTS_DECODER(torch.nn.Module):
         cos, sin          = torch.cos(idx_theta), torch.sin(idx_theta)
         self.rope_emb_cos = torch.cat([cos,  cos], dim=-1).half()
         self.rope_emb_sin = torch.cat([-sin, sin], dim=-1).half()
+
+        self._fuse_output_scale()
+
+    # ── Output Scale & Activation Fusion ──────────────────────────────────────
+
+    def _fuse_output_scale(self):
+        """Fuse the int16 scale (32767.0) into the last decoder conv weight/bias,
+        and replace any Tanh with Hardtanh(min=-32768.0, max=32767.0)."""
+        with torch.no_grad():
+            # Fuse 32767.0 into the last block that has a conv weight
+            for block in reversed(list(self.decoder.decoder)):
+                conv = None
+                if hasattr(block, 'conv') and hasattr(block.conv, 'weight'):
+                    conv = block.conv
+                elif hasattr(block, 'weight') and isinstance(block, torch.nn.Conv1d):
+                    conv = block
+                if conv is not None:
+                    conv.weight.mul_(32767.0)
+                    if conv.bias is not None:
+                        conv.bias.mul_(32767.0)
+                    break
 
     # ── Weight Fusion ─────────────────────────────────────────────────────────
 
@@ -812,6 +841,8 @@ class TTS_DECODER(torch.nn.Module):
 
     def _rms_norm(self, x):
         """Apply modified RMS normalization (with optional overflow scaling)."""
+        if PREVENT_F16_OVERFLOW:
+            x = x * self.overflow_scale
         return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + self.eps_hidden)
 
     def rotate_half(self, x):
@@ -865,10 +896,7 @@ class TTS_DECODER(torch.nn.Module):
 
         generated_wav = generated_wav[..., : ids_len * self.upsample_rate]
 
-        if self.scale < 1.0:
-            generated_wav = torch.nn.functional.interpolate(generated_wav, scale_factor=self.scale, mode='linear', align_corners=False)
-        generated_wav = generated_wav * 32767.0
-        if self.scale > 1.0:
+        if self.scale != 1.0:
             generated_wav = torch.nn.functional.interpolate(generated_wav, scale_factor=self.scale, mode='linear', align_corners=False)
 
         generated_wav = generated_wav.clamp(min=-32768.0, max=32767.0).to(torch.int16)
@@ -915,8 +943,15 @@ class TTS_MAIN(torch.nn.Module):
         self.save_key   = [None] * self.num_layers
         self.save_value = [None] * self.num_layers
 
-        self.register_buffer("eps_hidden", torch.tensor(self.tts.config.rms_norm_eps * self.hidden_size, dtype=torch.float32), persistent=False)
-        self.register_buffer("eps_head", torch.tensor(self.tts.config.rms_norm_eps * self.head_dim, dtype=torch.float32), persistent=False)
+        self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
+        
+        eps_hidden = torch.tensor([self.tts.config.rms_norm_eps * self.hidden_size], dtype=torch.float32)
+        eps_head = torch.tensor([self.tts.config.rms_norm_eps * self.head_dim], dtype=torch.float32)
+        if PREVENT_F16_OVERFLOW:
+            eps_hidden *= self.overflow_scale.square()
+            eps_head *= self.overflow_scale.square()
+        self.register_buffer("eps_hidden", eps_hidden, persistent=False)
+        self.register_buffer("eps_head", eps_head, persistent=False)
 
         self._fuse_weights()
 
@@ -986,6 +1021,8 @@ class TTS_MAIN(torch.nn.Module):
                 self._replace_gelu_with_tanh_approximation(child)
 
     def _rms_norm(self, x, eps):
+        if PREVENT_F16_OVERFLOW:
+            x = x * self.overflow_scale
         return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + eps)
 
     def rotate_half(self, x, batch_size):
@@ -1066,8 +1103,15 @@ class TTS_PREDICTOR(torch.nn.Module):
         self.save_key   = [None] * self.num_layers
         self.save_value = [None] * self.num_layers
 
-        self.register_buffer("eps_hidden", torch.tensor(self.tts.config.rms_norm_eps * self.hidden_size, dtype=torch.float32), persistent=False)
-        self.register_buffer("eps_head", torch.tensor(self.tts.config.rms_norm_eps * self.head_dim, dtype=torch.float32), persistent=False)
+        self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
+
+        eps_hidden = torch.tensor([self.tts.config.rms_norm_eps * self.hidden_size], dtype=torch.float32)
+        eps_head = torch.tensor([self.tts.config.rms_norm_eps * self.head_dim], dtype=torch.float32)
+        if PREVENT_F16_OVERFLOW:
+            eps_hidden *= self.overflow_scale.square()
+            eps_head *= self.overflow_scale.square()
+        self.register_buffer("eps_hidden", eps_hidden, persistent=False)
+        self.register_buffer("eps_head", eps_head, persistent=False)
 
         self._fuse_weights()
 
@@ -1137,6 +1181,8 @@ class TTS_PREDICTOR(torch.nn.Module):
                 self._replace_gelu_with_tanh_approximation(child)
 
     def _rms_norm(self, x, eps):
+        if PREVENT_F16_OVERFLOW:
+            x = x * self.overflow_scale
         return x * torch.rsqrt(x.square().sum(-1, keepdim=True) + eps)
 
     def rotate_half(self, x, batch_size):
@@ -1737,21 +1783,20 @@ if DO_EXPORT:
             dynamo=False
         )
 
-        if STREAMING:
-            # Export streaming decoder with fixed static input shape (1, num_code_groups * STREAM_WINDOW_FRAMES).
-            # No dynamic axes → all tensor shapes are compile-time constants in the ONNX graph.
-            generated_codec_stream = torch.zeros([1, num_code_groups * STREAM_WINDOW_FRAMES], dtype=torch.int32)
-            torch.onnx.export(
-                decoder,
-                (generated_codec_stream,),
-                onnx_model_Decoder_Stream,
-                input_names=['generated_codec'],
-                output_names=['generated_wav', 'generated_len'],
-                dynamic_axes=None,
-                opset_version=OPSET,
-                dynamo=False
-            )
-            del generated_codec_stream
+        # Export streaming decoder with fixed static input shape (1, num_code_groups * STREAM_WINDOW_FRAMES).
+        # No dynamic axes → all tensor shapes are compile-time constants in the ONNX graph.
+        generated_codec_stream = torch.zeros([1, num_code_groups * STREAM_WINDOW_FRAMES], dtype=torch.int32)
+        torch.onnx.export(
+            decoder,
+            (generated_codec_stream,),
+            onnx_model_Decoder_Stream,
+            input_names=['generated_codec'],
+            output_names=['generated_wav', 'generated_len'],
+            dynamic_axes=None,
+            opset_version=OPSET,
+            dynamo=False
+        )
+        del generated_codec_stream
 
         del decoder, ref_code, ref_code_len, generated_codec
 
@@ -2391,8 +2436,8 @@ elif MODE == "custom_voice":
     input_feed_Embed_B[in_name_Embed_B[0]] = create_ort_with_data([[speaker_id_value]], np.int32, device_type, DEVICE_ID)
     speaker_embed = ort_session_Embed_B.run_with_ort_values(out_name_Embed_B, input_feed_Embed_B, run_options=run_options)[0]
 
-    codec_embed           = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
-    ref_prompt_text_embed = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], np.float32, device_type, DEVICE_ID)
+    codec_embed           = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], hidden_dtype_Main, device_type, DEVICE_ID)
+    ref_prompt_text_embed = create_ort_with_shape([1, 0, in_meta_Embed_C[2].shape[2]], hidden_dtype_Main, device_type, DEVICE_ID)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
