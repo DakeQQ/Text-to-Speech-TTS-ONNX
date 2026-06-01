@@ -544,10 +544,10 @@ class TTS_ENCODER(torch.nn.Module):
     def forward(self, prompt_audio):
         # Resample (int16 normalization is fused into the first conv weight)
         prompt_audio = prompt_audio.float()
-        if self.sr_scale > 1.0:
+        if self.sr_scale < 1.0:
             prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
         prompt_audio *= self.inv_int16
-        if self.sr_scale < 1.0:
+        if self.sr_scale > 1.0:
             prompt_audio = torch.nn.functional.interpolate(prompt_audio, scale_factor=self.sr_scale, mode='linear', align_corners=False)
 
         # Encode audio through the convolutional encoder
