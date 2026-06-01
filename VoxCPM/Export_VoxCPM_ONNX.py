@@ -31,7 +31,7 @@ target_tts = [                                                                  
 generated_audio_path = r"./generated.wav"                                       # The generated audio path.
 
 # Model Config
-DO_EXPORT = False                         # Whether to export the ONNX models
+DO_EXPORT = True                         # Whether to export the ONNX models
 
 # === Decoding limits & tokens ===
 STOP_TOKEN = [1]                         # The stop_id in VoxCPM is "1"
