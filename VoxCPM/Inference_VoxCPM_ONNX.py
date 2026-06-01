@@ -283,7 +283,6 @@ if STREAMING:
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN MODEL METADATA & INDEX OFFSETS
 # ══════════════════════════════════════════════════════════════════════════════
-model_dtype_Main       = np.float16 if 'float16' in ort_session_Main._inputs_meta[0].type else np.float32
 in_name_Main           = get_in_names(ort_session_Main)
 out_name_Main          = get_out_names(ort_session_Main)
 amount_of_outputs_Main = len(out_name_Main)
@@ -298,6 +297,9 @@ num_keys_values_plus_4 = num_keys_values + 4
 num_keys_values_plus_5 = num_keys_values + 5
 
 _meta = ort_session_Main._inputs_meta
+kv_dtype_Main          = np.float16 if 'float16' in ort_session_Main._inputs_meta[0].type else np.float32
+hidden_dtype_Main      = np.float16 if 'float16' in ort_session_Main._inputs_meta[num_keys_values_plus_2].type else np.float32
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -309,16 +311,16 @@ generate_limit = MAX_SEQ_LEN - 1
 init_concat_text_len   = create_ort_with_data([0], np.int64, device_type, DEVICE_ID)
 
 # --- Masks ---
-init_decode_attention_mask = create_ort_with_shape((1, 1, 1, 1), model_dtype_Main, device_type, DEVICE_ID)
+init_decode_attention_mask = create_ort_with_shape((1, 1, 1, 1), hidden_dtype_Main, device_type, DEVICE_ID)
 
 # --- KV Cache & Embedding Shapes ---
 shape_keys   = (_meta[0].shape[0],          1, _meta[0].shape[2],          0)
 shape_vals   = (_meta[num_layers].shape[0],  1, 0, _meta[num_layers].shape[3])
 shape_embed  = (1, 0, _meta[num_keys_values].shape[2])
 
-init_past_keys_Main   = create_ort_with_shape(shape_keys, model_dtype_Main, device_type, DEVICE_ID)
-init_past_values_Main = create_ort_with_shape(shape_vals, model_dtype_Main, device_type, DEVICE_ID)
-init_feat_embed       = create_ort_with_shape(shape_embed, model_dtype_Main, device_type, DEVICE_ID)
+init_past_keys_Main   = create_ort_with_shape(shape_keys, kv_dtype_Main, device_type, DEVICE_ID)
+init_past_values_Main = create_ort_with_shape(shape_vals, kv_dtype_Main, device_type, DEVICE_ID)
+init_feat_embed       = create_ort_with_shape(shape_embed, hidden_dtype_Main, device_type, DEVICE_ID)
 
 # --- CFG Values ---
 cfg_value       = create_ort_with_data([CFG_VALUE],       model_dtype_Feat_Decoder, device_type, DEVICE_ID)

@@ -42,12 +42,12 @@ DECODE_LIMIT_FACTOR = 6                  # Decode length limit factor, integer >
 # === Audio configuration ===
 IN_SAMPLE_RATE = 44100                      # Input prompt audio sample rate; cannot be changed after export
 OUT_SAMPLE_RATE = 44100                     # Output audio sample rate; cannot be changed after export
-MAX_PROMPT_AUDIO_LEN = 20 * IN_SAMPLE_RATE  # Max prompt audio length in samples. Free to edit it.
+MAX_PROMPT_AUDIO_LEN = 30 * IN_SAMPLE_RATE  # Max prompt audio length in samples. Free to edit it.
 
 # === Guidance, diffusion & randomness ===
 FIXED_TIMESTEPS = 10                     # Fixed timesteps; cannot be changed after export. Larger is finer but slower. Free to edit it.
 CFG_VALUE = 2.0                          # Lower values result in more natural speech for long text, while higher values stay closer to the original sound features. Free to edit it.
-RANDOM_SEED = 1                          # Global random seed. Free to edit it.
+RANDOM_SEED = 9527                       # Global random seed. Free to edit it.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes two latents at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
@@ -55,7 +55,7 @@ DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Fr
 USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable it.
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
 PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16 or Q8F16 or F16 quantization.
-USE_F16_KV = False                       # Use float16 for key/value cache. Free to enable it. The quality of short sentences will decrease.
+USE_F16_KV = True                        # Use float16 for key/value cache. Free to enable it. The quality of short sentences will decrease.
 
 # === ONNX / runtime configuration ===
 ORT_LOG = False                          # Enable ONNX Runtime logging for debugging. Set to False for best performance.
@@ -136,6 +136,8 @@ class VOXCPM_FEAT_ENCODER_COND(torch.nn.Module):
         self.qk_heads = self.num_heads + self.num_key_value_heads
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         self.rms_eps = torch.tensor([self.voxcpm.feat_encoder.encoder.config.rms_norm_eps * self.voxcpm.feat_encoder.encoder.config.hidden_size], dtype=torch.float32)
+        if PREVENT_F16_OVERFLOW:
+            self.rms_eps *= self.overflow_scale.square()
 
         max_prompt_feat_len = (max_prompt_audio_len // in_sample_rate * 44100) // (self.voxcpm.patch_size * self.voxcpm.chunk_size) + 1
         self.special_tokens = self.voxcpm.feat_encoder.special_token.expand(1, max_prompt_feat_len, 1, -1).squeeze(0).half()
@@ -333,6 +335,8 @@ class VOXCPM_MAIN(torch.nn.Module):
 
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         self.rms_eps = torch.tensor([self.voxcpm.base_lm.config.rms_norm_eps * self.voxcpm.base_lm.config.hidden_size], dtype=torch.float32)
+        if PREVENT_F16_OVERFLOW:
+            self.rms_eps *= self.overflow_scale.square()
 
         self.total_layers = self.voxcpm.base_lm.config.num_hidden_layers + self.voxcpm.residual_lm.config.num_hidden_layers
         self.save_key = [None] * self.total_layers
@@ -532,6 +536,8 @@ class VOXCPM_FEAT_DECODER(torch.nn.Module):
         self._replace_gelu_with_tanh_approximation(self.voxcpm)
         self.overflow_scale = torch.tensor([0.01], dtype=torch.float32)
         self.rms_eps = torch.tensor([self.voxcpm.feat_decoder.estimator.config.rms_norm_eps * self.voxcpm.feat_decoder.estimator.config.hidden_size], dtype=torch.float32)
+        if PREVENT_F16_OVERFLOW:
+            self.rms_eps *= self.overflow_scale.square()
 
         # Precompute all timestep data
         self.timesteps = fixed_timesteps
@@ -1202,7 +1208,6 @@ if STREAMING:
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN MODEL METADATA & INDEX OFFSETS
 # ══════════════════════════════════════════════════════════════════════════════
-model_dtype_Main       = np.float16 if 'float16' in ort_session_Main._inputs_meta[0].type else np.float32
 in_name_Main           = get_in_names(ort_session_Main)
 out_name_Main          = get_out_names(ort_session_Main)
 amount_of_outputs_Main = len(out_name_Main)
@@ -1217,6 +1222,8 @@ num_keys_values_plus_4 = num_keys_values + 4
 num_keys_values_plus_5 = num_keys_values + 5
 
 _meta = ort_session_Main._inputs_meta
+kv_dtype_Main          = np.float16 if 'float16' in ort_session_Main._inputs_meta[0].type else np.float32
+hidden_dtype_Main      = np.float16 if 'float16' in ort_session_Main._inputs_meta[num_keys_values_plus_2].type else np.float32
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1228,16 +1235,16 @@ generate_limit = MAX_SEQ_LEN - 1
 init_concat_text_len   = create_ort_with_data([0], np.int64, device_type, DEVICE_ID)
 
 # --- Masks ---
-init_decode_attention_mask = create_ort_with_shape((1, 1, 1, 1), model_dtype_Main, device_type, DEVICE_ID)
+init_decode_attention_mask = create_ort_with_shape((1, 1, 1, 1), hidden_dtype_Main, device_type, DEVICE_ID)
 
 # --- KV Cache & Embedding Shapes ---
-shape_keys   = (_meta[0].shape[0],          1, _meta[0].shape[2],          0)
+shape_keys   = (_meta[0].shape[0],           1, _meta[0].shape[2],          0)
 shape_vals   = (_meta[num_layers].shape[0],  1, 0, _meta[num_layers].shape[3])
 shape_embed  = (1, 0, _meta[num_keys_values].shape[2])
 
-init_past_keys_Main   = create_ort_with_shape(shape_keys, model_dtype_Main, device_type, DEVICE_ID)
-init_past_values_Main = create_ort_with_shape(shape_vals, model_dtype_Main, device_type, DEVICE_ID)
-init_feat_embed       = create_ort_with_shape(shape_embed, model_dtype_Main, device_type, DEVICE_ID)
+init_past_keys_Main   = create_ort_with_shape(shape_keys, kv_dtype_Main, device_type, DEVICE_ID)
+init_past_values_Main = create_ort_with_shape(shape_vals, kv_dtype_Main, device_type, DEVICE_ID)
+init_feat_embed       = create_ort_with_shape(shape_embed, hidden_dtype_Main, device_type, DEVICE_ID)
 
 # --- Audio Post-processing ---
 blank_segment = np.zeros((1, 1, int(OUT_SAMPLE_RATE * 0.1)), dtype=np.int16)
