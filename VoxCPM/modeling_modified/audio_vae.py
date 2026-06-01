@@ -49,10 +49,10 @@ def WNCausalTransposeConv1d(*args, **kwargs):
 
 # Scripting this brings model speed up 1.4x
 # @torch.jit.script
-def snake(x, alpha):
+def snake(x, alpha, alpha_reciprocal):
     # shape = x.shape
     # x = x.reshape(shape[0], shape[1], -1)
-    x = x + (alpha + 1e-9).reciprocal() * torch.sin(alpha * x).pow(2)
+    x = x + alpha_reciprocal * torch.sin(alpha * x).square()
     # x = x.reshape(shape)
     return x
 
@@ -61,9 +61,14 @@ class Snake1d(nn.Module):
     def __init__(self, channels):
         super().__init__()
         self.alpha = nn.Parameter(torch.ones(1, channels, 1))
+        self.register_buffer("alpha_reciprocal", (self.alpha + 1e-9).reciprocal())
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+        self.alpha_reciprocal = (self.alpha + 1e-9).reciprocal()
 
     def forward(self, x):
-        return snake(x, self.alpha)
+        return snake(x, self.alpha, self.alpha_reciprocal)
 
 
 def init_weights(m):
