@@ -683,14 +683,6 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
         self.scale = float(output_sample_rate / 44100.0)
         self.single_decode_len = self.voxcpm.patch_size * self.voxcpm.chunk_size
 
-        # Fuse 32767 scale into the last conv layer's weights and replace Tanh with Hardtanh(-32767, 32767)
-        with torch.no_grad():
-            last_conv = self.voxcpm.audio_vae.decoder.model[-2]  # Conv1d before Tanh
-            last_conv.weight.mul_(32767.0)
-            if last_conv.bias is not None:
-                last_conv.bias.mul_(32767.0)
-            self.voxcpm.audio_vae.decoder.model[-1] = torch.nn.Hardtanh(min_val=-32767.0, max_val=32767.0)
-
     def _replace_gelu_with_tanh_approximation(self, module):
         for name, child in module.named_children():
             if isinstance(child, torch.nn.GELU):
@@ -710,6 +702,7 @@ class VOXCPM_VAE_DECODE(torch.nn.Module):
         decode_audio = self.voxcpm.audio_vae.decode(latent_pred.transpose(-1, -2))
         if self.scale != 1.0:
             decode_audio = torch.nn.functional.interpolate(decode_audio, scale_factor=self.scale, mode='linear', align_corners=False)
+        decode_audio = decode_audio * 32767.0
         audio_out_len = decode_audio.shape[-1].unsqueeze(0)
         return decode_audio.to(torch.int16), audio_out_len
 
