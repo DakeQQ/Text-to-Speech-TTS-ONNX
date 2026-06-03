@@ -1518,7 +1518,7 @@ def mask_multichar_chinese_tokens(base_tokenizer):
     return CharTokenizerWrapper(base_tokenizer)
 
 
-def encode_audio_feat_ort(wav_path, padding_mode="right"):
+def encode_audio_feat_ort(wav_path):
     """Load audio, pad like upstream, VAE encode → returns ORT value [1, seq, patch_size, latent_dim]."""
     audio = np.array(
         AudioSegment.from_file(wav_path).set_channels(1).set_frame_rate(IN_SAMPLE_RATE).get_array_of_samples(),
@@ -1570,9 +1570,9 @@ def prepare_mode_audio_features(mode, reference_path, prompt_path):
     prompt_audio_feat = empty_audio_feat_ort
 
     if mode in ("reference_only", "combined"):
-        ref_audio_feat = encode_audio_feat_ort(reference_path, padding_mode="right")
+        ref_audio_feat = encode_audio_feat_ort(reference_path)
     if mode in ("continuation", "combined"):
-        prompt_audio_feat = encode_audio_feat_ort(prompt_path, padding_mode="left")
+        prompt_audio_feat = encode_audio_feat_ort(prompt_path)
 
     return ref_audio_feat, prompt_audio_feat
 
