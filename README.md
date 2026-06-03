@@ -42,7 +42,7 @@
 ---
 
 ### To-Do List  
-- [ ] VoxCPM-2
+- [ ] MOSS-TTS-Series
 ---
 
 # Text-to-Speech-TTS-ONNX
