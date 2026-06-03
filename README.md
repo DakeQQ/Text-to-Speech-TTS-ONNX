@@ -7,6 +7,7 @@
    - [IndexTTS](https://github.com/index-tts/index-tts)
    - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (It is part of the TTS module.)
    - [VoxCPM-1.5](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5)
+   - [VoxCPM-2](https://www.modelscope.cn/models/OpenBMB/VoxCPM2)
    - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
 
 3. **End-to-End Processing**:  
@@ -34,6 +35,8 @@
 | Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        9                                                               | 1.5 |
 | Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        1.03                                                            | 0.17 |
 | Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | Qwen3-TTS-0.6B-Base<br>Q8F32   |        19                                                     | 3.1 |
+| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        24                                                              | 4.0 |
+| Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        2.05                                                            | 0.34 |
 
 
 ---
@@ -52,6 +55,7 @@
    - [IndexTTS](https://github.com/index-tts/index-tts)
    - [BigVGAN](https://github.com/NVIDIA/BigVGAN) (它是TTS模块的一部分)
    - [VoxCPM-1.5](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5)
+   - [VoxCPM-2](https://www.modelscope.cn/models/OpenBMB/VoxCPM2)
    - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
 
 3. **端到端处理**：  
