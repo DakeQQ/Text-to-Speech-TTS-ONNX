@@ -35,8 +35,8 @@
 | Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        9                                                               | 1.5 |
 | Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        1.03                                                            | 0.17 |
 | Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | Qwen3-TTS-0.6B-Base<br>Q8F32   |        19                                                     | 3.1 |
-| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-1.5<br>Q8F32   |        24                                                              | 4.0 |
-| Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-1.5<br>F16     |        2.05                                                            | 0.34 |
+| Ubuntu-24.04 | Desktop      | CPU <br> i3-12300  | VoxCPM-2<br>Q8F32   |        24                                                                | 4.0 |
+| Ubuntu-24.04 | Desktop      | GPU <br> 5060Ti    | VoxCPM-2<br>F16     |        2.05                                                              | 0.34 |
 
 
 ---
