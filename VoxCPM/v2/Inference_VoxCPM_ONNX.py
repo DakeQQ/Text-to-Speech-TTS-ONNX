@@ -87,8 +87,8 @@ MIN_SEQ_LEN = 2                          # Min decode length before checking sto
 DECODE_LIMIT_FACTOR = 6                  # Decode length limit factor, integer >= 1.
 
 # === Audio configuration ===
-IN_SAMPLE_RATE = 16000                   # Input audio sample rate (VoxCPM2 encodes at 16kHz).
-OUT_SAMPLE_RATE = 48000                  # Output audio sample rate (VoxCPM2 decodes at 48kHz).
+IN_SAMPLE_RATE = 16000                   # Input audio sample rate (fixed at export time).
+OUT_SAMPLE_RATE = 48000                  # Output audio sample rate (fixed at export time).
 
 # === Guidance ===
 CFG_VALUE = 2.0                          # Classifier-free guidance scale.
