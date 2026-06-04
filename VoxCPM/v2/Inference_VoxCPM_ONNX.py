@@ -38,7 +38,7 @@ prompt_text          = "对，这就是我，万人敬仰的太乙真人。"    
 
 DEMO_CONFIGS = [
     {
-        "mode": "voice_design",             # voice_design — 你对模型说「用年轻女声说话」，它凭空造一个声音。没有任何音频输入。/ You tell the model to "speak in a young female voice," and it creates a voice out of thin air. There is no audio input.
+        "mode": "voice_design",             # voice_design — 你对模型说「用年轻女声说话」，它凭空造一个声音。没有任何参考音频输入。/ You tell the model to "speak in a young female voice," and it creates a voice out of thin air. There is no reference audio input.
         "reference_audio_path": None,
         "prompt_audio_path": None,
         "prompt_text": None,
