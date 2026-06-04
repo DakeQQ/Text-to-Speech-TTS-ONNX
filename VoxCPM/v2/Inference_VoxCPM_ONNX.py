@@ -1,13 +1,16 @@
 import re
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import onnxruntime
+import inflect
 import soundfile as sf
 from onnxruntime.capi import _pybind_state as C
 from pydub import AudioSegment
 from transformers import LlamaTokenizerFast
+from wetext import Normalizer
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -107,8 +110,133 @@ DEVICE_ID = 0                            # Device id.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TEXT NORMALIZATION (inlined from voxcpm.utils.text_normalize)
+# ══════════════════════════════════════════════════════════════════════════════
+chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
+
+
+def contains_chinese(text):
+	return bool(chinese_char_pattern.search(text))
+
+
+def replace_corner_mark(text):
+	text = text.replace('²', '平方')
+	text = text.replace('³', '立方')
+	text = text.replace('√', '根号')
+	text = text.replace('≈', '约等于')
+	text = text.replace('<', '小于')
+	return text
+
+
+def remove_bracket(text):
+	text = text.replace('（', ' ').replace('）', ' ')
+	text = text.replace('【', ' ').replace('】', ' ')
+	text = text.replace('`', '').replace('`', '')
+	text = text.replace("——", " ")
+	return text
+
+
+def spell_out_number(text: str, inflect_parser):
+	new_text = []
+	st = None
+	for i, c in enumerate(text):
+		if not c.isdigit():
+			if st is not None:
+				num_str = inflect_parser.number_to_words(text[st: i])
+				new_text.append(num_str)
+				st = None
+			new_text.append(c)
+		else:
+			if st is None:
+				st = i
+	if st is not None and st < len(text):
+		num_str = inflect_parser.number_to_words(text[st:])
+		new_text.append(num_str)
+	return ''.join(new_text)
+
+
+def replace_blank(text: str):
+	out_str = []
+	for i, c in enumerate(text):
+		if c == " ":
+			if ((text[i + 1].isascii() and text[i + 1] != " ") and
+					(text[i - 1].isascii() and text[i - 1] != " ")):
+				out_str.append(c)
+		else:
+			out_str.append(c)
+	return "".join(out_str)
+
+
+def clean_markdown(md_text: str) -> str:
+	md_text = re.sub(r"```.*?```", "", md_text, flags=re.DOTALL)
+	md_text = re.sub(r"`[^`]*`", "", md_text)
+	md_text = re.sub(r"!\[[^\]]*\]\([^\)]+\)", "", md_text)
+	md_text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", md_text)
+	md_text = re.sub(r'^(\s*)-\s+', r'\1', md_text, flags=re.MULTILINE)
+	md_text = re.sub(r"<[^>]+>", "", md_text)
+	md_text = re.sub(r"^#{1,6}\s*", "", md_text, flags=re.MULTILINE)
+	md_text = re.sub(r"\n\s*\n", "\n", md_text)
+	md_text = md_text.strip()
+	return md_text
+
+
+def clean_text(text):
+	text = clean_markdown(text)
+	text = re.compile('[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]+').sub('', text)
+	text = text.replace("\n", " ")
+	text = text.replace("\t", " ")
+	text = text.replace('"', "\"")
+	return text
+
+
+class TextNormalizer:
+	def __init__(self, tokenizer=None):
+		self.tokenizer = tokenizer
+		self.zh_tn_model = Normalizer(lang="zh", operator="tn", remove_erhua=True)
+		self.en_tn_model = Normalizer(lang="en", operator="tn")
+		self.inflect_parser = inflect.engine()
+
+	def normalize(self, text, split=False):
+		lang = "zh" if contains_chinese(text) else "en"
+		text = clean_text(text)
+		if lang == "zh":
+			text = text.replace("=", "等于")
+			if re.search(r'([\d$%^*_+≥≤≠×÷?=])', text):
+				text = re.sub(r'(?<=[a-zA-Z0-9])-(?=\d)', ' - ', text)
+			text = self.zh_tn_model.normalize(text)
+			text = replace_blank(text)
+			text = replace_corner_mark(text)
+			text = remove_bracket(text)
+		else:
+			text = self.en_tn_model.normalize(text)
+			text = spell_out_number(text, self.inflect_parser)
+		if split is False:
+			return text
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
+def stream_decode_worker(pre_latent, cur_latent, decode_idx, _in_name_Concat, _out_name_Concat,
+						 _ort_session_Concat, _in_name_VAE_Decoder, _out_name_VAE_Decoder,
+						 _ort_session_VAE_Decoder, _sr_cond_ort, _run_options, _half_decode_len):
+	"""Run Concat + VAE_Decoder in a background thread for streaming."""
+	_feed_concat = {
+		_in_name_Concat[0]: pre_latent,
+		_in_name_Concat[1]: cur_latent,
+	}
+	_latent_ort = _ort_session_Concat.run_with_ort_values(_out_name_Concat, _feed_concat, run_options=_run_options)[0]
+	_feed_vae = {
+		_in_name_VAE_Decoder[0]: _latent_ort,
+		_in_name_VAE_Decoder[1]: _sr_cond_ort,
+	}
+	_audio_ort = _ort_session_VAE_Decoder.run_with_ort_values(_out_name_VAE_Decoder, _feed_vae, run_options=_run_options)[0]
+	_audio_np = _audio_ort.numpy()
+	if decode_idx > 1:
+		_audio_np = _audio_np[..., _half_decode_len:]
+	return _audio_np
+
+
 def audio_normalizer(_audio, target_value=8192.0):
 	_audio = _audio.astype(np.float32)
 	rms = np.sqrt(np.mean((_audio * _audio), dtype=np.float32), dtype=np.float32)
@@ -376,6 +504,11 @@ amount_of_outputs_Main = len(out_name_Main)
 num_keys_values = amount_of_outputs_Main - 3  # last 3: random, dit_hidden, stop_flag
 num_layers = num_keys_values // 2
 
+# Partitioned name lists
+in_name_Main_kv     = in_name_Main[:num_keys_values]
+in_name_Main_keys   = in_name_Main[:num_layers]
+in_name_Main_values = in_name_Main[num_layers:num_keys_values]
+
 num_keys_values_plus_1 = num_keys_values + 1
 num_keys_values_plus_2 = num_keys_values + 2
 num_keys_values_plus_3 = num_keys_values + 3
@@ -386,8 +519,6 @@ num_keys_values_plus_7 = num_keys_values + 7
 
 kv_dtype_Main = np.float16 if 'float16' in ort_session_Main._inputs_meta[0].type else np.float32
 hidden_dtype_Main = np.float16 if 'float16' in ort_session_Main._inputs_meta[num_keys_values_plus_4].type else np.float32
-
-model_dtype_VAE_Decoder = np.float16 if 'float16' in ort_session_VAE_Decoder._inputs_meta[0].type else np.float32
 
 in_name_Feat_Decoder = get_in_names(ort_session_Feat_Decoder)
 out_name_Feat_Decoder = get_out_names(ort_session_Feat_Decoder)
@@ -447,6 +578,9 @@ _patch_size = _vae_enc_out_shape[2]
 _latent_dim = _vae_enc_out_shape[3]
 empty_audio_feat_ort = create_ort_with_shape((1, 0, _patch_size, _latent_dim), hidden_dtype_Main, device_type, DEVICE_ID)
 
+if USE_TEXT_NORMALIZER:
+	text_normalizer = TextNormalizer()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INFERENCE DEMO
@@ -496,8 +630,7 @@ for demo_config in DEMO_CONFIGS:
 		print(f"\n  Convert to Speech: {sentence}")
 
 		if USE_TEXT_NORMALIZER:
-			from voxcpm.utils.text_normalize import TextNormalizer
-			sentence = TextNormalizer().normalize(sentence)
+			sentence = text_normalizer.normalize(sentence)
 
 		target_text = re.sub(r"\s+", " ", sentence.replace("\n", " ")).strip()
 		target_ids = tokenizer(target_text)
@@ -546,10 +679,8 @@ for demo_config in DEMO_CONFIGS:
 		input_feed_Main[in_name_Main[num_keys_values_plus_6]] = rotary_sin
 		input_feed_Main[in_name_Main[num_keys_values_plus_7]] = attention_mask
 
-		for idx in range(num_layers):
-			input_feed_Main[in_name_Main[idx]] = init_past_keys_Main
-		for idx in range(num_layers, num_keys_values):
-			input_feed_Main[in_name_Main[idx]] = init_past_values_Main
+		input_feed_Main.update(dict.fromkeys(in_name_Main_keys, init_past_keys_Main))
+		input_feed_Main.update(dict.fromkeys(in_name_Main_values, init_past_values_Main))
 
 		feat_cond = feat_cond_init
 		total_seq_len = int(ids_len_ort.numpy().item())
@@ -561,7 +692,8 @@ for demo_config in DEMO_CONFIGS:
 
 		if STREAMING:
 			pre_latent_pred = None
-			input_feed_Concat = {}
+			stream_futures = []
+			stream_executor = ThreadPoolExecutor(max_workers=1)
 
 		while num_decode < max_len:
 			all_outputs_Main = ort_session_Main.run_with_ort_values(out_name_Main, input_feed_Main, run_options=run_options)
@@ -575,16 +707,14 @@ for demo_config in DEMO_CONFIGS:
 				if pre_latent_pred is None:
 					pre_latent_pred = latent_pred
 				else:
-					input_feed_Concat[in_name_Concat[0]] = pre_latent_pred
-					input_feed_Concat[in_name_Concat[1]] = latent_pred
-					save_latent_ort = ort_session_Concat.run_with_ort_values(out_name_Concat, input_feed_Concat, run_options=run_options)[0]
-					input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = save_latent_ort
-					audio_out_ort = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+					stream_futures.append(stream_executor.submit(
+						stream_decode_worker,
+						pre_latent_pred, latent_pred, num_decode,
+						in_name_Concat, out_name_Concat, ort_session_Concat,
+						in_name_VAE_Decoder, out_name_VAE_Decoder, ort_session_VAE_Decoder,
+						sr_cond_ort, run_options, half_decode_len,
+					))
 					pre_latent_pred = latent_pred
-					audio_out_np = audio_out_ort.numpy()
-					if num_decode > 1:
-						audio_out_np = audio_out_np[..., half_decode_len:]
-					demo_audio_out.append(audio_out_np)
 			else:
 				save_latent_list.append(latent_pred.numpy())
 
@@ -595,8 +725,7 @@ for demo_config in DEMO_CONFIGS:
 			input_feed_Feat_Encoder_Cond[in_name_Feat_Encoder_Cond] = latent_pred
 			feat_embed_decode, feat_cond = ort_session_Feat_Encoder_Cond.run_with_ort_values(out_name_Feat_Encoder_Cond, input_feed_Feat_Encoder_Cond, run_options=run_options)
 
-			for idx in range(num_keys_values):
-				input_feed_Main[in_name_Main[idx]] = all_outputs_Main[idx]
+			input_feed_Main.update(zip(in_name_Main_kv, all_outputs_Main))
 			input_feed_Main[in_name_Main[num_keys_values]] = feat_embed_decode
 			input_feed_Main[in_name_Main[num_keys_values_plus_4]] = feat_embed_decode
 
@@ -615,10 +744,15 @@ for demo_config in DEMO_CONFIGS:
 
 		print(f"    Decoded {num_decode} tokens ({((num_decode + 1) / max(time.time() - start_decode, 1e-6)):.1f} tok/s)")
 
+		if STREAMING:
+			for future in stream_futures:
+				demo_audio_out.append(future.result())
+			stream_executor.shutdown(wait=False)
+
 		if not STREAMING:
 			if save_latent_list:
 				stacked = np.concatenate(save_latent_list, axis=1)
-				input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked.astype(model_dtype_VAE_Decoder, copy=False), device_type, DEVICE_ID)
+				input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked, device_type, DEVICE_ID)
 				audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
 				demo_audio_out.append(audio_out.numpy())
 
