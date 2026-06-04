@@ -106,7 +106,7 @@ RANDOM_SEED = 9527                       # Global random seed.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Streaming-only Concat model exported.
-DYNAMIC_SHAPE_VAE_DECODE = False         # Use dynamic shape for VAE decoder. Free to enable it.
+DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer.
 USE_AUDIO_NORMALIZER = False             # Use audio normalizer to stabilize loudness.
 PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16/Q8F16/F16 quantization.
@@ -880,6 +880,7 @@ class VOXCPM2_VAE_DECODE(torch.nn.Module):
         self._replace_gelu_with_tanh_approximation(model.audio_vae)
         self.patch_size = model.patch_size
         self.latent_dim = model.audio_vae.latent_dim
+        self.sr_cond = torch.tensor([OUT_SAMPLE_RATE], dtype=torch.int32)
 
         decoder = model.audio_vae.decoder
 
@@ -981,12 +982,12 @@ class VOXCPM2_VAE_DECODE(torch.nn.Module):
             x = sr_cond_layer.out_layer[1](x)
         return x
 
-    def forward(self, latent_patches, sr_cond):
+    def forward(self, latent_patches):
         # Reshape latent patches: (B, seq, patch, D) → (B, D, seq*patch)
         x = latent_patches.permute(0, 3, 1, 2).reshape(1, self.latent_dim, -1)
 
         # Bucketize sample rate → conditioning index
-        sr_idx = torch.bucketize(sr_cond, self.sr_bin_boundaries)
+        sr_idx = torch.bucketize(self.sr_cond, self.sr_bin_boundaries)
 
         # Stage 0: Initial depthwise conv (latent_dim → latent_dim, k=7, grouped)
         x = self.init_conv_dw(x)
@@ -1412,14 +1413,13 @@ if DO_EXPORT:
         # ══════════════════════════════════════════════════════════════
         print('Exporting AudioVAE_Decode ...')
         model_VAE_Decoder = VOXCPM2_VAE_DECODE(model)
-        latent_patches = torch.ones((1, 4, patch_size, latent_dim), dtype=torch.float32)
-        sr_cond = torch.tensor([OUT_SAMPLE_RATE], dtype=torch.int32)
+        latent_patches = torch.ones((1, 2, patch_size, latent_dim), dtype=torch.float32)
 
         torch.onnx.export(
             model_VAE_Decoder,
-            (latent_patches, sr_cond),
+            (latent_patches,),
             onnx_model_VAE_Decoder,
-            input_names=['latent_patches', 'sr_cond'],
+            input_names=['latent_patches'],
             output_names=['audio'],
             dynamic_axes={
                 'latent_patches': {1: 'latent_seq_len'},
@@ -1428,7 +1428,7 @@ if DO_EXPORT:
             opset_version=OPSET,
             dynamo=False
         )
-        del model_VAE_Decoder, latent_patches, sr_cond
+        del model_VAE_Decoder, latent_patches
 
         # ══════════════════════════════════════════════════════════════
         # Export: Concat (Streaming only)
@@ -1572,7 +1572,7 @@ class TextNormalizer:
 # ══════════════════════════════════════════════════════════════════════════════
 def stream_decode_worker(pre_latent, cur_latent, decode_idx, _in_name_Concat, _out_name_Concat,
                          _ort_session_Concat, _in_name_VAE_Decoder, _out_name_VAE_Decoder,
-                         _ort_session_VAE_Decoder, _sr_cond_ort, _run_options, _half_decode_len):
+                         _ort_session_VAE_Decoder, _run_options, _half_decode_len):
     """Run Concat + VAE_Decoder in a background thread for streaming."""
     _feed_concat = {
         _in_name_Concat[0]: pre_latent,
@@ -1580,8 +1580,7 @@ def stream_decode_worker(pre_latent, cur_latent, decode_idx, _in_name_Concat, _o
     }
     _latent_ort = _ort_session_Concat.run_with_ort_values(_out_name_Concat, _feed_concat, run_options=_run_options)[0]
     _feed_vae = {
-        _in_name_VAE_Decoder[0]: _latent_ort,
-        _in_name_VAE_Decoder[1]: _sr_cond_ort,
+        _in_name_VAE_Decoder[0]: _latent_ort
     }
     _audio_ort = _ort_session_VAE_Decoder.run_with_ort_values(_out_name_VAE_Decoder, _feed_vae, run_options=_run_options)[0]
     _audio_np = _audio_ort.numpy()
@@ -1915,9 +1914,6 @@ init_feat_embed = create_ort_with_shape(shape_embed, hidden_dtype_Main, device_t
 cfg_value_ort = create_ort_with_data([CFG_VALUE], hidden_dtype_Main, device_type, DEVICE_ID)
 cfg_value_minus_ort = create_ort_with_data([1.0 - CFG_VALUE], hidden_dtype_Main, device_type, DEVICE_ID)
 
-# sr_cond for VAE decode
-sr_cond_ort = create_ort_with_data([OUT_SAMPLE_RATE], np.int32, device_type, DEVICE_ID)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERSISTENT INPUT FEED DICTIONARIES
@@ -1934,7 +1930,6 @@ input_feed_VAE_Decoder = {}
 # Fixed feeds
 input_feed_Feat_Decoder[in_name_Feat_Decoder[3]] = cfg_value_ort
 input_feed_Feat_Decoder[in_name_Feat_Decoder[4]] = cfg_value_minus_ort
-input_feed_VAE_Decoder[in_name_VAE_Decoder[1]] = sr_cond_ort
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2095,7 +2090,7 @@ for demo_config in DEMO_CONFIGS:
                         pre_latent_pred, latent_pred, num_decode,
                         in_name_Concat, out_name_Concat, ort_session_Concat,
                         in_name_VAE_Decoder, out_name_VAE_Decoder, ort_session_VAE_Decoder,
-                        sr_cond_ort, run_options, half_decode_len,
+                        run_options, half_decode_len,
                     ))
                     pre_latent_pred = latent_pred
             else:
@@ -2136,13 +2131,13 @@ for demo_config in DEMO_CONFIGS:
             if save_latent_list:
                 if DYNAMIC_SHAPE_VAE_DECODE:
                     stacked = np.concatenate(save_latent_list, axis=1)
-                    input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked.astype(model_dtype_VAE_Decoder), device_type, DEVICE_ID)
+                    input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked, device_type, DEVICE_ID)
                     audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
                     demo_audio_out.append(audio_out.numpy())
                 else:
                     for i in range(len(save_latent_list) - 1):
                         paired = np.concatenate([save_latent_list[i], save_latent_list[i + 1]], axis=1)
-                        input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(paired.astype(model_dtype_VAE_Decoder), device_type, DEVICE_ID)
+                        input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(paired, device_type, DEVICE_ID)
                         audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
                         audio_out_np = audio_out.numpy()
                         if i > 0:
