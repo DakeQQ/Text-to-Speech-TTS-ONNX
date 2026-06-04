@@ -106,6 +106,7 @@ RANDOM_SEED = 9527                       # Global random seed.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Streaming-only Concat model exported.
+DYNAMIC_SHAPE_VAE_DECODE = False         # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer.
 USE_AUDIO_NORMALIZER = False             # Use audio normalizer to stabilize loudness.
 PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16/Q8F16/F16 quantization.
@@ -1420,7 +1421,10 @@ if DO_EXPORT:
             onnx_model_VAE_Decoder,
             input_names=['latent_patches', 'sr_cond'],
             output_names=['audio'],
-            dynamic_axes={'latent_patches': {1: 'latent_seq_len'}, 'audio': {2: 'audio_len'}},
+            dynamic_axes={
+                'latent_patches': {1: 'latent_seq_len'},
+                'audio': {2: 'audio_len'}
+            } if DYNAMIC_SHAPE_VAE_DECODE else None,
             opset_version=OPSET,
             dynamo=False
         )
@@ -1843,6 +1847,8 @@ print(f"\nUsable Providers: {ort_session_Main.get_providers()}\n")
 ort_session_Feat_Decoder = create_session(onnx_model_Feat_Decoder, **packed_settings)
 
 ort_session_VAE_Decoder = create_session(onnx_model_VAE_Decoder, **packed_settings)
+model_dtype_VAE_Decoder = np.float16 if 'float16' in ort_session_VAE_Decoder._inputs_meta[0].type else np.float32
+DYNAMIC_SHAPE_VAE_DECODE = isinstance(ort_session_VAE_Decoder._inputs_meta[0].shape[1], str)
 
 # --- Concat (streaming only) ---
 if STREAMING:
@@ -2128,10 +2134,20 @@ for demo_config in DEMO_CONFIGS:
 
         if not STREAMING:
             if save_latent_list:
-                stacked = np.concatenate(save_latent_list, axis=1)
-                input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked, device_type, DEVICE_ID)
-                audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
-                demo_audio_out.append(audio_out.numpy())
+                if DYNAMIC_SHAPE_VAE_DECODE:
+                    stacked = np.concatenate(save_latent_list, axis=1)
+                    input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked.astype(model_dtype_VAE_Decoder), device_type, DEVICE_ID)
+                    audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+                    demo_audio_out.append(audio_out.numpy())
+                else:
+                    for i in range(len(save_latent_list) - 1):
+                        paired = np.concatenate([save_latent_list[i], save_latent_list[i + 1]], axis=1)
+                        input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(paired.astype(model_dtype_VAE_Decoder), device_type, DEVICE_ID)
+                        audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+                        audio_out_np = audio_out.numpy()
+                        if i > 0:
+                            audio_out_np = audio_out_np[..., half_decode_len:]
+                        demo_audio_out.append(audio_out_np)
 
     # Save demo output
     if demo_audio_out:
