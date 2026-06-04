@@ -52,7 +52,7 @@ RANDOM_SEED = 9527                       # Global random seed. Free to edit it.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes two latents at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
-DYNAMIC_SHAPE_VAE_DECODE = False         # Use dynamic shape for VAE decoder. Free to enable it.
+DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable it.
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
 PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16 or Q8F16 or F16 quantization.
@@ -1481,7 +1481,7 @@ for sentence in target_tts:
         if DYNAMIC_SHAPE_VAE_DECODE:
             # Concatenate all latents at once (single numpy call, outside hot loop)
             all_latents = np.concatenate([lp.numpy() for lp in save_latent_list], axis=1)
-            vae_input = onnxruntime.OrtValue.ortvalue_from_numpy(all_latents.astype(model_dtype_VAE_Decoder), device_type, DEVICE_ID)
+            vae_input = onnxruntime.OrtValue.ortvalue_from_numpy(all_latents, device_type, DEVICE_ID)
             input_feed_VAE_Decoder[in_name_VAE_Decoder] = vae_input
             audio_out_ort, _ = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
             save_audio_out.append(audio_out_ort.numpy())
@@ -1489,7 +1489,7 @@ for sentence in target_tts:
             # Paired decode without Concat model (numpy on small tensors, outside loop)
             for i in range(len(save_latent_list) - 1):
                 paired = np.concatenate([save_latent_list[i].numpy(), save_latent_list[i + 1].numpy()], axis=1)
-                vae_input = onnxruntime.OrtValue.ortvalue_from_numpy(paired.astype(model_dtype_VAE_Decoder), device_type, DEVICE_ID)
+                vae_input = onnxruntime.OrtValue.ortvalue_from_numpy(paired, device_type, DEVICE_ID)
                 input_feed_VAE_Decoder[in_name_VAE_Decoder] = vae_input
                 audio_out_ort, _ = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
                 audio_out_np = audio_out_ort.numpy()
