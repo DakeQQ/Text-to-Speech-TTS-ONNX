@@ -104,7 +104,7 @@ USE_AUDIO_NORMALIZER = False             # Use audio normalizer to stabilize lou
 # === ONNX / runtime configuration ===
 ORT_LOG = False                          # Enable ONNX Runtime logging for debugging.
 ORT_FP16 = False                         # Set to True for FP16 ONNX Runtime settings.
-ORT_Accelerate_Providers = []            # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
+ORT_Accelerate_Providers = ["CUDAExecutionProvider"]            # ['CUDAExecutionProvider', 'DmlExecutionProvider', 'OpenVINOExecutionProvider']
 MAX_THREADS = 0                          # Parallel CPU threads, 0 for auto.
 DEVICE_ID = 0                            # Device id.
 
@@ -229,7 +229,7 @@ def stream_decode_worker(pre_latent, cur_latent, decode_idx, _in_name_Concat, _o
 	_feed_vae = {
 		_in_name_VAE_Decoder[0]: _latent_ort
 	}
-	_audio_ort = _ort_session_VAE_Decoder.run_with_ort_values(_out_name_VAE_Decoder, _feed_vae, run_options=_run_options)[0]
+	_audio_ort, _audio_ort_len = _ort_session_VAE_Decoder.run_with_ort_values(_out_name_VAE_Decoder, _feed_vae, run_options=_run_options)
 	_audio_np = _audio_ort.numpy()
 	if decode_idx > 1:
 		_audio_np = _audio_np[..., _half_decode_len:]
@@ -573,9 +573,9 @@ AUDIO_START_TOKEN = 101
 tokenizer = mask_multichar_chinese_tokens(LlamaTokenizerFast.from_pretrained(path_voxcpm2))
 
 _vae_enc_out_shape = ort_session_VAE_Encoder._outputs_meta[0].shape
-_patch_size = _vae_enc_out_shape[2]
-_latent_dim = _vae_enc_out_shape[3]
-empty_audio_feat_ort = create_ort_with_shape((1, 0, _patch_size, _latent_dim), hidden_dtype_Main, device_type, DEVICE_ID)
+_patch_size = _vae_enc_out_shape[1]
+_latent_dim = _vae_enc_out_shape[2]
+empty_audio_feat_ort = create_ort_with_shape((0, _patch_size, _latent_dim), hidden_dtype_Main, device_type, DEVICE_ID)
 
 if USE_TEXT_NORMALIZER:
 	text_normalizer = TextNormalizer()
@@ -753,13 +753,13 @@ for demo_config in DEMO_CONFIGS:
 				if DYNAMIC_SHAPE_VAE_DECODE:
 					stacked = np.concatenate(save_latent_list, axis=1)
 					input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked, device_type, DEVICE_ID)
-					audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+					audio_out, audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
 					demo_audio_out.append(audio_out.numpy())
 				else:
 					for i in range(len(save_latent_list) - 1):
 						paired = np.concatenate([save_latent_list[i], save_latent_list[i + 1]], axis=1)
 						input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(paired, device_type, DEVICE_ID)
-						audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+						audio_out, audio_len = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
 						audio_out_np = audio_out.numpy()
 						if i > 0:
 							audio_out_np = audio_out_np[..., half_decode_len:]

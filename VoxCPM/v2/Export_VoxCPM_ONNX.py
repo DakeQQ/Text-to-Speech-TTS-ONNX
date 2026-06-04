@@ -207,8 +207,8 @@ class VOXCPM2_VAE_ENCODER(torch.nn.Module):
         # fc_mu projection (2048 → latent_dim=64, k=3)
         latent = self.fc_mu(x)
 
-        latent = latent.view(1, self.latent_dim, -1, self.patch_size)
-        return latent.permute(0, 2, 3, 1).contiguous()
+        latent = latent.view(self.latent_dim, -1, self.patch_size)
+        return latent.permute(1, 2, 0).contiguous()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -242,7 +242,7 @@ class VOXCPM2_FEAT_ENCODER_COND(torch.nn.Module):
         self.rope_emb_cos = rope_emb_cos.view(1, self.q_len, 1, 1, -1)
         self.rope_emb_sin = rope_emb_sin.view(1, self.q_len, 1, 1, -1)
 
-        self.special_tokens = model.feat_encoder.special_token.expand(1, MAX_SEQ_LEN, 1, -1).contiguous().half()
+        self.special_tokens = model.feat_encoder.special_token.squeeze(0).expand(MAX_SEQ_LEN, 1, -1).contiguous().half()
 
         norm_factor = encoder.config.hidden_size ** 0.5
         scale_factor = self.head_dim ** -0.25
@@ -305,13 +305,12 @@ class VOXCPM2_FEAT_ENCODER_COND(torch.nn.Module):
 
     def forward(self, audio_feat):
         # audio_feat: (batch, seq_len, patch_size, feat_dim)
-        seq_len = audio_feat.shape[1]
+        seq_len = audio_feat.shape[0]
 
         # === Feature Encoder: produces feat_embed for the LM ===
         hidden_states = self.model.feat_encoder.in_proj(audio_feat)
-        special_tokens = self.special_tokens[:, :seq_len, :, :].float()
-        hidden_states = torch.cat([special_tokens, hidden_states], dim=2)
-        hidden_states = hidden_states.reshape(seq_len, self.q_len, -1)
+        special_tokens = self.special_tokens[:seq_len].float()
+        hidden_states = torch.cat([special_tokens, hidden_states], dim=1)
 
         for layer in self.model.feat_encoder.encoder.layers:
             residual = hidden_states
@@ -341,9 +340,8 @@ class VOXCPM2_FEAT_ENCODER_COND(torch.nn.Module):
 
         # === Feature Conditioning: produces feat_cond for diffusion ===
         # Use last patch from input audio_feat for conditioning
-        last_patch = audio_feat[:, [-1]]  # (batch, 1, patch_size, feat_dim)
-        last_patch_squeezed = last_patch.squeeze(0)  # (patch_size, feat_dim)
-        feat_cond = self.model.feat_decoder.estimator.cond_proj(last_patch_squeezed)  # (1, ps, cond_dim)
+        last_patch = audio_feat[[-1]]  # (1, patch_size, feat_dim)
+        feat_cond = self.model.feat_decoder.estimator.cond_proj(last_patch)  # (1, ps, cond_dim)
         feat_cond = torch.cat([feat_cond, feat_cond], dim=0)  # (2, ps, cond_dim)
 
         return feat_embed, feat_cond
@@ -859,8 +857,7 @@ class VOXCPM2_FEAT_DECODER(torch.nn.Module):
         for step in range(self.timesteps):
             dt_step = self.dt[..., [step]]
             random = self._single_step([step], random, mu_in, feat_cond, dt_step * cfg_value, dt_step * cfg_value_minus)
-        # Output (1, 1, patch_size, feat_in_channels) — matches Feat_Encoder_Cond input directly
-        return random.unsqueeze(1)
+        return random
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -983,8 +980,7 @@ class VOXCPM2_VAE_DECODE(torch.nn.Module):
         return x
 
     def forward(self, latent_patches):
-        # Reshape latent patches: (B, seq, patch, D) → (B, D, seq*patch)
-        x = latent_patches.permute(0, 3, 1, 2).reshape(1, self.latent_dim, -1)
+        x = latent_patches.transpose(1, 2)
 
         # Bucketize sample rate → conditioning index
         sr_idx = torch.bucketize(self.sr_cond, self.sr_bin_boundaries)
@@ -1003,10 +999,10 @@ class VOXCPM2_VAE_DECODE(torch.nn.Module):
         # Final: Snake → Conv(→1ch) → Tanh → int16 PCM
         x = self._snake(x, self.final_snake.alpha, self.final_snake.inv_alpha)
         x = self.final_conv(x)
-        audio = torch.tanh(x)
-        audio = (audio * 32767.0).to(torch.int16)
+        generated_wav = torch.tanh(x)
+        generated_wav = (generated_wav * 32767.0).to(torch.int16)
 
-        return audio
+        return generated_wav, generated_wav.shape[-1].unsqueeze(0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1024,12 +1020,12 @@ class VOXCPM2_ASSEMBLE_VOICE_DESIGN(torch.nn.Module):
         self.register_buffer("audio_seg1_start", torch.zeros(1, dtype=torch.int64))
         self.register_buffer("audio_seg1_end", torch.zeros(1, dtype=torch.int64))
         # Pre-allocated int8 buffers (slice+cast at runtime)
-        self.zero_buffer_4d = torch.zeros((1, max_seq_len, patch_size, latent_dim), dtype=torch.int8)
+        self.zero_buffer_3d = torch.zeros((max_seq_len, patch_size, latent_dim), dtype=torch.int8)
 
     def forward(self, text_ids):
         text_len = text_ids.shape[1]
         text_token = text_ids
-        audio_feat = self.zero_buffer_4d[:, :text_len].float()
+        audio_feat = self.zero_buffer_3d[:text_len].float()
         concat_text_len = text_ids.shape[1].unsqueeze(0)
         ids_len = text_token.shape[1].unsqueeze(0)
         return text_token, audio_feat, self.audio_seg1_start, self.audio_seg1_end, concat_text_len, ids_len
@@ -1045,15 +1041,15 @@ class VOXCPM2_ASSEMBLE_CONTINUATION(torch.nn.Module):
         self.register_buffer("audio_seg1_end", torch.zeros(1, dtype=torch.int64))
         # Pre-allocated int8 buffers (slice+cast at runtime)
         self.zero_buffer_2d = torch.zeros((1, max_seq_len), dtype=torch.int8)
-        self.zero_buffer_4d = torch.zeros((1, max_seq_len, patch_size, latent_dim), dtype=torch.int8)
+        self.zero_buffer_3d = torch.zeros((max_seq_len, patch_size, latent_dim), dtype=torch.int8)
 
     def forward(self, text_ids, prompt_audio_feat):
         text_len = text_ids.shape[1]
-        prompt_len = prompt_audio_feat.shape[1]
+        prompt_len = prompt_audio_feat.shape[0]
         prompt_zeros = self.zero_buffer_2d[:, :prompt_len].int()
         text_token = torch.cat([text_ids, prompt_zeros], dim=1)
-        text_pad = self.zero_buffer_4d[:, :text_len].float()
-        audio_feat = torch.cat([text_pad, prompt_audio_feat], dim=1)
+        text_pad = self.zero_buffer_3d[:text_len].float()
+        audio_feat = torch.cat([text_pad, prompt_audio_feat], dim=0)
         concat_text_len = text_ids.shape[1].unsqueeze(0)
         ids_len = text_token.shape[1].unsqueeze(0)
         return text_token, audio_feat, self.audio_seg1_start, self.audio_seg1_end, concat_text_len, ids_len
@@ -1064,23 +1060,23 @@ class VOXCPM2_ASSEMBLE_REFERENCE_ONLY(torch.nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.latent_dim = latent_dim
-        self.register_buffer("zero_frame", torch.zeros((1, 1, patch_size, latent_dim), dtype=torch.float32))
+        self.register_buffer("zero_frame", torch.zeros((1, patch_size, latent_dim), dtype=torch.float32))
         self.register_buffer("ref_start_token", torch.tensor([[103]], dtype=torch.int32))
         self.register_buffer("ref_end_token", torch.tensor([[104]], dtype=torch.int32))
         # len=1 static buffer (no cast needed)
         self.register_buffer("audio_seg1_start", torch.ones(1, dtype=torch.int64))
         # Pre-allocated int8 buffers (slice+cast at runtime)
         self.zero_buffer_2d = torch.zeros((1, max_seq_len), dtype=torch.int8)
-        self.zero_buffer_4d = torch.zeros((1, max_seq_len, patch_size, latent_dim), dtype=torch.int8)
+        self.zero_buffer_3d = torch.zeros((max_seq_len, patch_size, latent_dim), dtype=torch.int8)
 
     def forward(self, text_ids, ref_audio_feat):
         text_len = text_ids.shape[1]
-        ref_len = ref_audio_feat.shape[1]
+        ref_len = ref_audio_feat.shape[0]
         ref_zeros = self.zero_buffer_2d[:, :ref_len].int()
         text_token = torch.cat([self.ref_start_token, ref_zeros, self.ref_end_token, text_ids], dim=1)
 
-        text_pad = self.zero_buffer_4d[:, :text_len].to(ref_audio_feat.dtype)
-        audio_feat = torch.cat([self.zero_frame, ref_audio_feat, self.zero_frame, text_pad], dim=1)
+        text_pad = self.zero_buffer_3d[:text_len].float()
+        audio_feat = torch.cat([self.zero_frame, ref_audio_feat, self.zero_frame, text_pad], dim=0)
 
         audio_seg1_end = (ref_len + 1).unsqueeze(0)
         concat_text_len = text_token.shape[1].unsqueeze(0)
@@ -1093,25 +1089,25 @@ class VOXCPM2_ASSEMBLE_COMBINED(torch.nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.latent_dim = latent_dim
-        self.register_buffer("zero_frame", torch.zeros((1, 1, patch_size, latent_dim)))
+        self.register_buffer("zero_frame", torch.zeros((1, patch_size, latent_dim)))
         self.register_buffer("ref_start_token", torch.tensor([[103]], dtype=torch.int32))
         self.register_buffer("ref_end_token", torch.tensor([[104]], dtype=torch.int32))
         # len=1 static buffer (no cast needed)
         self.register_buffer("audio_seg1_start", torch.ones(1, dtype=torch.int64))
         # Pre-allocated int8 buffers (slice+cast at runtime)
         self.zero_buffer_2d = torch.zeros((1, max_seq_len), dtype=torch.int8)
-        self.zero_buffer_4d = torch.zeros((1, max_seq_len, patch_size, latent_dim), dtype=torch.int8)
+        self.zero_buffer_3d = torch.zeros((max_seq_len, patch_size, latent_dim), dtype=torch.int8)
 
     def forward(self, text_ids, ref_audio_feat, prompt_audio_feat):
         text_len = text_ids.shape[1]
-        ref_len = ref_audio_feat.shape[1]
-        prompt_len = prompt_audio_feat.shape[1]
+        ref_len = ref_audio_feat.shape[0]
+        prompt_len = prompt_audio_feat.shape[0]
         ref_zeros = self.zero_buffer_2d[:, :ref_len].int()
         prompt_zeros = self.zero_buffer_2d[:, :prompt_len].int()
         text_token = torch.cat([self.ref_start_token, ref_zeros, self.ref_end_token, text_ids, prompt_zeros], dim=1)
 
-        text_pad = self.zero_buffer_4d[:, :text_len].float()
-        audio_feat = torch.cat([self.zero_frame, ref_audio_feat, self.zero_frame, text_pad, prompt_audio_feat], dim=1)
+        text_pad = self.zero_buffer_3d[:text_len].float()
+        audio_feat = torch.cat([self.zero_frame, ref_audio_feat, self.zero_frame, text_pad, prompt_audio_feat], dim=0)
 
         audio_seg1_end = (ref_len + 1).unsqueeze(0)
         concat_text_len = (ref_len + 2 + text_len).unsqueeze(0)
@@ -1207,7 +1203,7 @@ if DO_EXPORT:
             onnx_model_VAE_Encoder,
             input_names=['audio'],
             output_names=['audio_feat'],
-            dynamic_axes={'audio': {2: 'audio_samples'}, 'audio_feat': {1: 'audio_feat_len'}},
+            dynamic_axes={'audio': {2: 'audio_samples'}, 'audio_feat': {0: 'audio_feat_len'}},
             opset_version=OPSET,
             dynamo=False
         )
@@ -1217,14 +1213,14 @@ if DO_EXPORT:
         # Export: Feat_Encoder_Cond (Fused)
         # ══════════════════════════════════════════════════════════════
         print('Exporting Feat_Encoder_Cond (fused) ...')
-        audio_feat = torch.zeros([1, 10, patch_size, feat_dim], dtype=torch.float32)
+        audio_feat = torch.zeros([10, patch_size, feat_dim], dtype=torch.float32)
         torch.onnx.export(
             VOXCPM2_FEAT_ENCODER_COND(model),
             (audio_feat,),
             onnx_model_Feat_Encoder_Cond,
             input_names=['audio_feat'],
             output_names=['feat_embed', 'feat_cond'],
-            dynamic_axes={'audio_feat': {1: 'audio_feat_len'}, 'feat_embed': {1: 'audio_feat_len'}},
+            dynamic_axes={'audio_feat': {0: 'audio_feat_len'}, 'feat_embed': {1: 'audio_feat_len'}},
             opset_version=OPSET,
             dynamo=False
         )
@@ -1235,7 +1231,7 @@ if DO_EXPORT:
         # ══════════════════════════════════════════════════════════════
         _asm_text_ids = torch.zeros([1, 15], dtype=torch.int32)
         _asm_out_names = ['text_token', 'audio_feat', 'audio_seg1_start', 'audio_seg1_end', 'concat_text_len', 'ids_len']
-        _asm_dyn_out = {'text_token': {1: 'total_len'}, 'audio_feat': {1: 'total_len'}}
+        _asm_dyn_out = {'text_token': {1: 'total_len'}, 'audio_feat': {0: 'total_len'}}
 
         # voice_design
         print('Exporting Assemble (voice_design) ...')
@@ -1252,28 +1248,28 @@ if DO_EXPORT:
 
         # continuation
         print('Exporting Assemble (continuation) ...')
-        _asm_prompt_feat = torch.zeros([1, 8, patch_size, latent_dim], dtype=torch.float32)
+        _asm_prompt_feat = torch.zeros([8, patch_size, latent_dim], dtype=torch.float32)
         torch.onnx.export(
             VOXCPM2_ASSEMBLE_CONTINUATION(patch_size, latent_dim, MAX_SEQ_LEN),
             (_asm_text_ids, _asm_prompt_feat),
             onnx_model_Assemble["continuation"],
             input_names=['text_ids', 'prompt_audio_feat'],
             output_names=_asm_out_names,
-            dynamic_axes={'text_ids': {1: 'text_len'}, 'prompt_audio_feat': {1: 'prompt_len'}, **_asm_dyn_out},
+            dynamic_axes={'text_ids': {1: 'text_len'}, 'prompt_audio_feat': {0: 'prompt_len'}, **_asm_dyn_out},
             opset_version=OPSET,
             dynamo=False
         )
 
         # reference_only
         print('Exporting Assemble (reference_only) ...')
-        _asm_ref_feat = torch.zeros([1, 5, patch_size, latent_dim], dtype=torch.float32)
+        _asm_ref_feat = torch.zeros([5, patch_size, latent_dim], dtype=torch.float32)
         torch.onnx.export(
             VOXCPM2_ASSEMBLE_REFERENCE_ONLY(patch_size, latent_dim, MAX_SEQ_LEN),
             (_asm_text_ids, _asm_ref_feat),
             onnx_model_Assemble["reference_only"],
             input_names=['text_ids', 'ref_audio_feat'],
             output_names=_asm_out_names,
-            dynamic_axes={'text_ids': {1: 'text_len'}, 'ref_audio_feat': {1: 'ref_len'}, **_asm_dyn_out},
+            dynamic_axes={'text_ids': {1: 'text_len'}, 'ref_audio_feat': {0: 'ref_len'}, **_asm_dyn_out},
             opset_version=OPSET,
             dynamo=False
         )
@@ -1286,7 +1282,7 @@ if DO_EXPORT:
             onnx_model_Assemble["combined"],
             input_names=['text_ids', 'ref_audio_feat', 'prompt_audio_feat'],
             output_names=_asm_out_names,
-            dynamic_axes={'text_ids': {1: 'text_len'}, 'ref_audio_feat': {1: 'ref_len'}, 'prompt_audio_feat': {1: 'prompt_len'}, **_asm_dyn_out},
+            dynamic_axes={'text_ids': {1: 'text_len'}, 'ref_audio_feat': {0: 'ref_len'}, 'prompt_audio_feat': {0: 'prompt_len'}, **_asm_dyn_out},
             opset_version=OPSET,
             dynamo=False
         )
@@ -1413,17 +1409,17 @@ if DO_EXPORT:
         # ══════════════════════════════════════════════════════════════
         print('Exporting AudioVAE_Decode ...')
         model_VAE_Decoder = VOXCPM2_VAE_DECODE(model)
-        latent_patches = torch.ones((1, 2, patch_size, latent_dim), dtype=torch.float32)
+        latent_patches = torch.ones((1, patch_size + patch_size, latent_dim), dtype=torch.float32)
 
         torch.onnx.export(
             model_VAE_Decoder,
             (latent_patches,),
             onnx_model_VAE_Decoder,
             input_names=['latent_patches'],
-            output_names=['audio'],
+            output_names=['generated_wav', 'audio_len'],
             dynamic_axes={
                 'latent_patches': {1: 'latent_seq_len'},
-                'audio': {2: 'audio_len'}
+                'generated_wav': {2: 'generated_len'}
             } if DYNAMIC_SHAPE_VAE_DECODE else None,
             opset_version=OPSET,
             dynamo=False
@@ -1434,8 +1430,8 @@ if DO_EXPORT:
         # Export: Concat (Streaming only)
         # ══════════════════════════════════════════════════════════════
         print('Exporting Concat (streaming) ...')
-        embed_0 = torch.zeros([1, 1, patch_size, latent_dim], dtype=torch.float32)
-        embed_1 = torch.zeros([1, 1, patch_size, latent_dim], dtype=torch.float32)
+        embed_0 = torch.zeros([1, patch_size, latent_dim], dtype=torch.float32)
+        embed_1 = torch.zeros([1, patch_size, latent_dim], dtype=torch.float32)
         torch.onnx.export(
             VOXCPM2_CONCAT(),
             (embed_0, embed_1),
@@ -1582,7 +1578,7 @@ def stream_decode_worker(pre_latent, cur_latent, decode_idx, _in_name_Concat, _o
     _feed_vae = {
         _in_name_VAE_Decoder[0]: _latent_ort
     }
-    _audio_ort = _ort_session_VAE_Decoder.run_with_ort_values(_out_name_VAE_Decoder, _feed_vae, run_options=_run_options)[0]
+    _audio_ort, _audio_len_ort = _ort_session_VAE_Decoder.run_with_ort_values(_out_name_VAE_Decoder, _feed_vae, run_options=_run_options)
     _audio_np = _audio_ort.numpy()
     if decode_idx > 1:
         _audio_np = _audio_np[..., _half_decode_len:]
@@ -1941,12 +1937,12 @@ tokenizer = mask_multichar_chinese_tokens(LlamaTokenizerFast.from_pretrained(pat
 
 # Read patch_size / latent_dim from the VAE Encoder ONNX model output shape metadata
 _vae_enc_out_shape = ort_session_VAE_Encoder._outputs_meta[0].shape
-_patch_size = _vae_enc_out_shape[2]
-_latent_dim = _vae_enc_out_shape[3]
+_patch_size = _vae_enc_out_shape[1]
+_latent_dim = _vae_enc_out_shape[2]
 
 # Encode prompt/reference audio once (cached as ORT values for all sentences)
 # Empty ORT tensors for unused inputs (shape [1, 0, ps, ld])
-empty_audio_feat_ort = create_ort_with_shape((1, 0, _patch_size, _latent_dim), hidden_dtype_Main, device_type, DEVICE_ID)
+empty_audio_feat_ort = create_ort_with_shape((0, _patch_size, _latent_dim), hidden_dtype_Main, device_type, DEVICE_ID)
 
 if USE_TEXT_NORMALIZER:
     text_normalizer = TextNormalizer()
@@ -2132,13 +2128,13 @@ for demo_config in DEMO_CONFIGS:
                 if DYNAMIC_SHAPE_VAE_DECODE:
                     stacked = np.concatenate(save_latent_list, axis=1)
                     input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(stacked, device_type, DEVICE_ID)
-                    audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+                    audio_out, audio_len = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
                     demo_audio_out.append(audio_out.numpy())
                 else:
                     for i in range(len(save_latent_list) - 1):
                         paired = np.concatenate([save_latent_list[i], save_latent_list[i + 1]], axis=1)
                         input_feed_VAE_Decoder[in_name_VAE_Decoder[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(paired, device_type, DEVICE_ID)
-                        audio_out = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)[0]
+                        audio_out, audio_len = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
                         audio_out_np = audio_out.numpy()
                         if i > 0:
                             audio_out_np = audio_out_np[..., half_decode_len:]
