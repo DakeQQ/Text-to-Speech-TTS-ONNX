@@ -6,6 +6,7 @@ import shutil
 import soundfile as sf
 import numpy as np
 import onnxruntime
+from concurrent.futures import ThreadPoolExecutor
 from onnxruntime.capi import _pybind_state as C
 from pydub import AudioSegment
 from modeling_modified.text_normalize import TextNormalizer
@@ -51,7 +52,7 @@ RANDOM_SEED = 9527                       # Global random seed. Free to edit it.
 
 # === Feature flags ===
 STREAMING = False                        # Enable streaming synthesis. Free to enable it. Unlike the official implementation, this version processes two latents at a time for faster performance, albeit with potential discontinuities during piece-by-piece decoding.
-DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
+DYNAMIC_SHAPE_VAE_DECODE = False         # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer. Free to enable it.
 USE_AUDIO_NORMALIZER = False             # Use an audio normalizer to stabilize loudness, though this may result in a loss of original audio characteristics. Free to enable it.
 PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16 or Q8F16 or F16 quantization.
@@ -1199,6 +1200,20 @@ if STREAMING:
     out_name_Concat    = get_out_names(ort_session_Concat)
 
 
+# --- Thread Pool for parallel VAE decode (streaming only) ---
+if STREAMING:
+    vae_decode_executor = ThreadPoolExecutor(max_workers=1)
+
+    def vae_decode_fn(latent_ort, trim):
+        """Run VAE decoder in a background thread."""
+        _feed = {in_name_VAE_Decoder: latent_ort}
+        audio_ort, _ = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, _feed, run_options=run_options)
+        audio_np = audio_ort.numpy()
+        if trim:
+            audio_np = audio_np[..., half_decode_len:]
+        return audio_np
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN MODEL METADATA & INDEX OFFSETS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1382,6 +1397,7 @@ for sentence in target_tts:
     if STREAMING:
         pre_latent_pred = None
         input_feed_Concat = {}
+        vae_future = None
 
     # ──────────────────────────────────────────────────────────────────────────
     # AUTO-REGRESSIVE DECODING
@@ -1412,16 +1428,15 @@ for sentence in target_tts:
             if pre_latent_pred is None:
                 pre_latent_pred = latent_pred
             else:
+                # Collect previous VAE decode result before submitting new one
+                if vae_future is not None:
+                    save_audio_out.append(vae_future.result())
                 input_feed_Concat[in_name_Concat[0]] = pre_latent_pred
                 input_feed_Concat[in_name_Concat[1]] = latent_pred
                 save_latent_ort = ort_session_Concat.run_with_ort_values(out_name_Concat, input_feed_Concat, run_options=run_options)[0]
-                input_feed_VAE_Decoder[in_name_VAE_Decoder] = save_latent_ort
-                audio_out_ort, _ = ort_session_VAE_Decoder.run_with_ort_values(out_name_VAE_Decoder, input_feed_VAE_Decoder, run_options=run_options)
                 pre_latent_pred = latent_pred
-                audio_out_np = audio_out_ort.numpy()
-                if num_decode > 1:
-                    audio_out_np = audio_out_np[..., half_decode_len:]
-                save_audio_out.append(audio_out_np)
+                # Submit VAE decode to background thread (overlaps with next decode step)
+                vae_future = vae_decode_executor.submit(vae_decode_fn, save_latent_ort, num_decode > 1)
         else:
             save_latent_list.append(latent_pred)
 
@@ -1453,6 +1468,10 @@ for sentence in target_tts:
         print(f"    Decode: {num_decode}")
 
     print(f"\nDecode Speed: {((num_decode + 1) / (time.time() - start_decode)):.3f} token/s\n")
+
+    # Collect the last pending VAE decode result from the background thread
+    if STREAMING and vae_future is not None:
+        save_audio_out.append(vae_future.result())
 
     # ──────────────────────────────────────────────────────────────────────────
     # FINALIZE SENTENCE AUDIO (NON-STREAMING)
