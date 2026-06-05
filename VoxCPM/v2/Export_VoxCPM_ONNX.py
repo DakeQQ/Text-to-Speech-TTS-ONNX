@@ -88,6 +88,7 @@ DEMO_CONFIGS = [
 
 # Model Config
 DO_EXPORT = True                         # Whether to export the ONNX models
+PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16/Q8F16/F16 quantization.
 
 # === Decoding limits & tokens ===
 STOP_TOKEN = {1}                         # The stop_id for VoxCPM2
@@ -109,7 +110,6 @@ STREAMING = False                        # Enable streaming synthesis. Streaming
 DYNAMIC_SHAPE_VAE_DECODE = True          # Use dynamic shape for VAE decoder. Free to enable it.
 USE_TEXT_NORMALIZER = True               # Use text normalizer.
 USE_AUDIO_NORMALIZER = False             # Use audio normalizer to stabilize loudness.
-PREVENT_F16_OVERFLOW = False             # Prevent float16 overflow. Set True for Q4F16/Q8F16/F16 quantization.
 USE_F16_KV = True                        # Use float16 for key/value cache.
 
 # === ONNX / runtime configuration ===
