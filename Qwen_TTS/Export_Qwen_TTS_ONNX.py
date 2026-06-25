@@ -441,7 +441,9 @@ class TTS_ENCODER(torch.nn.Module):
         self.in_sample_rate = in_sample_rate
         self.sr_scale   = float(24000.0 / self.in_sample_rate)
         self.inv_int16 = torch.tensor([1.0 / 32768.0], dtype=torch.float32)
-        self.eps        = torch.tensor([1e-5], dtype=torch.float32)
+        # Reference mel_spectrogram framing: reflect-pad (n_fft - hop) // 2 on each side, then a
+        # center=False STFT (stft_model is built with center_pad=False to avoid a second pad).
+        self.stft_pad   = (nfft_stft - stft_model.hop_len) // 2
         self.fbank      = (torchaudio.functional.melscale_fbanks(nfft_stft // 2 + 1, 0, in_sample_rate // 2, n_mels, in_sample_rate, "slaney", 'slaney')).transpose(0, 1).unsqueeze(0)
 
         self.num_heads     = self.encoder.encoder_transformer.layers._modules['0'].self_attn.num_heads
@@ -580,9 +582,13 @@ class TTS_ENCODER(torch.nn.Module):
         ref_code   = self.encoder.quantizer.encode(embeddings, self.tts.model.speech_tokenizer.config.encoder_valid_num_quantizers)
         ref_code   = ref_code.squeeze(1)
 
-        # Compute speaker embedding from log-Mel spectrogram
-        real_part, imag_part = self.stft_model(prompt_audio)
-        mel_features         = (torch.matmul(self.fbank, torch.sqrt(real_part * real_part + imag_part * imag_part)) + self.eps).log()
+        # Compute speaker embedding from log-Mel spectrogram (matches reference mel_spectrogram):
+        # reflect-pad (n_fft - hop) // 2, center=False STFT, magnitude sqrt(re^2 + im^2 + 1e-9),
+        # then dynamic-range compression log(clamp(mel, min=1e-5)).
+        stft_audio           = torch.nn.functional.pad(prompt_audio, (self.stft_pad, self.stft_pad), mode='reflect')
+        real_part, imag_part = self.stft_model(stft_audio)
+        magnitude            = torch.sqrt(real_part * real_part + imag_part * imag_part + 1e-9)
+        mel_features         = torch.matmul(self.fbank, magnitude).clamp(min=1e-5).log()
         speaker_embed        = self.speaker_encoder(mel_features)
         ref_code_len         = ref_code.shape[1].unsqueeze(0)
 
@@ -1391,7 +1397,7 @@ if DO_EXPORT:
 
         model.model = model.model.eval()
 
-        stft_model = STFT_Process(model_type='stft_B', n_fft=NFFT_STFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE, pad_mode='constant', center_pad=True).eval()
+        stft_model = STFT_Process(model_type='stft_B', n_fft=NFFT_STFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE, pad_mode='constant', center_pad=False).eval()
 
         # ── Phase 2 : Shared constants & KV-cache helpers ────────────────────
         head_dim              = model.model.talker.config.head_dim
