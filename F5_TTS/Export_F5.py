@@ -19,16 +19,15 @@ from x_transformers.x_transformers import RotaryEmbedding
 from vocos.feature_extractors import EncodecFeatures, FeatureExtractor
 from STFT_Process import STFT_Process  
 from f5_tts.model import CFM
-from f5_tts.infer.utils_infer import load_checkpoint
 
 script_dir          = Path(__file__).resolve().parent
 onnx_folder         = script_dir / "F5_ONNX"
 onnx_folder.mkdir(parents=True, exist_ok=True)
 
 use_fp16_transformer = False                                                                                 # Export the F5_Transformer.onnx in float16 format.
-F5_safetensors_path  = "/home/iamj/Downloads/F5TTS_v1_Base/model_1250000.safetensors"                      # The F5-TTS model download path.           URL: https://huggingface.co/SWivid/F5-TTS/tree/main/F5TTS_v1_Base
-vocab_path           = "/home/iamj/Downloads/F5TTS_v1_Base/vocab.txt"                                      # The F5-TTS model vocab download path.     URL: https://huggingface.co/SWivid/F5-TTS/tree/main/F5TTS_v1_Base
-vocos_model_path     = "/home/iamj/Downloads/vocos-mel-24khz"                                              # The Vocos model download path.            URL: https://huggingface.co/charactr/vocos-mel-24khz/tree/main
+F5_safetensors_path  = "/home/DakeQQ/Downloads/F5TTS_v1_Base/model_1250000.safetensors"                      # The F5-TTS model download path.           URL: https://huggingface.co/SWivid/F5-TTS/tree/main/F5TTS_v1_Base
+vocab_path           = "/home/DakeQQ/Downloads/F5TTS_v1_Base/vocab.txt"                                      # The F5-TTS model vocab download path.     URL: https://huggingface.co/SWivid/F5-TTS/tree/main/F5TTS_v1_Base
+vocos_model_path     = "/home/DakeQQ/Downloads/vocos-mel-24khz"                                              # The Vocos model download path.            URL: https://huggingface.co/charactr/vocos-mel-24khz/tree/main
 onnx_model_Preprocess  = str(onnx_folder / "F5_Preprocess.onnx")                                             # The exported onnx model path.
 onnx_model_Transformer = str(onnx_folder / "F5_Transformer.onnx")                                            # The exported onnx model path.
 onnx_model_Decode      = str(onnx_folder / "F5_Decode.onnx")                                                 # The exported onnx model path.
@@ -146,9 +145,9 @@ class ConvPositionEmbedding(nn.Module):
         if mask is not None:
             mask = mask[..., None]
             x = x.masked_fill(~mask, 0.0)
-        x = x.permute(0, 2, 1)
+        x = x.transpose(1, 2)
         x = self.conv1d(x)
-        out = x.permute(0, 2, 1)
+        out = x.transpose(1, 2)
         if mask is not None:
             out = out.masked_fill(~mask, 0.0)
         return out
@@ -675,6 +674,7 @@ class F5Preprocess(torch.nn.Module):
         mel_signal = torch.matmul(self.fbank, torch.sqrt(mel_signal_real * mel_signal_real + mel_signal_imag * mel_signal_imag)).transpose(1, 2).clamp(min=1e-5).log()
         mel_signal_len = mel_signal.shape[1]
         ref_signal_len = mel_signal_len - 1
+        ref_mel_tail = mel_signal[:, -1:]
         zeros = torch.zeros((1, max_duration, self.num_channels), dtype=torch.float32)
         zeros_split_A = zeros[:, :-mel_signal_len]
         zeros_split_B = zeros[:, :-text_ids.shape[-1], 0]
@@ -686,8 +686,8 @@ class F5Preprocess(torch.nn.Module):
         cat_mel_text = torch.cat((mel_signal, text), dim=-1)
         cat_mel_text_drop = torch.cat((zeros, text_drop), dim=-1)
         if self.use_fp16:
-            return noise.half(), rope_cos, rope_sin, cat_mel_text.half(), cat_mel_text_drop.half(), ref_signal_len, rms_scale
-        return noise, rope_cos.float(), rope_sin.float(), cat_mel_text, cat_mel_text_drop, ref_signal_len, rms_scale
+            return noise.half(), rope_cos, rope_sin, cat_mel_text.half(), cat_mel_text_drop.half(), ref_signal_len, rms_scale, ref_mel_tail.half()
+        return noise, rope_cos.float(), rope_sin.float(), cat_mel_text, cat_mel_text_drop, ref_signal_len, rms_scale, ref_mel_tail
 
 
 def get_epss_timesteps(n, dtype=torch.float32):
@@ -762,10 +762,13 @@ class F5Decode(torch.nn.Module):
                 denoised: torch.FloatTensor,
                 ref_signal_len: torch.LongTensor,
                 rms_scale: torch.FloatTensor,
+                ref_mel_tail: torch.FloatTensor,
                 ):
         denoised = denoised[:, ref_signal_len:]
         if self.use_fp16:
             denoised = denoised.float()
+        ref_mel_tail = ref_mel_tail.to(denoised.dtype)
+        denoised = torch.cat((ref_mel_tail, denoised[:, 1:]), dim=1)
         denoised = self.vocos.decode(denoised.transpose(1, 2))
         generated_signal = self.custom_istft(*denoised)
         generated_signal = generated_signal * rms_scale.to(generated_signal.dtype)
@@ -844,6 +847,41 @@ def list_str_to_idx(
     return text
 
 
+def load_checkpoint(model, ckpt_path, device: str, dtype=None, use_ema=True):
+    if dtype is None:
+        dtype = torch.float32
+    model = model.to(dtype)
+
+    ckpt_type = ckpt_path.split(".")[-1]
+    if ckpt_type == "safetensors":
+        from safetensors.torch import load_file
+
+        checkpoint = load_file(ckpt_path, device=device)
+    else:
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
+
+    if use_ema:
+        if ckpt_type == "safetensors":
+            checkpoint = {"ema_model_state_dict": checkpoint}
+        checkpoint["model_state_dict"] = {
+            k.replace("ema_model.", ""): v
+            for k, v in checkpoint["ema_model_state_dict"].items()
+            if k not in ["initted", "step"]
+        }
+        for key in ["mel_spec.mel_stft.mel_scale.fb", "mel_spec.mel_stft.spectrogram.window"]:
+            if key in checkpoint["model_state_dict"]:
+                del checkpoint["model_state_dict"][key]
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        if ckpt_type == "safetensors":
+            checkpoint = {"model_state_dict": checkpoint}
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+    del checkpoint
+    torch.cuda.empty_cache()
+    return model.to(device)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Metadata helpers — export the pipeline geometry once so inference never has to
 # hand-duplicate the fixed-at-export constants (mirrors the ASR repo).
@@ -902,14 +940,14 @@ with torch.inference_mode():
     max_duration = torch.tensor([DUMMY_MAX_DURATION], dtype=torch.long)
     f5_model, NUM_HEAD, HIDDEN_SIZE = load_model(F5_safetensors_path)
     HEAD_DIM = HIDDEN_SIZE // NUM_HEAD
-    custom_stft = STFT_Process(model_type='stft_B', n_fft=NFFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE).eval()
+    custom_stft = STFT_Process(model_type='stft_B', n_fft=NFFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE, pad_mode='reflect').eval()
     f5_preprocess = F5Preprocess(f5_model, custom_stft, nfft=NFFT, n_mels=N_MELS, sample_rate=SAMPLE_RATE, num_head=NUM_HEAD, head_dim=HEAD_DIM, target_rms=TARGET_RMS, use_fp16=use_fp16_transformer)
     torch.onnx.export(
         f5_preprocess,
         (audio, text_ids, max_duration),
         onnx_model_Preprocess,
         input_names=['audio', 'text_ids', 'max_duration'],
-        output_names=['noise', 'rope_cos', 'rope_sin', 'cat_mel_text', 'cat_mel_text_drop', 'ref_signal_len', 'rms_scale'],
+        output_names=['noise', 'rope_cos', 'rope_sin', 'cat_mel_text', 'cat_mel_text_drop', 'ref_signal_len', 'rms_scale', 'ref_mel_tail'],
         dynamic_axes={
             'audio': {2: 'audio_len'},
             'text_ids': {1: 'text_ids_len'},
@@ -988,15 +1026,16 @@ with torch.inference_mode():
     denoised = torch.ones((1, DUMMY_MAX_DURATION, N_MELS), dtype=dtype)
     ref_signal_len = torch.tensor(DUMMY_REFERENCE_SIGNAL_LENGTH, dtype=torch.long)
     rms_scale = torch.ones((1,), dtype=torch.float32)
+    ref_mel_tail = torch.ones((1, 1, N_MELS), dtype=dtype)
     custom_istft = STFT_Process(model_type='istft_A', n_fft=NFFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=MAX_SIGNAL_LENGTH, window_type=WINDOW_TYPE).eval()
     # Vocos model preprocess
     vocos = Vocos.from_pretrained(vocos_model_path)
     f5_decode = F5Decode(vocos, custom_istft, target_rms=TARGET_RMS, use_fp16=use_fp16_transformer)
     torch.onnx.export(
         f5_decode,
-        (denoised, ref_signal_len, rms_scale),
+        (denoised, ref_signal_len, rms_scale, ref_mel_tail),
         onnx_model_Decode,
-        input_names=['denoised', 'ref_signal_len', 'rms_scale'],
+        input_names=['denoised', 'ref_signal_len', 'rms_scale', 'ref_mel_tail'],
         output_names=['output_audio'],
         dynamic_axes={
             'denoised': {1: 'max_duration'},
@@ -1008,6 +1047,7 @@ with torch.inference_mode():
     del denoised
     del ref_signal_len
     del rms_scale
+    del ref_mel_tail
     del vocos
     del custom_istft
     gc.collect()
@@ -1016,7 +1056,7 @@ with torch.inference_mode():
 # ── Metadata carrier + stamp the metadata onto every exported graph ──
 onnx_metadata = build_model_metadata(
     {
-        "f5_tts_metadata_version": 2,
+        "f5_tts_metadata_version": 3,
         "producer": Path(__file__).name,
         "f5_safetensors_path": F5_safetensors_path,
         "vocab_path": vocab_path,
@@ -1030,7 +1070,7 @@ onnx_metadata = build_model_metadata(
         "max_signal_length": MAX_SIGNAL_LENGTH,
         "use_fp16_transformer": use_fp16_transformer,
         "activations_fp16": False,
-        "opset": 17,
+        "opset": OPSET,
     },
     {
         "num_mels": N_MELS,

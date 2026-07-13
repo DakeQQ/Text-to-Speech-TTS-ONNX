@@ -24,7 +24,7 @@ def _parse_args():
         "--model-folder",
         dest="onnx_folder",
         type=Path,
-        default=Path(__file__).resolve().parent / "F5_Optimized",
+        default=Path(__file__).resolve().parent / "F5_ONNX",
         help="Folder containing ONNX graphs.",
     )
     parser.add_argument(
@@ -45,7 +45,7 @@ onnx_model_Preprocess  = str(onnx_folder / "F5_Preprocess.onnx")                
 onnx_model_Transformer = str(onnx_folder / "F5_Transformer.onnx")                                   # The exported onnx model path.
 onnx_model_Decode      = str(onnx_folder / "F5_Decode.onnx")                                        # The exported onnx model path.
 onnx_model_Metadata    = str(onnx_folder / "F5_Metadata.onnx")                                      # Tiny metadata carrier graph.
-generated_audio      = str(script_dir / "generated_audio.wav")
+generated_audio        = str(script_dir / "generated_audio.wav")
 test_in_english = False
 
 if test_in_english:
@@ -304,9 +304,9 @@ if not Path(onnx_model_Metadata).exists():
     )
 ort_session_Metadata = create_session(onnx_model_Metadata, **packed_settings_cpu)
 _model_meta = ort_session_Metadata.get_modelmeta().custom_metadata_map or {}
-if _model_meta.get("f5_tts_metadata_version") != "2":
+if _model_meta.get("f5_tts_metadata_version") != "3":
     raise ValueError(
-        f"Required F5_TTS metadata version 2 is missing from {onnx_model_Metadata}. "
+        f"Required F5_TTS metadata version 3 is missing from {onnx_model_Metadata}. "
         "Re-export with Export_F5.py to stamp the model metadata."
     )
 
@@ -417,7 +417,8 @@ bind_device_outputs(binding_Preprocess, out_name_Preprocess, _ort_host_obj)
 run(ort_session_Preprocess, binding_Preprocess)
 preprocess_outputs = binding_Preprocess.get_outputs()
 # preprocess_outputs order matches out_name_Preprocess: [noise, rope_cos, rope_sin,
-#                                                         cat_mel_text, cat_mel_text_drop, ref_signal_len, rms_scale]
+#                                                         cat_mel_text, cat_mel_text_drop,
+#                                                         ref_signal_len, rms_scale, ref_mel_tail]
 
 # ── Transformer graph. The unfused export runs one denoise step per call; the NFE loop runs here.
 # ── The four conditioning tensors from Preprocess never change, so they are bound once.
@@ -464,7 +465,7 @@ noise_final = noise_buffers[NFE_STEP & 1]
 # ── ref_signal_len / rms_scale are already host tensors from Preprocess. ──
 denoised_for_decode = noise_final if device_type == 'cpu' else onnxruntime.OrtValue.ortvalue_from_numpy(noise_final.numpy(), 'cpu', DEVICE_ID)
 rms_scale_for_decode = ensure_rank1_host_ortvalue(preprocess_outputs[6])
-bind_inputs(binding_Decode, in_name_Decode, [denoised_for_decode, preprocess_outputs[5], rms_scale_for_decode])
+bind_inputs(binding_Decode, in_name_Decode, [denoised_for_decode, preprocess_outputs[5], rms_scale_for_decode, preprocess_outputs[7]])
 bind_device_outputs(binding_Decode, [out_name_Decode[0]], _ort_host_obj)
 run(ort_session_Decode, binding_Decode)
 generated_signal = binding_Decode.get_outputs()[0].numpy()
