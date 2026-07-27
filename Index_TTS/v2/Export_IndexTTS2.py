@@ -1011,15 +1011,6 @@ class IndexTTS2Conditioning(nn.Module):
         return speaker_latent, emotion_vector
 
 
-def _valid_text_ids(
-    text_ids: torch.Tensor,
-    start_text_token: int,
-    stop_text_token: int,
-) -> torch.Tensor:
-    valid = (text_ids != start_text_token) & (text_ids != stop_text_token)
-    return torch.masked_select(text_ids, valid).unsqueeze(0)
-
-
 class IndexTTS2TargetPreprocess(nn.Module):
     """Construct the exact batch-one GPT prefill embedding sequence."""
 
@@ -1068,13 +1059,8 @@ class IndexTTS2TargetPreprocess(nn.Module):
         emotion_vector: torch.Tensor,
         text_ids: torch.Tensor,
     ) -> torch.Tensor:
-        valid_text = _valid_text_ids(
-            text_ids,
-            self.start_text_token,
-            self.stop_text_token,
-        )
         text_with_bounds = torch.cat(
-            (self.start_text_id, valid_text, self.stop_text_id),
+            (self.start_text_id, text_ids, self.stop_text_id),
             dim=1,
         )
         text_length = torch._shape_as_tensor(text_with_bounds)[1:2]

@@ -154,7 +154,7 @@ REPETITION_PENALTY = 1.2         # sampling 重复惩罚 / Sampling repetition p
 MAX_TOKENS = 1500                # 每段上限；0 使用图容量 / Per-segment limit; 0 uses capacity.
 MAX_TEXT_TOKENS_PER_SEGMENT = 120  # 长文本分段长度 / Long-text segment length.
 
-DIFFUSION_STEPS = 25             # Euler 步数 / Euler solver step count.
+# CFM Euler 步数在导出时固定，并从包元数据读取。/ CFM Euler steps are fixed at export and read from package metadata.
 CFG_RATE = 0.7                   # <= 0 使用单 CFM 分支 / <= 0 uses one CFM branch.
 DIFFUSION_TEMPERATURE = 1.0      # 声学随机性 / Acoustic variation.
 SEED = 9527                      # 整数可复现 / Set an integer for repeatability.
@@ -1699,16 +1699,12 @@ def solve_cfm(
     prompt_frames: int,
     static_hidden: ort.OrtValue,
     target_mask: ort.OrtValue,
-    steps: int,
     temperature: float,
     rng: np.random.Generator,
 ) -> ort.OrtValue:
+    steps = sessions.cfm_steps
     if steps < 1:
-        raise ValueError("Diffusion steps must be at least one.")
-    if steps != sessions.cfm_steps:
-        raise ValueError(
-            f"This package precomputes {sessions.cfm_steps} CFM steps; got {steps}."
-        )
+        raise ValueError("Exported CFM step count must be at least one.")
     total_frames = static_hidden.shape()[1]
     target_frames = total_frames - prompt_frames
     if target_frames <= 0:
@@ -1813,7 +1809,6 @@ def synthesize_segment(
         prompt_frames,
         static_hidden,
         target_mask,
-        DIFFUSION_STEPS,
         DIFFUSION_TEMPERATURE,
         rng,
     )
