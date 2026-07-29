@@ -35,7 +35,7 @@ from Shared_Weights import (
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_DIR = Path.home() / "Downloads" / "Inflect-Nano-v2"
+DEFAULT_MODEL_DIR = Path.home() / "Downloads" / "Inflect-Micro-v2"  # [Inflect-Micro-v2, Inflect-Nano-v2]
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "Inflect_ONNX"
 OPSET_VERSION = 20
 DURATION_MODEL_NAME = "Inflect_Duration.onnx"
@@ -45,8 +45,14 @@ MAX_FRAMES = 4000
 MAX_TOKENS = 4000
 FADE_MILLISECONDS = 5.0
 OUT_SAMPLE_RATE = 24000
-OUT_AUDIO_DTYPE = "F32"  # F16 | F32 | INT16
+OUT_AUDIO_DTYPE = "F32"  	# F16 | F32 | INT16
+
+
 OUTPUT_AUDIO_DTYPES = {"F16", "F32", "INT16"}
+MODEL_SIGNATURES = {
+	(128, 72, 384, 192, 2): "nano",
+	(192, 96, 768, 320, 3): "micro",
+}
 
 
 def _copy_tensor(value: Tensor) -> Tensor:
@@ -624,7 +630,27 @@ class MetadataCarrier(nn.Module):
 		return marker
 
 
-def load_inflect_model(model_dir: Path) -> tuple[nn.Module, dict, list[str]]:
+def _detect_model_family(config: dict) -> str:
+	model_config = config["model"]
+	signature = (
+		int(model_config["inter_channels"]),
+		int(model_config["hidden_channels"]),
+		int(model_config["filter_channels"]),
+		int(model_config["upsample_initial_channel"]),
+		int(model_config["n_layers_q"]),
+	)
+	try:
+		return MODEL_SIGNATURES[signature]
+	except KeyError as error:
+		raise ValueError(
+			"Unsupported Inflect v2 architecture: "
+			f"inter_channels={signature[0]}, hidden_channels={signature[1]}, "
+			f"filter_channels={signature[2]}, "
+			f"upsample_initial_channel={signature[3]}, n_layers_q={signature[4]}."
+		) from error
+
+
+def load_inflect_model(model_dir: Path) -> tuple[nn.Module, dict, list[str], str]:
 	model_dir = model_dir.expanduser().resolve()
 	runtime_dir = model_dir / "runtime"
 	if not runtime_dir.is_dir():
@@ -634,6 +660,8 @@ def load_inflect_model(model_dir: Path) -> tuple[nn.Module, dict, list[str]]:
 	SynthesizerTrn = importlib.import_module("models").SynthesizerTrn
 
 	config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+	model_family = _detect_model_family(config)
+	print(f"[Model] detected Inflect {model_family.title()} v2")
 	symbols = runpy.run_path(str(runtime_dir / "text" / "symbols.py"))["symbols"]
 	with warnings.catch_warnings():
 		warnings.filterwarnings("ignore", message="`torch.nn.utils.weight_norm` is deprecated")
@@ -661,7 +689,7 @@ def load_inflect_model(model_dir: Path) -> tuple[nn.Module, dict, list[str]]:
 		encoder = getattr(flow, "enc", None)
 		if encoder is not None and hasattr(encoder, "remove_weight_norm"):
 			encoder.remove_weight_norm()
-	return model, config, list(symbols)
+	return model, config, list(symbols), model_family
 
 
 def _set_metadata(path: Path, metadata: dict[str, str]) -> None:
@@ -1155,7 +1183,7 @@ def _export_inflect_package(
 	):
 		(output_dir / owned_name).unlink(missing_ok=True)
 
-	model, config, symbols = load_inflect_model(model_dir)
+	model, config, symbols, model_family = load_inflect_model(model_dir)
 	duration = InflectDuration(model).eval()
 	sample_rate = int(config["data"]["sampling_rate"])
 	fade_samples = round(sample_rate * FADE_MILLISECONDS / 1000.0)
@@ -1227,6 +1255,7 @@ def _export_inflect_package(
 	upsample_factor = math.prod(int(rate) for rate in config["model"]["upsample_rates"])
 	metadata = {
 		"format": "inflect_onnx_runtime_v4",
+		"source_model": f"Inflect-{model_family.title()}-v2",
 		"graph_layout": "duration_decode",
 		"duration_model_file": DURATION_MODEL_NAME,
 		"decode_model_file": DECODE_MODEL_NAME,
