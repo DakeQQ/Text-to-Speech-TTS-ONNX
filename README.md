@@ -32,19 +32,6 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 - `Metadata.onnx` stores the fixed package contract; runtime controls remain in the inference script. Inference validates metadata, graph layout, and referenced files.
 - Streaming exporters require each codec or latent frame to map to a whole number of output samples.
 
-### KaniTTS Decode Strategies
-
-KaniTTS exports separate `greedy`, `penalty_greedy`, and `sampling` graphs. Set `DECODE_STRATEGY` in `Kani_TTS/Inference_Kani_TTS_ONNX.py`; the CLI selects the ONNX folder.
-
-```bash
-cd Kani_TTS
-python Export_Kani_TTS.py
-python Optimize_ONNX.py
-python Inference_Kani_TTS_ONNX.py --onnx-folder KaniTTS_Optimized
-```
-
-The export script runs one test inference automatically.
-
 ---
 
 <a id="chinese"></a>
@@ -66,19 +53,6 @@ The export script runs one test inference automatically.
 - `Metadata.onnx` 保存固定模型包约定，运行时配置保留在推理脚本中。推理时会校验元数据、图布局与引用文件。
 - 流式导出要求每个编解码器帧或潜变量帧对应整数个输出采样点。
 
-### KaniTTS 解码策略
-
-KaniTTS 会分别导出 `greedy`、`penalty_greedy` 与 `sampling` 解码图。在 `Kani_TTS/Inference_Kani_TTS_ONNX.py` 中设置 `DECODE_STRATEGY`，命令行用于指定 ONNX 文件夹。
-
-```bash
-cd Kani_TTS
-python Export_Kani_TTS.py
-python Optimize_ONNX.py
-python Inference_Kani_TTS_ONNX.py --onnx-folder KaniTTS_Optimized
-```
-
-导出脚本会自动执行一次测试推理。
-
 ---
 
 <a id="models"></a>
@@ -95,6 +69,8 @@ python Inference_Kani_TTS_ONNX.py --onnx-folder KaniTTS_Optimized
 | Voice cloning<br>声音克隆 | VoxCPM 1.5 | 44.1 → 44.1 kHz | Supported<br>支持 | [`VoxCPM/v1.5`](./VoxCPM/v1.5) | [ModelScope](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5) |
 | Clone · continuation · voice design<br>克隆 · 续写 · 声音设计 | VoxCPM 2 | 16 → 48 kHz | Mode-dependent<br>取决于模式 | [`VoxCPM/v2`](./VoxCPM/v2) | [ModelScope](https://www.modelscope.cn/models/OpenBMB/VoxCPM2) |
 | Neural vocoder<br>神经声码器 | BigVGAN V2 | Mel → 24 kHz | No<br>否 | [`BigVGAN`](./BigVGAN) | [GitHub](https://github.com/NVIDIA/BigVGAN) |
+| Text-to-speech<br>语音合成 | Inflect | Text → 24 kHz | No<br>否 | [`Inflect`](./Inflect) | [GitHub](https://github.com/owenawsong/Inflect) |
+
 
 ---
 
