@@ -1,5 +1,4 @@
 import gc
-import subprocess
 import sys
 from pathlib import Path
 
@@ -32,14 +31,6 @@ OUT_AUDIO_DTYPE = "INT16"              # "F16" | "F32" | "INT16".
 MODEL_SAMPLE_RATE = 24000               # Native checkpoint sample rate; do not edit.
 
 _OUTPUT_AUDIO_DTYPES = {"F16", "F32", "INT16"}
-if OUT_SAMPLE_RATE < 1:
-    raise ValueError("OUT_SAMPLE_RATE must be positive.")
-if OUT_AUDIO_DTYPE.upper() not in _OUTPUT_AUDIO_DTYPES:
-    raise ValueError(
-        f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; "
-        f"expected one of {tuple(sorted(_OUTPUT_AUDIO_DTYPES))}."
-    )
-
 PATCHED_BIGVGAN_SOURCES = {
     "bigvgan.py": r'''# Copyright (c) 2024 NVIDIA CORPORATION.
 #   Licensed under the MIT license.
@@ -186,10 +177,6 @@ class AMPBlock1(torch.nn.Module):
                     for _ in range(self.num_layers)
                 ]
             )
-        else:
-            raise NotImplementedError(
-                "activation incorrectly specified. check the config file and look for 'activation'."
-            )
 
     def forward(
         self,
@@ -305,10 +292,6 @@ class AMPBlock2(torch.nn.Module):
                     for _ in range(self.num_layers)
                 ]
             )
-        else:
-            raise NotImplementedError(
-                "activation incorrectly specified. check the config file and look for 'activation'."
-            )
 
     def forward(self, x):
         for c, a in zip(self.convs, self.activations):
@@ -372,10 +355,6 @@ class BigVGAN(
             resblock_class = AMPBlock1
         elif h.resblock == "2":
             resblock_class = AMPBlock2
-        else:
-            raise ValueError(
-                f"Incorrect resblock class specified in hyperparameters. Got {h.resblock}"
-            )
 
         # Transposed conv-based upsamplers. does not apply anti-aliasing
         self.ups = nn.ModuleList()
@@ -417,11 +396,6 @@ class BigVGAN(
                 else None
             )
         )
-        if activation_post is None:
-            raise NotImplementedError(
-                "activation incorrectly specified. check the config file and look for 'activation'."
-            )
-
         self.activation_post = Activation1d(activation=activation_post)
 
         # Whether to use bias for the final conv_post. Default to True for backward compatibility
@@ -455,17 +429,8 @@ class BigVGAN(
         self.register_buffer("crop_axes", torch.tensor([2], dtype=torch.int64), persistent=False)
         self.register_buffer("crop_steps", torch.tensor([1], dtype=torch.int64), persistent=False)
 
-        for module in self.modules():
-            if isinstance(module, TorchActivation1d):
-                if module.upsample.pad_left != crop_left or module.upsample.pad_right != crop_right:
-                    raise ValueError("All alias-free activations must use the shared export crop.")
-
         resample_filter = self.activation_post.upsample.filter
         down_filter = self.activation_post.downsample.lowpass.filter
-        if not torch.equal(resample_filter, down_filter):
-            raise ValueError("Upsample and downsample filters must match for shared export state.")
-        if self.activation_post.upsample.pad != self.activation_post.downsample.lowpass.pad_left:
-            raise ValueError("Upsample and left-downsample padding must match for shared export state.")
 
         self.x_shape = []
         for i in range(self.num_upsamples):
@@ -559,8 +524,6 @@ class BigVGAN(
         for module in activation_modules:
             if isinstance(module.act, ExportPeriodicActivation):
                 continue
-            if not isinstance(module.act, (activations.Snake, activations.SnakeBeta)):
-                raise TypeError(f"Unsupported periodic activation: {type(module.act).__name__}")
             module.act = ExportPeriodicActivation(module.act)
 
     # Additional methods for huggingface_hub support
@@ -795,10 +758,6 @@ class LowPassFilter1d(nn.Module):
         kernel_size should be even number for stylegan3 setup, in this implementation, odd number is also possible.
         """
         super().__init__()
-        if cutoff < -0.0:
-            raise ValueError("Minimum cutoff must be larger than zero.")
-        if cutoff > 0.5:
-            raise ValueError("A cutoff above 0.5 does not make sense.")
         self.kernel_size = kernel_size
         self.even = kernel_size % 2 == 0
         self.pad_left = kernel_size // 2 - int(self.even)
@@ -954,13 +913,3 @@ if model_path in sys.path:
     sys.path.remove(model_path)
 
 print("\nExport done!")
-print("\nStart running inference via Inference_BigVGAN_ONNX.py ...")
-subprocess.run(
-    [
-        sys.executable,
-        str(script_dir / "Inference_BigVGAN_ONNX.py"),
-        "--onnx-folder",
-        str(onnx_folder),
-    ],
-    check=True,
-)

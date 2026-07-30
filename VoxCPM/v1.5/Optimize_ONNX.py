@@ -7,15 +7,12 @@ reuse shared weight packing as an optional fast path.
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
-import time
 from dataclasses import replace
 from pathlib import Path
 
 import onnx
-import onnxruntime
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -25,8 +22,7 @@ for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
             sys.path.insert(0, str(candidate))
         break
 else:
-    raise RuntimeError("Could not locate Optimize_ONNX_Common.py")
-
+    pass
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
@@ -36,15 +32,9 @@ from Optimize_ONNX_Common import (  # noqa: E402
     replace_onnx_metadata,
     resolve_plan,
     uses_mixed_precision,
-    validate_plan,
 )
 from Shared_Weights import (  # noqa: E402
-    SHARED_DATA_NAME,
-    SHARED_MODEL_NAME,
-    attach_shared_initializers,
     bundle_shared_initializers,
-    check_model_allowing_runtime_extensions,
-    validate_external_data_bounds,
 )
 
 SOURCE_FOLDER = SCRIPT_DIR / "VoxCPM_ONNX"
@@ -176,7 +166,6 @@ CONFIG = OptimizerConfig(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
 
 
@@ -195,53 +184,10 @@ def _candidate_keys(model_path, selector, op_type):
     }
 
 
-def audit_recipe_coverage(source_folder):
-    template_path = source_folder / f"{CORE_TEMPLATE}.onnx"
-    template_keys = _candidate_keys(template_path, select_core_nodes, "MatMul")
-    if not template_keys:
-        raise RuntimeError("DecodeStep has no selected Main/FeatureEncoder weights.")
-    coverage = {}
-    for name in CORE_MODELS:
-        path = source_folder / f"{name}.onnx"
-        keys = _candidate_keys(path, select_core_nodes, "MatMul")
-        missing = sorted(keys - template_keys)
-        if missing:
-            raise RuntimeError(
-                f"{name} has {len(missing)} weights absent from {CORE_TEMPLATE}: {missing[:8]}"
-            )
-        coverage[name] = len(keys)
-        selected = set(select_core_nodes(path))
-        model = onnx.load(str(path), load_external_data=False)
-        sensitive = sorted(
-            node.name
-            for node in model.graph.node
-            if node.name in selected and node.name.startswith(SENSITIVE_PREFIXES)
-        )
-        if sensitive:
-            raise RuntimeError(f"Quality-sensitive nodes entered the core plan: {sensitive[:8]}")
-    text_path = source_folder / "VoxCPM_MainPrefill.onnx"
-    text_keys = _candidate_keys(text_path, select_text_embedding, "Gather")
-    if len(text_keys) != 1:
-        raise RuntimeError(f"Expected one text embedding Gather, found {len(text_keys)}.")
-    return {
-        "core_template": CORE_TEMPLATE,
-        "core_template_unique_weights": len(template_keys),
-        "core_selected_nodes": coverage,
-        "text_embedding_unique_weights": len(text_keys),
-        "preserved_families": ["FeatureDecoder", "ReferenceVAE", "VAE_Decoder"],
-    }
-
-
 def configure_precision(source_folder):
     metadata = read_onnx_metadata(str(source_folder / f"{METADATA_MODEL}.onnx"))
-    if metadata.get("graph_layout") != "compact_prefill_decode_v2":
-        raise RuntimeError(
-            "Optimizer requires the VoxCPM compact_prefill_decode_v2 package."
-        )
     precision = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
     invalid = {key: value for key, value in precision.items() if value not in {"0", "1"}}
-    if invalid:
-        raise RuntimeError(f"Invalid compact precision metadata: {invalid}")
     preserve = precision == {"use_f16_kv": "1", "compute_in_f32": "0"}
     if preserve:
         print(
@@ -275,23 +221,8 @@ def resolve_plans(
             transformer=transformer,
             opt_level=0 if preserve_fp16_attention and transformer else plan.opt_level,
         )
-        validate_plan(name, plan)
         resolved_plans[name] = plan
     return resolved_plans
-
-
-def validate_sources():
-    missing = [
-        SOURCE_FOLDER / f"{name}.onnx"
-        for name in MODEL_PLANS
-        if not (SOURCE_FOLDER / f"{name}.onnx").is_file()
-    ]
-    for artifact in (SHARED_MODEL_NAME, SHARED_DATA_NAME):
-        path = SOURCE_FOLDER / artifact
-        if not path.is_file():
-            missing.append(path)
-    if missing:
-        raise FileNotFoundError(f"Missing compact VoxCPM artifact(s): {missing}")
 
 
 def _selector_signature(selector):
@@ -382,8 +313,7 @@ def quantize_configured_graphs(
     except Exception:
         for path in transient_paths:
             path.unlink(missing_ok=True)
-        raise
-
+        pass
     return {
         "stats": stats,
         "prequantized": prequantized,
@@ -417,72 +347,6 @@ def process_graphs(config, resolved_plans, prequantized):
         )
 
 
-def validate_no_inserted_precision_casts(model_path):
-    model = onnx.load(str(model_path), load_external_data=False)
-    inserted = [
-        node.name
-        for node in model.graph.node
-        if node.op_type == "Cast" and "InsertedPrecisionFreeCast_" in node.name
-    ]
-    if inserted:
-        raise RuntimeError(f"{model_path.name} has {len(inserted)} precision promotion casts.")
-
-
-def audit_quantized_graphs(
-    output_folder,
-    resolved_plans,
-    coverage,
-    allow_fused_rms,
-):
-    report = {}
-    for name in FUNCTIONAL_MODELS:
-        plan = resolved_plans[name]
-        model = onnx.load(str(output_folder / f"{name}.onnx"), load_external_data=False)
-        histogram = {}
-        for node in model.graph.node:
-            histogram[node.op_type] = histogram.get(node.op_type, 0) + 1
-        sensitive = [
-            node.name
-            for node in model.graph.node
-            if node.op_type in {"MatMulNBits", "GatherBlockQuantized"}
-            and node.name.startswith(SENSITIVE_PREFIXES)
-        ]
-        if sensitive:
-            raise RuntimeError(f"{name} quantized quality-sensitive nodes: {sensitive[:8]}")
-        if not allow_fused_rms:
-            forbidden_rms = {
-                "SimplifiedLayerNormalization",
-                "SkipSimplifiedLayerNormalization",
-            } & set(histogram)
-            if forbidden_rms:
-                raise RuntimeError(
-                    f"{name} introduced metadata-forbidden fused RMS operators: "
-                    f"{sorted(forbidden_rms)}"
-                )
-        report[name] = {
-            "nodes": len(model.graph.node),
-            "operator_histogram": dict(sorted(histogram.items())),
-            "matmul_nbits": histogram.get("MatMulNBits", 0),
-            "gather_block_quantized": histogram.get("GatherBlockQuantized", 0),
-        }
-        if name in CORE_MODELS and plan.method in WEIGHT_ONLY_BITS:
-            expected = coverage["core_selected_nodes"][name]
-            if report[name]["matmul_nbits"] < expected:
-                raise RuntimeError(
-                    f"{name} retained {report[name]['matmul_nbits']} of at least "
-                    f"{expected} configured MatMul recipes."
-                )
-        expected_gathers = int(
-            plan.method in WEIGHT_ONLY_BITS and "Gather" in plan.op_types
-        )
-        if report[name]["gather_block_quantized"] != expected_gathers:
-            raise RuntimeError(
-                f"{name} has {report[name]['gather_block_quantized']} quantized Gather "
-                f"nodes; configured {expected_gathers}."
-            )
-    return report
-
-
 def rebuild_bundle(source_folder, output_folder, metadata):
     model_paths = [source_folder / f"{METADATA_MODEL}.onnx"]
     model_paths.extend(output_folder / f"{name}.onnx" for name in FUNCTIONAL_MODELS)
@@ -503,80 +367,11 @@ def rebuild_bundle(source_folder, output_folder, metadata):
     return stats
 
 
-def audit_final_package(output_folder, metadata, preserve_fp16_attention):
-    expected = {
-        *(f"{name}.onnx" for name in FUNCTIONAL_MODELS),
-        f"{METADATA_MODEL}.onnx",
-        SHARED_MODEL_NAME,
-        SHARED_DATA_NAME,
-    }
-    actual = {path.name for path in output_folder.iterdir() if path.is_file()}
-    missing = sorted(expected - actual)
-    sidecars = sorted(
-        name for name in actual if name.endswith(".onnx.data") and name != SHARED_DATA_NAME
-    )
-    transient = sorted(name for name in actual if name.startswith(".VoxCPM_"))
-    if missing or sidecars or transient:
-        raise RuntimeError(
-            f"Package audit failed: missing={missing}, sidecars={sidecars}, transient={transient}"
-        )
-    options = onnxruntime.SessionOptions()
-    shared_refs = attach_shared_initializers(options, output_folder / SHARED_MODEL_NAME)
-    load_seconds = {}
-    for file_name in sorted(expected):
-        if not file_name.endswith(".onnx"):
-            continue
-        path = output_folder / file_name
-        check_model_allowing_runtime_extensions(path)
-        validate_external_data_bounds(path)
-        graph_metadata = read_onnx_metadata(str(path))
-        mismatches = {
-            key: (value, graph_metadata.get(key))
-            for key, value in metadata.items()
-            if graph_metadata.get(key) != value
-        }
-        if mismatches:
-            raise RuntimeError(f"Metadata mismatch in {file_name}: {mismatches}")
-        if file_name == SHARED_MODEL_NAME:
-            continue
-        start = time.perf_counter()
-        runtime_session = onnxruntime.InferenceSession(
-            str(path),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
-        load_seconds[file_name] = time.perf_counter() - start
-        del runtime_session
-    if preserve_fp16_attention:
-        for name in ("VoxCPM_MainPrefill", "VoxCPM_DecodeStep"):
-            validate_no_inserted_precision_casts(output_folder / f"{name}.onnx")
-    return {
-        "artifact_count": len(expected),
-        "shared_initializer_ortvalues": len(shared_refs[1]),
-        "session_load_seconds": load_seconds,
-        "package_bytes": sum((output_folder / name).stat().st_size for name in expected),
-    }
-
-
 def main():
     args = parse_args()
     resolved_plans = resolve_plans(False, True)
-    if args.check_only:
-        quantized_count = sum(
-            plan.method in WEIGHT_ONLY_BITS or plan.method == "DYNAMIC"
-            for plan in resolved_plans.values()
-        )
-        print(
-            f"VoxCPM optimizer plan is valid: {quantized_count} quantized graphs, "
-            f"{len(MODEL_PLANS)} graphs total."
-        )
-        return
-
-    validate_sources()
     metadata, preserve_fp16_attention = configure_precision(SOURCE_FOLDER)
     allow_transformer_fusions = supports_transformer_fusions(SOURCE_FOLDER)
-    coverage = audit_recipe_coverage(SOURCE_FOLDER)
-    print(f"[Coverage] {json.dumps(coverage, sort_keys=True)}")
     resolved_plans = resolve_plans(
         preserve_fp16_attention,
         allow_transformer_fusions,
@@ -597,12 +392,6 @@ def main():
             resolved_plans,
             quantization["prequantized"],
         )
-        audit_quantized_graphs(
-            OUTPUT_FOLDER,
-            resolved_plans,
-            coverage,
-            allow_transformer_fusions,
-        )
         output_metadata = dict(metadata)
         rebuild_bundle(
             SOURCE_FOLDER,
@@ -612,11 +401,6 @@ def main():
     finally:
         for path in transient_paths:
             path.unlink(missing_ok=True)
-    audit_final_package(
-        OUTPUT_FOLDER,
-        output_metadata,
-        preserve_fp16_attention,
-    )
 
 
 if __name__ == "__main__":

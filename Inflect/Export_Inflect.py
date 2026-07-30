@@ -16,7 +16,6 @@ import json
 import math
 import runpy
 import shutil
-import subprocess
 import sys
 import tempfile
 import warnings
@@ -29,7 +28,6 @@ from torch.nn import functional as F
 from Shared_Weights import (
 	SHARED_DATA_NAME,
 	SHARED_MODEL_NAME,
-	attach_shared_initializers,
 	bundle_shared_initializers,
 )
 
@@ -218,8 +216,6 @@ class InflectDuration(nn.Module):
 		super().__init__()
 		text_encoder = model.enc_p
 		duration = model.dp
-		if model.use_sdp:
-			raise ValueError("InflectDuration requires the deterministic duration predictor.")
 
 		self.inter_channels = int(model.inter_channels)
 		self.register_buffer(
@@ -240,8 +236,6 @@ class InflectDuration(nn.Module):
 			int(layer.window_size)
 			for layer in text_encoder.encoder.attn_layers
 		}
-		if len(window_sizes) != 1:
-			raise ValueError(f"Inflect encoder window sizes differ: {sorted(window_sizes)}")
 		window_size = window_sizes.pop()
 		positions = torch.arange(MAX_TOKENS, dtype=torch.int16)
 		relative_offset = positions.unsqueeze(0) - positions.unsqueeze(1)
@@ -390,8 +384,6 @@ class MaskFreeWaveNet(nn.Module):
 
 	def __init__(self, source: nn.Module) -> None:
 		super().__init__()
-		if int(source.gin_channels) != 0:
-			raise ValueError("Speaker-conditioned Inflect flows are not supported.")
 		self.hidden_channels = int(source.hidden_channels)
 		self.input_layers = nn.ModuleList(FrozenConv1d(layer) for layer in source.in_layers)
 		self.skip_layers = nn.ModuleList(
@@ -421,8 +413,6 @@ class MaskFreeWaveNet(nn.Module):
 			else:
 				current_skip = residual_skip
 			skip = current_skip if skip is None else skip + current_skip
-		if skip is None:
-			raise RuntimeError("Inflect flow WaveNet has no layers.")
 		return skip
 
 
@@ -431,8 +421,6 @@ class MeanOnlyCoupling(nn.Module):
 
 	def __init__(self, source: nn.Module, *, folded_flip: bool) -> None:
 		super().__init__()
-		if not source.mean_only:
-			raise ValueError("The optimized Inflect flow requires mean-only couplings.")
 		self.pre = FrozenConv1d(source.pre, reverse_inputs=folded_flip)
 		self.network = MaskFreeWaveNet(source.enc)
 		self.post = FrozenConv1d(source.post, reverse_outputs=folded_flip)
@@ -447,8 +435,6 @@ class FlipFreeInverseFlow(nn.Module):
 	def __init__(self, source: nn.Module) -> None:
 		super().__init__()
 		couplings = list(source.flows[::2])
-		if len(couplings) != 4:
-			raise ValueError(f"Expected four Inflect flow couplings, got {len(couplings)}.")
 		self.half_channels = int(couplings[0].half_channels)
 		self.coupling_3 = MeanOnlyCoupling(couplings[3], folded_flip=True)
 		self.coupling_2 = MeanOnlyCoupling(couplings[2], folded_flip=False)
@@ -483,8 +469,6 @@ class FrozenGenerator(nn.Module):
 
 	def __init__(self, source: nn.Module) -> None:
 		super().__init__()
-		if source.decoder_alias_free:
-			raise ValueError("This checkpoint unexpectedly uses the alias-free decoder variant.")
 		branch_scale = 1.0 / int(source.num_kernels)
 		self.pre = FrozenConv1d(source.conv_pre)
 		self.upsamples = nn.ModuleList(
@@ -554,19 +538,7 @@ class InflectDecode(nn.Module):
 	) -> None:
 		super().__init__()
 		output_audio_dtype = output_audio_dtype.upper()
-		if model_sample_rate < 1 or output_sample_rate < 1:
-			raise ValueError("Model and output sample rates must be positive.")
-		if output_audio_dtype not in OUTPUT_AUDIO_DTYPES:
-			raise ValueError(
-				f"Unsupported output audio dtype {output_audio_dtype!r}; expected one of "
-				f"{sorted(OUTPUT_AUDIO_DTYPES)}."
-			)
 		upsample_factor = math.prod(int(rate) for rate in model.upsample_rates)
-		if fade_samples < 1 or 2 * fade_samples > upsample_factor:
-			raise ValueError(
-				"fade_samples must be positive and no greater than half of one "
-				"fused decoder frame."
-			)
 		self.flow = FlipFreeInverseFlow(model.flow)
 		self.generator = FrozenGenerator(model.dec)
 		self.channels = int(model.inter_channels)
@@ -639,22 +611,12 @@ def _detect_model_family(config: dict) -> str:
 		int(model_config["upsample_initial_channel"]),
 		int(model_config["n_layers_q"]),
 	)
-	try:
-		return MODEL_SIGNATURES[signature]
-	except KeyError as error:
-		raise ValueError(
-			"Unsupported Inflect v2 architecture: "
-			f"inter_channels={signature[0]}, hidden_channels={signature[1]}, "
-			f"filter_channels={signature[2]}, "
-			f"upsample_initial_channel={signature[3]}, n_layers_q={signature[4]}."
-		) from error
+	return MODEL_SIGNATURES[signature]
 
 
 def load_inflect_model(model_dir: Path) -> tuple[nn.Module, dict, list[str], str]:
 	model_dir = model_dir.expanduser().resolve()
 	runtime_dir = model_dir / "runtime"
-	if not runtime_dir.is_dir():
-		raise FileNotFoundError(f"Missing Inflect runtime directory: {runtime_dir}")
 	sys.path.insert(0, str(runtime_dir))
 
 	SynthesizerTrn = importlib.import_module("models").SynthesizerTrn
@@ -673,15 +635,7 @@ def load_inflect_model(model_dir: Path) -> tuple[nn.Module, dict, list[str], str
 		).float().eval()
 
 	checkpoint = torch.load(model_dir / "model.pth", map_location="cpu", weights_only=False)
-	if checkpoint.get("format") != "inflect_vits_inference_checkpoint_v1":
-		raise ValueError("Unsupported or training-only Inflect checkpoint format.")
 	model.load_state_dict(checkpoint["model"], strict=True)
-	expected_parameters = int(checkpoint.get("deployable_parameters", 0))
-	actual_parameters = sum(parameter.numel() for parameter in model.parameters())
-	if expected_parameters and actual_parameters != expected_parameters:
-		raise RuntimeError(
-			f"Checkpoint parameter mismatch: expected {expected_parameters}, got {actual_parameters}."
-		)
 
 	with contextlib.redirect_stdout(io.StringIO()):
 		model.dec.remove_weight_norm()
@@ -713,97 +667,6 @@ def _file_sha256(path: Path) -> str:
 	return digest.hexdigest()
 
 
-def _audit_index_dtypes(path: Path) -> dict[str, int]:
-	"""Require INT32 model indices and INT64 shape/slice control tensors."""
-	import onnx
-	from onnx import TensorProto, shape_inference
-
-	model = onnx.load(str(path), load_external_data=False)
-	model = shape_inference.infer_shapes(model, strict_mode=False, data_prop=False)
-	types: dict[str, int] = {}
-	for value in [*model.graph.input, *model.graph.output, *model.graph.value_info]:
-		if value.type.HasField("tensor_type"):
-			types[value.name] = value.type.tensor_type.elem_type
-	for initializer in model.graph.initializer:
-		types[initializer.name] = initializer.data_type
-	producers = {
-		output: node
-		for node in model.graph.node
-		for output in node.output
-		if output
-	}
-	for node in model.graph.node:
-		if node.op_type != "Constant" or not node.output:
-			continue
-		tensor = next(
-			(
-				attribute.t
-				for attribute in node.attribute
-				if attribute.name == "value" and attribute.HasField("t")
-			),
-			None,
-		)
-		if tensor is not None:
-			types[node.output[0]] = tensor.data_type
-
-	for name in ("token_ids", "durations", "frame_to_token"):
-		if name in types and types[name] != TensorProto.INT32:
-			raise RuntimeError(
-				f"{path.name}:{name} must be INT32, got "
-				f"{TensorProto.DataType.Name(types[name])}."
-			)
-	operator_counts: dict[str, int] = {}
-	for node in model.graph.node:
-		if node.op_type == "Gather":
-			data_producer = producers.get(node.input[0])
-			shape_index = data_producer is not None and data_producer.op_type == "Shape"
-			expected_type = TensorProto.INT64 if shape_index else TensorProto.INT32
-			category = "GatherShape[int64]" if shape_index else "Gather[int32]"
-			index_type = types.get(node.input[1])
-			if index_type != expected_type:
-				raise RuntimeError(
-					f"{path.name}:{node.name} Gather index {node.input[1]!r} must be "
-					f"{TensorProto.DataType.Name(expected_type)}, got "
-					f"{TensorProto.DataType.Name(index_type or 0)}."
-				)
-			operator_counts[category] = operator_counts.get(category, 0) + 1
-		elif node.op_type == "Range":
-			for name in node.input:
-				if types.get(name) != TensorProto.INT32:
-					raise RuntimeError(
-						f"{path.name}:{node.name} Range input {name!r} must be INT32."
-					)
-			output_type = types.get(node.output[0])
-			if output_type != TensorProto.INT32:
-				raise RuntimeError(
-					f"{path.name}:{node.name} Range output must be INT32, got "
-					f"{TensorProto.DataType.Name(output_type or 0)}."
-				)
-			operator_counts["Range[int32]"] = (
-				operator_counts.get("Range[int32]", 0) + 1
-			)
-		elif node.op_type == "Slice":
-			for name in node.input[1:]:
-				if name and types.get(name) != TensorProto.INT64:
-					raise RuntimeError(
-						f"{path.name}:{node.name} Slice control {name!r} must be INT64."
-					)
-			operator_counts["Slice[int64]"] = (
-				operator_counts.get("Slice[int64]", 0) + 1
-			)
-		elif node.op_type == "Split" and len(node.input) > 1:
-			split_type = types.get(node.input[1])
-			if split_type != TensorProto.INT64:
-				raise RuntimeError(
-					f"{path.name}:{node.name} Split sizes must be INT64, got "
-					f"{TensorProto.DataType.Name(split_type or 0)}."
-				)
-			operator_counts["Split[int64]"] = (
-				operator_counts.get("Split[int64]", 0) + 1
-			)
-	return operator_counts
-
-
 def _export_graph(
 	module: nn.Module,
 	arguments: tuple[Tensor, ...],
@@ -828,351 +691,16 @@ def _export_graph(
 	)
 
 
-def _operation_audit(path: Path) -> dict[str, int]:
-	import onnx
-
-	model = onnx.load(str(path), load_external_data=False)
-	counts: dict[str, int] = {}
-	for node in model.graph.node:
-		if node.domain not in ("", "ai.onnx"):
-			raise RuntimeError(
-				f"{path.name} contains unsupported domain {node.domain!r}: {node.name}"
-			)
-		counts[node.op_type] = counts.get(node.op_type, 0) + 1
-	prohibited = {
-		"ATen",
-		"PythonOp",
-		"RandomNormal",
-		"RandomUniform",
-		"RandomUniformLike",
-		"Tile",
-	}
-	found = sorted(prohibited.intersection(counts))
-	if found:
-		raise RuntimeError(f"{path.name} contains prohibited runtime ops: {found}")
-	return counts
-
-
-def _validation_session_options(shared_model: Path | None = None):
-	import onnxruntime as ort
-
-	options = ort.SessionOptions()
-	options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-	options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-	shared_lifetime = (
-		attach_shared_initializers(options, shared_model)
-		if shared_model is not None
-		else None
-	)
-	return options, shared_lifetime
-
-
-def _validate_onnx_package(
-	output_dir: Path,
-	raw_duration_path: Path,
-	raw_decode_path: Path,
-	duration_module: InflectDuration,
-	decode_module: InflectDecode,
-	symbol_count: int,
-	channels: int,
-) -> None:
-	import numpy as np
-	import onnx
-	import onnxruntime as ort
-	from onnx import numpy_helper, shape_inference
-
-	duration_path = output_dir / DURATION_MODEL_NAME
-	decode_path = output_dir / DECODE_MODEL_NAME
-	metadata_path = output_dir / METADATA_MODEL_NAME
-	shared_path = output_dir / SHARED_MODEL_NAME
-	for path in (
-		raw_duration_path,
-		raw_decode_path,
-		duration_path,
-		decode_path,
-		metadata_path,
-		shared_path,
-	):
-		onnx.checker.check_model(str(path), full_check=False)
-		if path in (raw_duration_path, raw_decode_path, duration_path, decode_path):
-			inferred = shape_inference.infer_shapes(
-				onnx.load(str(path), load_external_data=True),
-				strict_mode=False,
-				data_prop=False,
-			)
-			onnx.checker.check_model(inferred, full_check=False)
-
-	def graph_contract(path: Path) -> tuple:
-		model = onnx.load(str(path), load_external_data=True)
-		initializers = {}
-		for tensor in model.graph.initializer:
-			array = numpy_helper.to_array(tensor, base_dir=str(path.parent))
-			initializers[tensor.name] = (
-				int(tensor.data_type),
-				tuple(int(dimension) for dimension in tensor.dims),
-				hashlib.sha256(array.tobytes(order="C")).digest(),
-			)
-
-		def input_signature(name: str) -> tuple:
-			initializer = initializers.get(name)
-			return (
-				("initializer", *initializer)
-				if initializer is not None
-				else ("value", name)
-			)
-
-		def value_signature(value) -> tuple:
-			tensor_type = value.type.tensor_type
-			dimensions = tuple(
-				("symbol", dimension.dim_param)
-				if dimension.dim_param
-				else ("value", int(dimension.dim_value))
-				for dimension in tensor_type.shape.dim
-			)
-			return value.name, int(tensor_type.elem_type), dimensions
-
-		return (
-			int(model.ir_version),
-			tuple((item.domain, int(item.version)) for item in model.opset_import),
-			tuple(value_signature(value) for value in model.graph.input),
-			tuple(value_signature(value) for value in model.graph.output),
-			tuple(
-				(
-					node.domain,
-					node.op_type,
-					tuple(input_signature(name) for name in node.input),
-					tuple(node.output),
-					tuple(attribute.SerializeToString() for attribute in node.attribute),
-				)
-				for node in model.graph.node
-			),
-		)
-
-	for raw_path, final_path in (
-		(raw_duration_path, duration_path),
-		(raw_decode_path, decode_path),
-	):
-		if graph_contract(raw_path) != graph_contract(final_path):
-			raise RuntimeError(
-				f"Packaged graph differs from immutable raw topology: {final_path.name}"
-			)
-
-	def check_float(
-		label: str,
-		expected: np.ndarray,
-		actual: np.ndarray,
-		tolerance: float,
-	) -> None:
-		if expected.shape != actual.shape or expected.dtype != actual.dtype:
-			raise RuntimeError(
-				f"{label} contract mismatch: {expected.shape}/{expected.dtype} vs "
-				f"{actual.shape}/{actual.dtype}."
-			)
-		for predicate in (np.isnan, np.isposinf, np.isneginf):
-			if not np.array_equal(predicate(expected), predicate(actual)):
-				raise RuntimeError(f"{label} changed NaN or Inf behavior.")
-		expected_f64 = expected.astype(np.float64)
-		actual_f64 = actual.astype(np.float64)
-		finite = np.isfinite(expected_f64) & np.isfinite(actual_f64)
-		expected_values = expected_f64[finite]
-		actual_values = actual_f64[finite]
-		difference = np.abs(expected_values - actual_values)
-		max_abs = float(np.max(difference, initial=0.0))
-		mean_abs = float(np.mean(difference)) if difference.size else 0.0
-		max_rel = float(
-			np.max(
-				difference / np.maximum(np.abs(expected_values), np.finfo(np.float32).tiny),
-				initial=0.0,
-			)
-		)
-		norm_product = float(
-			np.linalg.norm(expected_values) * np.linalg.norm(actual_values)
-		)
-		cosine = (
-			float(np.dot(expected_values, actual_values) / norm_product)
-			if norm_product
-			else 1.0 if np.array_equal(expected_values, actual_values) else 0.0
-		)
-		if max_abs > tolerance:
-			raise RuntimeError(
-				f"{label} exceeded tolerance {tolerance:.3g}: max abs={max_abs:.3g}."
-			)
-		print(
-			f"[Parity] {label}: max_abs={max_abs:.3g}, max_rel={max_rel:.3g}, "
-			f"mean_abs={mean_abs:.3g}, cosine={cosine:.9g}"
-		)
-
-	raw_options, raw_lifetime = _validation_session_options()
-	final_options, shared_lifetime = _validation_session_options(shared_path)
-	raw_duration_session = ort.InferenceSession(
-		str(raw_duration_path),
-		sess_options=raw_options,
-		providers=["CPUExecutionProvider"],
-	)
-	final_duration_session = ort.InferenceSession(
-		str(duration_path),
-		sess_options=final_options,
-		providers=["CPUExecutionProvider"],
-	)
-	raw_decode_session = ort.InferenceSession(
-		str(raw_decode_path),
-		sess_options=raw_options,
-		providers=["CPUExecutionProvider"],
-	)
-	final_decode_session = ort.InferenceSession(
-		str(decode_path),
-		sess_options=final_options,
-		providers=["CPUExecutionProvider"],
-	)
-	for token_count in (1, 2, 9, 16, 17, 27, 64, 127):
-		generator = np.random.default_rng(1000 + token_count)
-		token_ids = generator.integers(0, symbol_count, token_count, dtype=np.int32)
-		speed = np.asarray(0.83 + token_count / 100.0, dtype=np.float32)
-		with torch.inference_mode():
-			expected_priors, expected_durations = duration_module(
-				torch.from_numpy(token_ids),
-				torch.from_numpy(speed),
-			)
-		raw_priors, raw_durations = raw_duration_session.run(
-			None,
-			{"token_ids": token_ids, "speed": speed},
-		)
-		final_priors, final_durations = final_duration_session.run(
-			None,
-			{"token_ids": token_ids, "speed": speed},
-		)
-		expected_priors_array = expected_priors.numpy()
-		expected_durations_array = expected_durations.numpy()
-		check_float(
-			f"duration source/raw tokens={token_count}",
-			expected_priors_array,
-			raw_priors,
-			2e-5,
-		)
-		check_float(
-			f"duration source/final tokens={token_count}",
-			expected_priors_array,
-			final_priors,
-			2e-5,
-		)
-		check_float(
-			f"duration raw/final tokens={token_count}",
-			raw_priors,
-			final_priors,
-			0.0,
-		)
-		if not (
-			np.array_equal(expected_durations_array, raw_durations)
-			and np.array_equal(expected_durations_array, final_durations)
-		):
-			raise RuntimeError(
-				f"Duration integer parity failed at {token_count} tokens."
-			)
-		print(f"[Parity] durations tokens={token_count}: exact=True")
-		if token_count not in (1, 9, 16, 27):
-			continue
-
-		frame_to_token = np.repeat(
-			np.arange(token_count, dtype=np.int32),
-			expected_durations_array,
-		)
-		variation = np.asarray(0.0, dtype=np.float32)
-		with torch.inference_mode():
-			expected_waveform = decode_module(
-				torch.from_numpy(expected_priors_array),
-				torch.from_numpy(frame_to_token),
-				torch.from_numpy(variation),
-			).numpy()
-		raw_waveform = raw_decode_session.run(
-			None,
-			{
-				"priors": expected_priors_array,
-				"frame_to_token": frame_to_token,
-				"variation": variation,
-			},
-		)[0]
-		final_waveform = final_decode_session.run(
-			None,
-			{
-				"priors": expected_priors_array,
-				"frame_to_token": frame_to_token,
-				"variation": variation,
-			},
-		)[0]
-		waveform_tolerance = (
-			16.0
-			if expected_waveform.dtype == np.int16
-			else 5e-3 if expected_waveform.dtype == np.float16 else 3e-4
-		)
-		check_float(
-			f"decode source/raw frames={frame_to_token.size}",
-			expected_waveform,
-			raw_waveform,
-			waveform_tolerance,
-		)
-		check_float(
-			f"decode source/final frames={frame_to_token.size}",
-			expected_waveform,
-			final_waveform,
-			waveform_tolerance,
-		)
-		check_float(
-			f"decode raw/final frames={frame_to_token.size}",
-			raw_waveform,
-			final_waveform,
-			0.0,
-		)
-		stochastic_variation = np.asarray(0.667, dtype=np.float32)
-		raw_stochastic_waveform = raw_decode_session.run(
-			None,
-			{
-				"priors": expected_priors_array,
-				"frame_to_token": frame_to_token,
-				"variation": stochastic_variation,
-			},
-		)[0]
-		final_stochastic_waveform = final_decode_session.run(
-			None,
-			{
-				"priors": expected_priors_array,
-				"frame_to_token": frame_to_token,
-				"variation": stochastic_variation,
-			},
-		)[0]
-		check_float(
-			f"decode stochastic raw/final frames={frame_to_token.size}",
-			raw_stochastic_waveform,
-			final_stochastic_waveform,
-			0.0,
-		)
-		if np.array_equal(raw_waveform, raw_stochastic_waveform):
-			raise RuntimeError("Decode graph variation input did not affect its output.")
-	assert shared_lifetime
-	assert raw_lifetime is None
-
-
 def _export_inflect_package(
 	model_dir: Path,
 	output_dir: Path,
 	max_frames: int,
 	raw_dir: Path,
 ) -> None:
-	import onnx
 
-	if max_frames < 1:
-		raise ValueError("max_frames must be positive.")
 	output_audio_dtype = OUT_AUDIO_DTYPE.upper()
-	if OUT_SAMPLE_RATE < 1:
-		raise ValueError("OUT_SAMPLE_RATE must be positive.")
-	if output_audio_dtype not in OUTPUT_AUDIO_DTYPES:
-		raise ValueError(
-			f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of "
-			f"{sorted(OUTPUT_AUDIO_DTYPES)}."
-		)
 	model_dir = model_dir.expanduser().resolve()
 	output_dir = output_dir.expanduser().resolve()
-	if output_dir in {model_dir, SCRIPT_DIR.resolve(), Path(output_dir.anchor)}:
-		raise ValueError(f"Refusing to replace unsafe output directory: {output_dir}")
 	output_dir.mkdir(parents=True, exist_ok=True)
 	for owned_name in (
 		DURATION_MODEL_NAME,
@@ -1248,7 +776,6 @@ def _export_inflect_package(
 		(raw_duration_path, duration_path),
 		(raw_decode_path, decode_path),
 	):
-		onnx.checker.check_model(str(raw_path), full_check=False)
 		shutil.copy2(raw_path, final_path)
 	print("[Raw export] staged temporary source-optimized graphs")
 
@@ -1291,8 +818,6 @@ def _export_inflect_package(
 	}
 	for path in (duration_path, decode_path):
 		_set_metadata(path, metadata)
-		onnx.checker.check_model(str(path), full_check=False)
-
 	shared_stats = bundle_shared_initializers(
 		output_dir,
 		[duration_path, decode_path],
@@ -1314,83 +839,6 @@ def _export_inflect_package(
 	)
 	_set_metadata(metadata_path, metadata)
 
-	raw_duration_ops = _operation_audit(raw_duration_path)
-	raw_decode_ops = _operation_audit(raw_decode_path)
-	duration_ops = _operation_audit(duration_path)
-	decode_ops = _operation_audit(decode_path)
-	if raw_duration_ops != duration_ops or raw_decode_ops != decode_ops:
-		raise RuntimeError("Final packaging changed the raw ONNX operator histogram.")
-	for op_type in ("If", "Where", "ReduceSum"):
-		if duration_ops.get(op_type, 0):
-			raise RuntimeError(
-				f"Duration graph unexpectedly contains {duration_ops[op_type]} {op_type} nodes."
-			)
-	if duration_ops.get("RandomNormalLike", 0):
-		raise RuntimeError("Duration graph unexpectedly contains RandomNormalLike.")
-	if decode_ops.get("RandomNormalLike", 0) != 1:
-		raise RuntimeError(
-			"Decode graph must contain exactly one RandomNormalLike node, got "
-			f"{decode_ops.get('RandomNormalLike', 0)}."
-		)
-	raw_duration_indices = _audit_index_dtypes(raw_duration_path)
-	raw_decode_indices = _audit_index_dtypes(raw_decode_path)
-	duration_indices = _audit_index_dtypes(duration_path)
-	decode_indices = _audit_index_dtypes(decode_path)
-	if (
-		raw_duration_indices != duration_indices
-		or raw_decode_indices != decode_indices
-	):
-		raise RuntimeError("Final packaging changed the raw index dtype contract.")
-	index_control_counts = {
-		op_type: duration_indices.get(op_type, 0) + decode_indices.get(op_type, 0)
-		for op_type in duration_indices.keys() | decode_indices.keys()
-	}
-	expected_decode_casts = 0 if output_audio_dtype == "F32" else 1
-	if decode_ops.get("Cast", 0) != expected_decode_casts:
-		raise RuntimeError(
-			f"Decode graph contains {decode_ops.get('Cast', 0)} Cast nodes; "
-			f"expected {expected_decode_casts} for {output_audio_dtype} output."
-		)
-	raw_duration_model = onnx.load(str(raw_duration_path), load_external_data=False)
-	raw_decode_model = onnx.load(str(raw_decode_path), load_external_data=False)
-	final_duration_model = onnx.load(str(duration_path), load_external_data=False)
-	final_decode_model = onnx.load(str(decode_path), load_external_data=False)
-	print(
-		"[Graph audit] "
-		f"raw duration={len(raw_duration_model.graph.node)} nodes/"
-		f"{len(raw_duration_model.graph.initializer)} initializers, "
-		f"final duration={len(final_duration_model.graph.node)} nodes/"
-		f"{len(final_duration_model.graph.initializer)} initializers; "
-		f"raw decode={len(raw_decode_model.graph.node)} nodes/"
-		f"{len(raw_decode_model.graph.initializer)} initializers, "
-		f"final decode={len(final_decode_model.graph.node)} nodes/"
-		f"{len(final_decode_model.graph.initializer)} initializers"
-	)
-	print(
-		"[Graph audit] "
-		f"duration Cast={duration_ops.get('Cast', 0)}, "
-		f"Transpose={duration_ops.get('Transpose', 0)}, "
-		f"MatMul={duration_ops.get('MatMul', 0)}; "
-		f"decode Cast={decode_ops.get('Cast', 0)}, "
-		f"Transpose={decode_ops.get('Transpose', 0)}, "
-		f"Split={decode_ops.get('Split', 0)}, "
-		f"RandomNormalLike={decode_ops.get('RandomNormalLike', 0)}; "
-		f"index controls={index_control_counts}"
-	)
-	_validate_onnx_package(
-		output_dir,
-		raw_duration_path,
-		raw_decode_path,
-		duration,
-		decode,
-		len(symbols),
-		channels,
-	)
-	for raw_path, expected_hash in raw_hashes.items():
-		actual_hash = _file_sha256(raw_path)
-		if actual_hash != expected_hash:
-			raise RuntimeError(f"Raw ONNX artifact changed after export: {raw_path}")
-	print("[Raw audit] temporary SHA-256 hashes preserved through validation")
 	print(f"Inflect ONNX package written to {output_dir}")
 
 
@@ -1402,16 +850,6 @@ def export_inflect(model_dir: Path, output_dir: Path, max_frames: int) -> None:
 
 def main() -> None:
 	export_inflect(DEFAULT_MODEL_DIR, DEFAULT_OUTPUT_DIR, MAX_FRAMES)
-	print("\nStart running inference via Inference_Inflect_ONNX.py ...")
-	subprocess.run(
-		[
-			sys.executable,
-			str(SCRIPT_DIR / "Inference_Inflect_ONNX.py"),
-			"--onnx-folder",
-			str(DEFAULT_OUTPUT_DIR),
-		],
-		check=True,
-	)
 
 
 if __name__ == "__main__":

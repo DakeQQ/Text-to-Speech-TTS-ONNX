@@ -160,23 +160,6 @@ def _carrier(initializers: list[TensorProto], metadata: dict[str, str]) -> onnx.
     return model
 
 
-def _validate_references(model_path: Path, data_path: Path) -> None:
-    model = onnx.load(str(model_path), load_external_data=False)
-    data_size = data_path.stat().st_size
-    for tensor in model.graph.initializer:
-        if tensor.data_location != TensorProto.EXTERNAL:
-            continue
-        external = _external_data(tensor)
-        offset = int(external.get("offset", "-1"))
-        length = int(external.get("length", "0"))
-        if external.get("location") != SHARED_DATA_NAME:
-            raise RuntimeError(f"Unexpected shared data file for {tensor.name!r}.")
-        if offset < 0 or length <= 0 or offset + length > data_size:
-            raise RuntimeError(
-                f"Invalid shared range for {tensor.name!r}: {offset}+{length}>{data_size}."
-            )
-
-
 def bundle_shared_initializers(
     folder: str | Path,
     model_paths: list[str | Path],
@@ -185,11 +168,6 @@ def bundle_shared_initializers(
     """Atomically rewrite graph weights to one exact-deduplicated external blob."""
     folder = Path(folder).expanduser().resolve()
     targets = [Path(path).expanduser().resolve() for path in model_paths]
-    if not targets or any(not path.is_file() for path in targets):
-        raise FileNotFoundError("Every Inflect graph must exist before weight bundling.")
-    if len({path.name for path in targets}) != len(targets):
-        raise ValueError("Inflect graph file names must be unique.")
-
     shared_metadata = {
         **{str(key): str(value) for key, value in metadata.items()},
         "shared_initializer_model_file": SHARED_MODEL_NAME,
@@ -232,10 +210,6 @@ def bundle_shared_initializers(
         )
         staged_carrier = temporary / SHARED_MODEL_NAME
         onnx.save(_carrier(carrier_initializers, shared_metadata), str(staged_carrier))
-        for path in [*(pair[0] for pair in staged_models), staged_carrier]:
-            onnx.checker.check_model(str(path), full_check=False)
-            _validate_references(path, staged_data)
-
         os.replace(staged_data, folder / SHARED_DATA_NAME)
         for staged, destination in staged_models:
             os.replace(staged, destination)

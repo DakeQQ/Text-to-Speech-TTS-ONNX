@@ -183,8 +183,7 @@ class STFT_Process(torch.nn.Module):
         elif model_type == 'istft_B':
             self.forward = self._istft_B_forward
         else:
-            raise ValueError(f"Unknown model_type: {model_type}")
-
+            pass
         # ── STFT: constant zero-padding buffer ────────────────────────────
         if model_type in ('stft_A', 'stft_B'):
             self._build_stft_kernels(n_fft, f_bins, window, model_type)

@@ -50,20 +50,12 @@ def parse_args() -> argparse.Namespace:
 
 def io_dtype(argument: object) -> np.dtype:
     match = re.fullmatch(r"tensor\(([^)]+)\)", argument.type)
-    if match is None:
-        raise TypeError(f"Unsupported ONNX type {argument.type!r} for {argument.name!r}.")
     element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
     return np.dtype(onnx.helper.tensor_dtype_to_np_dtype(element_type))
 
 
 def load_mel(argument: object) -> np.ndarray:
-    if MEL_FRAMES < 1:
-        raise ValueError("MEL_FRAMES must be at least one.")
-    if len(argument.shape) != 3:
-        raise ValueError(f"BigVGAN input must be rank 3, got {argument.shape}.")
     batch, channels, frames = argument.shape
-    if not isinstance(batch, int) or not isinstance(channels, int):
-        raise ValueError(f"BigVGAN batch and mel dimensions must be static: {argument.shape}.")
     if MEL_PATH is None:
         mel = np.zeros((batch, channels, MEL_FRAMES), dtype=io_dtype(argument))
     else:
@@ -71,12 +63,6 @@ def load_mel(argument: object) -> np.ndarray:
         if mel.ndim == 2:
             mel = mel[None, :, :]
         mel = np.asarray(mel, dtype=io_dtype(argument))
-    if mel.ndim != 3 or mel.shape[:2] != (batch, channels):
-        raise ValueError(
-            f"Mel tensor must have shape [{batch}, {channels}, T], got {mel.shape}."
-        )
-    if isinstance(frames, int) and mel.shape[2] != frames:
-        raise ValueError(f"Static BigVGAN input requires {frames} frames, got {mel.shape[2]}.")
     return np.ascontiguousarray(mel)
 
 
@@ -93,18 +79,7 @@ def main() -> None:
         "out_sample_rate",
         "model_file_name_vocoder",
     }
-    if set(metadata) != expected_keys:
-        raise ValueError(
-            "BigVGAN metadata keys do not match the runtime contract: "
-            f"missing={sorted(expected_keys - set(metadata))}, "
-            f"extra={sorted(set(metadata) - expected_keys)}."
-        )
-    if metadata["graph_layout"] != "mel_to_waveform":
-        raise ValueError("BigVGAN mel_to_waveform metadata is required.")
-
     vocoder_path = folder / metadata["model_file_name_vocoder"]
-    if not vocoder_path.is_file():
-        raise FileNotFoundError(vocoder_path)
     options = ort.SessionOptions()
     options.inter_op_num_threads = MAX_THREADS
     options.intra_op_num_threads = MAX_THREADS
@@ -123,8 +98,6 @@ def main() -> None:
     )
     inputs = session.get_inputs()
     outputs = session.get_outputs()
-    if len(inputs) != 1 or len(outputs) != 1:
-        raise RuntimeError("BigVGAN must expose exactly one input and one output.")
     mel = load_mel(inputs[0])
     print_progress(f"Decoding mel tensor: {mel.shape}")
     waveform = session.run([outputs[0].name], {inputs[0].name: mel})[0].reshape(-1)

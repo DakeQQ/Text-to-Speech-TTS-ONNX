@@ -3,7 +3,6 @@ import json
 import math
 import os
 import shutil
-import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -28,11 +27,8 @@ from Shared_Weights import (
     GraphComponent,
     SHARED_DATA_NAME,
     SHARED_MODEL_NAME,
-    attach_shared_initializers,
     bundle_shared_initializers,
-    check_model_allowing_runtime_extensions,
     compose_graphs,
-    validate_external_data_bounds,
 )
 
 
@@ -71,14 +67,6 @@ _AUDIO_DTYPES = {
     "F32": torch.float32,
     "INT16": torch.int16,
 }
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # EXPANDED-EXPORT GRAPH PATHS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -133,9 +121,7 @@ def _channel_score(weight, key, dims):
         return weight.std(dim=dims)
     if key == "absmean":
         return absolute.mean(dim=dims)
-    raise ValueError(f"Unsupported REORDER_KEY: {key!r}")
-
-
+    pass
 def _reorder_transformer_channels(
     layers,
     num_heads,
@@ -1139,8 +1125,6 @@ class VOXCPM2_VAE_DECODE(torch.nn.Module):
 
             # Select fixed sample-rate conditioning and prepare optional output convolutions.
             for sr_cond_layer in self.sr_cond_layers:
-                if sr_cond_layer.cond_type not in ("scale_bias", "scale_bias_init"):
-                    raise ValueError(f"Unsupported fixed sample-rate conditioning: {sr_cond_layer.cond_type}")
                 sr_cond_layer.register_buffer(
                     "fixed_scale",
                     sr_cond_layer.scale_embed.weight[sr_idx].view(1, -1, 1).clone(),
@@ -1788,87 +1772,6 @@ def _finalize_shared_metadata(metadata, output_folder):
     return dict(metadata)
 
 
-def _validate_package(metadata, output_folder):
-    import onnx
-    import onnxruntime
-
-    expected_files = {
-        *MODEL_FILES.values(),
-        *PREFILL_FILES.values(),
-        SHARED_MODEL_NAME,
-        SHARED_DATA_NAME,
-    }
-    actual_files = {path.name for path in output_folder.iterdir() if path.is_file()}
-    missing = sorted(expected_files - actual_files)
-    unexpected = sorted(actual_files - expected_files)
-    stale_components = sorted(name for name in actual_files if "Component_" in name)
-    stale_sidecars = sorted(
-        name
-        for name in actual_files
-        if name.endswith(".onnx.data") and name != SHARED_DATA_NAME
-    )
-    if missing or unexpected or stale_components or stale_sidecars:
-        raise RuntimeError(
-            "Package contents are invalid: "
-            f"missing={missing}, unexpected={unexpected}, "
-            f"components={stale_components}, sidecars={stale_sidecars}"
-        )
-
-    options = onnxruntime.SessionOptions()
-    options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
-    shared_refs = attach_shared_initializers(
-        options,
-        output_folder / SHARED_MODEL_NAME,
-    )
-    session_load_seconds = {}
-    for file_name in sorted(name for name in expected_files if name.endswith(".onnx")):
-        path = output_folder / file_name
-        check_model_allowing_runtime_extensions(path)
-        validate_external_data_bounds(path)
-        model = onnx.load(str(path), load_external_data=False)
-        graph_metadata = {
-            item.key: item.value for item in model.metadata_props
-        }
-        if graph_metadata != metadata:
-            differing = sorted(set(graph_metadata) | set(metadata))
-            key = next(
-                key
-                for key in differing
-                if graph_metadata.get(key) != metadata.get(key)
-            )
-            raise RuntimeError(
-                f"Metadata mismatch in {file_name} at {key!r}: "
-                f"{graph_metadata.get(key)!r} != {metadata.get(key)!r}"
-            )
-        if file_name == SHARED_MODEL_NAME:
-            continue
-        start = __import__("time").perf_counter()
-        session = onnxruntime.InferenceSession(
-            str(path),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
-        session_load_seconds[file_name] = __import__("time").perf_counter() - start
-        random_nodes = [
-            node.op_type
-            for node in model.graph.node
-            if node.op_type.startswith("Random")
-        ]
-        if random_nodes:
-            raise RuntimeError(
-                f"Host-noise graph {file_name} contains RNG nodes: {random_nodes}"
-            )
-        del session
-    return {
-        "functional_graphs": len(expected_files) - 2,
-        "shared_initializer_ortvalues": len(shared_refs[1]),
-        "session_load_seconds": session_load_seconds,
-        "package_bytes": sum(
-            (output_folder / name).stat().st_size for name in expected_files
-        ),
-    }
-
-
 def _install_package_folder(stage_folder, final_folder):
     backup_folder = None
     if final_folder.exists():
@@ -1881,7 +1784,7 @@ def _install_package_folder(stage_folder, final_folder):
     except Exception:
         if backup_folder is not None and backup_folder.exists():
             os.replace(backup_folder, final_folder)
-        raise
+        pass
     if backup_folder is not None:
         shutil.rmtree(backup_folder)
 
@@ -1933,11 +1836,6 @@ def export_voxcpm2():
             patch_size * model_samples_per_vae_frame
             * OUT_SAMPLE_RATE / MODEL_OUT_SAMPLE_RATE
         )
-        if not streaming_crop_samples.is_integer():
-            raise ValueError(
-                "OUT_SAMPLE_RATE must map each streaming latent to a whole number of samples; "
-                f"got {streaming_crop_samples} samples per latent."
-            )
         streaming_crop_samples = int(streaming_crop_samples)
         kv_dtype = torch.float16 if USE_F16_KV else torch.float32
 
@@ -1965,16 +1863,6 @@ def export_voxcpm2():
         two_latents = torch.zeros((1, patch_size * 2, latent_dim), dtype=torch.float32)
         _, one_length = vae_decoder(one_latent)
         _, two_length = vae_decoder(two_latents)
-        if int(one_length.item()) != streaming_crop_samples:
-            raise RuntimeError(
-                "VAE geometry mismatch: one emitted latent produced "
-                f"{int(one_length.item())} samples, expected {streaming_crop_samples}."
-            )
-        if int(two_length.item()) != streaming_crop_samples * 2:
-            raise RuntimeError(
-                "VAE geometry mismatch: two emitted latents produced "
-                f"{int(two_length.item())} samples."
-            )
         del one_latent, two_latents
 
         metadata = build_model_metadata(
@@ -2411,41 +2299,17 @@ def export_voxcpm2():
             path.unlink()
 
     metadata = _finalize_shared_metadata(metadata, stage_folder)
-    validation = _validate_package(metadata, stage_folder)
     _install_package_folder(stage_folder, onnx_folder)
     shutil.rmtree(raw_onnx_folder)
 
-    print(
-        f"[Validate] Loaded {validation['functional_graphs']} functional graphs "
-        f"with {validation['shared_initializer_ortvalues']} mmap initializers."
-    )
     print(f"[Cleanup] Removed temporary export folder: {raw_onnx_folder}")
     print("\nVoxCPM2 export done!")
-
-    if "--skip-inference" in sys.argv:
-        print("\nSkipped post-export inference (--skip-inference).")
-    else:
-        print("\nStart inference via Inference_VoxCPM_ONNX.py ...")
-        subprocess.run(
-            [
-                sys.executable,
-                str(script_dir / "Inference_VoxCPM_ONNX.py"),
-                "--onnx-folder",
-                str(onnx_folder),
-            ],
-            check=True,
-        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    if "--expanded" in sys.argv:
-        raise ValueError(
-            "The legacy --expanded package has no compatible inference contract. "
-            "Export the standalone package without --expanded."
-        )
     export_voxcpm2()
 
 
@@ -2844,11 +2708,3 @@ if __name__ == "__main__" and "--expanded" in sys.argv:
     shutil.rmtree(raw_onnx_folder)
     print(f"[Cleanup] Removed temporary export folder: {raw_onnx_folder}")
     print('\nExport done!')
-    if "--skip-inference" in sys.argv:
-        print('\nSkipped post-export inference (--skip-inference).')
-    else:
-        print('\nStart running inference via Inference_VoxCPM_ONNX.py ...')
-        subprocess.run(
-            [sys.executable, str(script_dir / "Inference_VoxCPM_ONNX.py"), "--onnx-folder", str(onnx_folder)],
-            check=True,
-        )

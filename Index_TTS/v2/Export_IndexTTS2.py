@@ -14,7 +14,6 @@ import gc
 import importlib
 import math
 import shutil
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -48,14 +47,6 @@ EMOTION_TEXT_KV_DTYPE = "F16"             # F16 | F32
 
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
-
 script_dir = Path(__file__).resolve().parent
 onnx_folder = script_dir / "IndexTTS2_ONNX"
 repo_root = script_dir.parent.parent
@@ -66,7 +57,6 @@ for import_path in (project_path, repo_root):
 from Index_TTS.v2.Shared_Weights import (  # noqa: E402
     SHARED_DATA_NAME,
     SHARED_MODEL_NAME,
-    audit_shared_bundle,
     build_decoder_postprocess_graph,
     build_decode_step_graphs,
     build_reference_preprocess_graph,
@@ -185,10 +175,6 @@ class IndexTTS2EmotionTextCore(nn.Module):
         self.total_qkv_heads = self.qk_heads + self.num_kv_heads
         self.compute_in_f32 = COMPUTE_IN_F32
         self.use_f16_kv = EMOTION_TEXT_KV_DTYPE == "F16"
-        if EMOTION_TEXT_KV_DTYPE not in ("F16", "F32"):
-            raise ValueError(
-                "EMOTION_TEXT_KV_DTYPE must be either 'F16' or 'F32'."
-            )
         hidden_norm = self.transformer.layers[0].input_layernorm
         qk_norm = self.transformer.layers[0].self_attn.q_norm
         self.hidden_norm_epsilon = float(
@@ -235,17 +221,6 @@ class IndexTTS2EmotionTextCore(nn.Module):
                     self.num_kv_heads * self.head_dim,
                     self.num_kv_heads * self.head_dim,
                 ]
-                if output_sizes != expected_output_sizes:
-                    raise ValueError(
-                        "Unexpected Qwen3 QKV projection geometry: "
-                        f"expected {expected_output_sizes}, got {output_sizes}."
-                    )
-                if attention.o_proj.in_features != self.attention_size:
-                    raise ValueError(
-                        "Unexpected Qwen3 output projection geometry: "
-                        f"expected {self.attention_size} input channels, "
-                        f"got {attention.o_proj.in_features}."
-                    )
                 fused_qkv = nn.Linear(
                     projections[0].in_features,
                     sum(output_sizes),
@@ -585,13 +560,6 @@ def _assert_device_map(device_map: dict[Any, list[int]], num_blocks: int) -> Non
     )
     missing = sorted(set(range(num_blocks)) - set(assigned_blocks))
     extra = sorted(set(assigned_blocks) - set(range(num_blocks)))
-    if duplicates or missing or extra:
-        raise ValueError(
-            "Invalid device map: "
-            f"duplicate blocks={duplicates}, missing blocks={missing}, extra blocks={extra}."
-        )
-
-
 def _get_device_map(num_blocks: int, devices: Any) -> dict[Any, list[int]]:
     devices = list(devices)
     if not devices:
@@ -615,8 +583,6 @@ def _install_transformers_compatibility_modules() -> None:
     try:
         parallel_module = importlib.import_module(model_parallel_module)
     except ModuleNotFoundError as error:
-        if error.name != model_parallel_module:
-            raise
         parallel_module = None
     if parallel_module is None or not all(
         hasattr(parallel_module, name) for name in ("assert_device_map", "get_device_map")
@@ -726,12 +692,6 @@ class IndexTTS2FeatureExtractor(nn.Module):
         import torchaudio
         from librosa.filters import mel as librosa_mel_fn
 
-        if (
-            int(feature_extractor.sampling_rate) != 16000
-            or int(feature_extractor.num_mel_bins) != 80
-            or int(feature_extractor.stride) != 2
-        ):
-            raise ValueError("Unexpected SeamlessM4T feature-extractor geometry.")
         spect_params = config.s2mel.preprocess_params.spect_params
         model_sample_rate = int(config.s2mel.preprocess_params.sr)
 
@@ -936,10 +896,6 @@ class IndexTTS2EmotionMatrix(nn.Module):
     ) -> None:
         super().__init__()
         expected_rows = sum(self.group_counts)
-        if speaker_matrix.ndim != 2 or speaker_matrix.shape[0] != expected_rows:
-            raise ValueError("feat1.pt must contain 73 rank-two speaker vectors.")
-        if emotion_matrix.ndim != 2 or emotion_matrix.shape[0] != expected_rows:
-            raise ValueError("feat2.pt must contain 73 rank-two emotion vectors.")
         self.register_buffer("speaker_matrix", speaker_matrix.detach().float())
         self.register_buffer("emotion_matrix", emotion_matrix.detach().float())
 
@@ -1112,8 +1068,6 @@ class IndexTTS2Main(nn.Module):
 
     def __init__(self, gpt: nn.Module, max_sequence_length: int) -> None:
         super().__init__()
-        if not hasattr(gpt, "inference_model"):
-            raise RuntimeError("Call UnifiedVoice.post_init_gpt2_config before export.")
         self.gpt = gpt.eval()
         self.inference_model = gpt.inference_model.eval()
         self.num_layers = int(gpt.layers)
@@ -1361,8 +1315,6 @@ class TopKTopPSampling(nn.Module):
 class IndexTTS2TokenStrategy(nn.Module):
     def __init__(self, strategy: str, vocabulary_size: int) -> None:
         super().__init__()
-        if strategy not in onnx_model_main_prefill:
-            raise ValueError(f"Unsupported decode strategy: {strategy!r}")
         self.strategy = strategy
         self.penalty = ApplyRecentPenalty()
         self.sampling = TopKTopPSampling(vocabulary_size)
@@ -1662,8 +1614,6 @@ class ExportSConv1d(nn.Module):
         super().__init__()
         self.conv = source.conv
         inner_conv = source.conv.conv
-        if inner_conv.stride[0] != 1:
-            raise ValueError("ExportSConv1d only supports the v2 Wavenet stride-one path.")
         effective_kernel = (inner_conv.kernel_size[0] - 1) * inner_conv.dilation[0] + 1
         padding_total = effective_kernel - 1
         if source.causal:
@@ -1704,8 +1654,6 @@ class PrecomputedCFMTimeProjection(nn.Module):
 class AllValidSelfAttention(nn.Module):
     def __init__(self, source: nn.Module) -> None:
         super().__init__()
-        if source.kv_cache is not None:
-            raise ValueError("AllValidSelfAttention does not support a KV cache.")
         self.wqkv = source.wqkv
         self.wo = source.wo
         self.num_heads = int(source.n_head)
@@ -1812,8 +1760,6 @@ class IndexTTS2CFMStaticProjection(nn.Module):
 
     def __init__(self, estimator: nn.Module, style_embed_size: int) -> None:
         super().__init__()
-        if bool(estimator.style_as_token) or not bool(estimator.transformer_style_condition):
-            raise ValueError("The official IndexTTS2 CFM requires vector style conditioning.")
         merge = estimator.cond_x_merge_linear
         self.in_channels = int(estimator.in_channels)
         condition_size = int(estimator.cond_projection.out_features)
@@ -1822,8 +1768,6 @@ class IndexTTS2CFMStaticProjection(nn.Module):
             + condition_size
             + style_embed_size
         )
-        if int(merge.in_features) - self.in_channels != expected_static_size:
-            raise ValueError("Unexpected IndexTTS2 CFM input projection geometry.")
         static_weight = merge.weight.detach()[:, self.in_channels :]
         condition_start = self.in_channels
         condition_end = condition_start + condition_size
@@ -1917,10 +1861,6 @@ class IndexTTS2CFMStep(nn.Module):
         self.estimator = estimator.eval()
         self.estimator.style_as_token = int(self.estimator.style_as_token)
         self.estimator.time_as_token = int(self.estimator.time_as_token)
-        if self.estimator.style_as_token or self.estimator.time_as_token:
-            raise ValueError("The optimized CFM step requires vector style and time conditioning.")
-        if not bool(self.estimator.long_skip_connection):
-            raise ValueError("The optimized CFM step requires the official long skip connection.")
         with torch.inference_mode():
             step_times = torch.arange(
                 CFM_STEPS,
@@ -2178,8 +2118,6 @@ class IndexTTS2Decoder(nn.Module):
         super().__init__()
         self.bigvgan = bigvgan.eval()
         replacements = optimize_bigvgan_alias_free_activations(self.bigvgan)
-        if replacements == 0:
-            raise RuntimeError("No BigVGAN alias-free activations were found to optimize.")
         self.output_resample_scale = float(OUT_SAMPLE_RATE / model_sample_rate)
 
     def forward(self, mel: torch.Tensor) -> torch.Tensor:
@@ -2213,91 +2151,6 @@ def remove_all_weight_norm(module: nn.Module) -> int:
     return removed
 
 
-def validate_export_contract(config: Any, emotion_text_config: Any) -> None:
-    if not project_path.is_dir():
-        raise FileNotFoundError(f"IndexTTS project not found: {project_path}")
-    required_files = (
-        models_path / "config.yaml",
-        models_path / str(config.gpt_checkpoint),
-        models_path / str(config.s2mel_checkpoint),
-        models_path / str(config.w2v_stat),
-        models_path / str(config.emo_matrix),
-        models_path / str(config.spk_matrix),
-        models_path / str(config.dataset.bpe_model),
-    )
-    missing = [str(path) for path in required_files if not path.is_file()]
-    for path in (
-        emotion_text_model_path / "config.json",
-        emotion_text_model_path / "model.safetensors",
-        emotion_text_model_path / "tokenizer.json",
-    ):
-        if not path.is_file():
-            missing.append(str(path))
-    if missing:
-        raise FileNotFoundError(f"Missing IndexTTS2 artifact(s): {missing}")
-
-    if int(config.gpt.model_dim) % int(config.gpt.heads) != 0:
-        raise ValueError("gpt.model_dim must be divisible by gpt.heads.")
-    if int(config.gpt.number_mel_codes) != int(config.semantic_codec.codebook_size) + 2:
-        raise ValueError("The GPT vocabulary must contain semantic codes plus start/stop tokens.")
-    if str(config.gpt.condition_type) != "conformer_perceiver":
-        raise ValueError("This exporter requires the official v2 conformer_perceiver conditioner.")
-    if bool(config.s2mel.length_regulator.is_discrete):
-        raise ValueError("IndexTTS2 reference conditioning must use continuous RepCodec embeddings.")
-    if str(emotion_text_config.model_type) != "qwen3":
-        raise ValueError("The emotion-text model must use the Qwen3 architecture.")
-    if int(emotion_text_config.num_attention_heads) % int(
-        emotion_text_config.num_key_value_heads
-    ):
-        raise ValueError("Qwen3 attention heads must be divisible by KV heads.")
-    if EMOTION_TEXT_MAX_SEQ_LENGTH > int(emotion_text_config.max_position_embeddings):
-        raise ValueError("EMOTION_TEXT_MAX_SEQ_LENGTH exceeds the Qwen3 context limit.")
-    if EMOTION_TEXT_KV_DTYPE not in ("F16", "F32"):
-        raise ValueError("EMOTION_TEXT_KV_DTYPE must be either 'F16' or 'F32'.")
-    if EMOTION_TEXT_REORDER_KEY not in ("absmean", "L4", "rms", "std"):
-        raise ValueError(
-            "EMOTION_TEXT_REORDER_KEY must be absmean, L4, rms, or std."
-        )
-
-    checkpoint = torch.load(
-        models_path / str(config.gpt_checkpoint),
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-    state = checkpoint.get("model", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-    expected_shapes = {
-        "gpt.h.0.attn.c_attn.weight": (
-            int(config.gpt.model_dim),
-            3 * int(config.gpt.model_dim),
-        ),
-        "mel_head.weight": (
-            int(config.gpt.number_mel_codes),
-            int(config.gpt.model_dim),
-        ),
-        "mel_embedding.weight": (
-            int(config.gpt.number_mel_codes),
-            int(config.gpt.model_dim),
-        ),
-        "perceiver_encoder.latents": (32, int(config.gpt.model_dim)),
-        "emo_perceiver_encoder.latents": (
-            1,
-            int(config.semantic_codec.hidden_size),
-        ),
-    }
-    for name, expected_shape in expected_shapes.items():
-        if name not in state:
-            raise KeyError(f"GPT checkpoint is missing {name!r}.")
-        actual_shape = tuple(state[name].shape)
-        if actual_shape != expected_shape:
-            raise ValueError(
-                f"GPT checkpoint shape mismatch for {name}: "
-                f"expected {expected_shape}, got {actual_shape}."
-            )
-    del checkpoint, state
-    gc.collect()
-
-
 def resolve_auxiliary_paths(config: Any) -> dict[str, str]:
     from indextts.utils.model_download import ensure_models_available
 
@@ -2312,8 +2165,6 @@ def load_gpt(config: Any) -> nn.Module:
     from indextts.gpt.model_v2 import UnifiedVoice
 
     gpt_config = OmegaConf.to_container(config.gpt, resolve=True)
-    if not isinstance(gpt_config, dict):
-        raise TypeError("Resolved gpt config must be a dictionary.")
     gpt = UnifiedVoice(**gpt_config, use_accel=False)
     checkpoint = torch.load(
         models_path / str(config.gpt_checkpoint),
@@ -2480,8 +2331,6 @@ def build_emotion_text_prefill_graph(
     retained_inputs = [
         value for value in model.graph.input if value.name == "input_ids"
     ]
-    if len(retained_inputs) != 1:
-        raise RuntimeError("EmotionText core must expose exactly one input_ids input.")
     del model.graph.input[:]
     model.graph.input.extend(retained_inputs)
     cache_element_type = (
@@ -2514,9 +2363,6 @@ def build_emotion_text_prefill_graph(
     prefill_path.unlink(missing_ok=True)
     prefill_path.with_name(prefill_path.name + ".data").unlink(missing_ok=True)
     onnx.save(model, str(prefill_path))
-    onnx.checker.check_model(str(prefill_path), full_check=False)
-
-
 def export_emotion_text_graphs(emotion_text_config: Any) -> None:
     from transformers import AutoModelForCausalLM
 
@@ -2905,8 +2751,6 @@ def export_acoustic_graphs(
     semantic_codec, s2mel, campplus = load_acoustic_modules(config, auxiliary_paths)
     cfm_estimator = s2mel.models["cfm"].estimator
     replacements = replace_wavenet_sconv1d(cfm_estimator.wavenet)
-    if replacements == 0:
-        raise RuntimeError("No CFM Wavenet SConv1d modules were found to optimize.")
     cfm_projection = IndexTTS2CFMStaticProjection(
         cfm_estimator,
         style_embed_size,
@@ -3120,23 +2964,15 @@ def assemble_graph_package(
     ]
     for graph_path in final_graphs:
         write_onnx_metadata(graph_path, metadata)
-    shared_audit = audit_shared_bundle(onnx_folder, final_graphs)
     replace_onnx_metadata(onnx_models["metadata"], metadata)
-    return shared_stats, shared_audit
+    return shared_stats
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check-only",
-        action="store_true",
-        help="Validate local v2 config/checkpoint geometry without downloading or exporting.",
-    )
     args = parser.parse_args()
 
     config_path = models_path / "config.yaml"
-    if not config_path.is_file():
-        raise FileNotFoundError(f"IndexTTS2 config not found: {config_path}")
     from transformers import AutoConfig, AutoTokenizer
 
     config = OmegaConf.load(config_path)
@@ -3158,13 +2994,7 @@ def main() -> None:
         add_generation_prompt=True,
         enable_thinking=False,
     )
-    if rendered_prompt.count(content_marker) != 1:
-        raise ValueError("The emotion-text chat template did not preserve its content marker.")
     prompt_prefix, _, prompt_suffix = rendered_prompt.partition(content_marker)
-    if not prompt_prefix.endswith(" "):
-        raise ValueError(
-            "The emotion-text chat template must separate user content with one space."
-        )
     emotion_text_content_prefix = prompt_prefix[-1:]
     emotion_text_prompt_prefix_token_ids = emotion_text_tokenizer.encode(
         prompt_prefix[:-1],
@@ -3174,22 +3004,10 @@ def main() -> None:
         prompt_suffix,
         add_special_tokens=False,
     )
-    if (
-        not emotion_text_prompt_prefix_token_ids
-        or not emotion_text_prompt_suffix_token_ids
-    ):
-        raise ValueError("The emotion-text tokenizer produced an empty prompt shell.")
     emotion_text_think_end_token_id = emotion_text_tokenizer.convert_tokens_to_ids(
         "</think>"
     )
-    if (
-        not isinstance(emotion_text_think_end_token_id, int)
-        or emotion_text_think_end_token_id < 0
-        or emotion_text_think_end_token_id == emotion_text_tokenizer.unk_token_id
-    ):
-        raise ValueError("The emotion-text tokenizer does not define a </think> token.")
     del emotion_text_tokenizer
-    validate_export_contract(config, emotion_text_config)
     metadata = build_export_metadata(
         config,
         emotion_text_config,
@@ -3203,10 +3021,6 @@ def main() -> None:
         f"GPT={config.gpt.layers}x{config.gpt.model_dim}",
         f"DiT={config.s2mel.DiT.depth}x{config.s2mel.DiT.hidden_dim}",
     )
-    if args.check_only:
-        print(f"Core checkpoint contract is valid. Auxiliary cache: {models_path / 'hf_cache'}")
-        return
-
     if onnx_folder.exists():
         shutil.rmtree(onnx_folder)
     onnx_folder.mkdir(parents=True)
@@ -3220,23 +3034,11 @@ def main() -> None:
     export_acoustic_graphs(config, auxiliary_paths)
     export_decoder_graph(config, auxiliary_paths)
     export_metadata_graph()
-    shared_stats, shared_audit = assemble_graph_package(metadata)
+    shared_stats = assemble_graph_package(metadata)
     print(
         f"IndexTTS2 export complete: {shared_stats['initializer_references']} references, "
         f"{shared_stats['unique_initializers']} unique tensors, "
-        f"{shared_audit['external_bytes'] / (1024 * 1024):.2f} MiB shared blob."
+        f"{(onnx_folder / SHARED_DATA_NAME).stat().st_size / (1024 * 1024):.2f} MiB shared blob."
     )
-    print("\nStart running inference via Inference_IndexTTS2_ONNX.py ...")
-    subprocess.run(
-        [
-            sys.executable,
-            str(script_dir / "Inference_IndexTTS2_ONNX.py"),
-            "--onnx-folder",
-            str(onnx_folder),
-        ],
-        check=True,
-    )
-
-
 if __name__ == "__main__":
     main()

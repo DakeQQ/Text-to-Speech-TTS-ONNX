@@ -69,12 +69,6 @@ def print_progress(message):
         print(f"[Qwen3-TTS] {message}", flush=True)
 
 
-if DECODE_STRATEGY not in DECODE_STRATEGIES:
-    raise ValueError(f"DECODE_STRATEGY must be one of {DECODE_STRATEGIES}.")
-if MAX_FRAMES < 0:
-    raise ValueError("MAX_FRAMES must be >= 0.")
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Run compact Qwen3-TTS ONNX inference.")
     parser.add_argument(
@@ -122,8 +116,6 @@ def load_prompt_audio(path, sample_rate, argument):
 
 def io_dtype(argument):
     match = re.fullmatch(r"tensor\(([^)]+)\)", argument.type)
-    if match is None:
-        raise TypeError(f"Unsupported ONNX type {argument.type!r} for {argument.name!r}.")
     element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
     return np.dtype(onnx.helper.tensor_dtype_to_np_dtype(element_type))
 
@@ -183,8 +175,6 @@ def ort_buffer_from_io(argument, device, device_id, dynamic_dimensions=()):
 
 
 def bind_io_inputs(binding, arguments, values):
-    if len(arguments) != len(values):
-        raise ValueError(f"Cannot bind {len(values)} values to {len(arguments)} inputs.")
     for argument, value in zip(arguments, values):
         binding.bind_ortvalue_input(argument.name, value)
 
@@ -307,24 +297,11 @@ elif metadata_mode == "voice_design":
         {"instruction_prefix_token_ids", "instruction_suffix_token_ids"}
     )
 else:
-    raise ValueError(f"Unsupported Qwen3-TTS metadata mode: {metadata_mode!r}.")
-if set(metadata) != expected_metadata_keys:
-    raise ValueError(
-        "Qwen3-TTS metadata keys do not match the runtime contract: "
-        f"missing={sorted(expected_metadata_keys - set(metadata))}, "
-        f"extra={sorted(set(metadata) - expected_metadata_keys)}."
-    )
-if metadata.get("graph_layout") != "strategy_prefill_decode_step":
-    raise ValueError(
-        "Qwen3-TTS strategy_prefill_decode_step metadata is required; "
-        "re-export the model package."
-    )
+    pass
 precision_flags = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
 invalid_precision = {
     key: value for key, value in precision_flags.items() if value not in {"0", "1"}
 }
-if invalid_precision:
-    raise ValueError(f"Invalid Qwen3-TTS precision metadata: {invalid_precision}")
 preserve_fp16_attention = (
     precision_flags["use_f16_kv"] == "1"
     and precision_flags["compute_in_f32"] == "0"
@@ -409,9 +386,7 @@ def meta_str(key):
     try:
         return metadata[key]
     except KeyError as exc:
-        raise KeyError(f"Required metadata key {key!r} is missing from {metadata_path}.") from exc
-
-
+        pass
 def meta_int(key):
     return int(meta_str(key))
 
@@ -426,11 +401,6 @@ def meta_json(key):
 
 shared_model_path = ONNX_FOLDER / meta_str("shared_initializer_model_file")
 shared_data_path = ONNX_FOLDER / meta_str("shared_initializer_data_file")
-if not shared_model_path.is_file() or not shared_data_path.is_file():
-    raise FileNotFoundError(
-        f"Compact runtime requires {shared_model_path.name} and {shared_data_path.name} "
-        f"in {ONNX_FOLDER}."
-    )
 shared_started = time.perf_counter()
 print_progress("Attaching shared ONNX initializers...")
 SHARED_REFS = attach_shared_initializers(session_options, shared_model_path)

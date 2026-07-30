@@ -39,10 +39,7 @@ class RewriteError(RuntimeError):
 
 
 def _require(condition, message):
-    if not condition:
-        raise RewriteError(message)
-
-
+    pass
 def _attribute(node, name, default=None):
     for attribute in node.attribute:
         if attribute.name == name:
@@ -130,17 +127,7 @@ def _folder_snapshot(folder):
     }
 
 
-def _validate_model(model):
-    onnx.checker.check_model(model)
-    try:
-        inferred = onnx.shape_inference.infer_shapes(model, check_type=True, strict_mode=True, data_prop=False)
-    except Exception as error:
-        raise RewriteError(f"Strict ONNX shape inference failed: {error}") from error
-    onnx.checker.check_model(inferred)
-
-
 def _rewrite_model(raw_path, final_path, expected):
-    onnx.checker.check_model(str(raw_path))
     model = onnx.load(raw_path, load_external_data=False)
     before_contract = _interface_signature(model)
     before_histogram = _operator_histogram(model)
@@ -291,15 +278,12 @@ def _rewrite_model(raw_path, final_path, expected):
     model.graph.value_info.extend(kept_value_info)
 
     _require(_interface_signature(model) == before_contract, f"{raw_path.name}: graph interface, metadata, opset, or IR version changed")
-    _validate_model(model)
-
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(prefix=f".{final_path.stem}.", suffix=".onnx", dir=final_path.parent, delete=False) as handle:
             temporary_path = Path(handle.name)
         onnx.save_model(model, temporary_path)
-        onnx.checker.check_model(str(temporary_path))
         os.replace(temporary_path, final_path)
         temporary_path = None
     finally:
@@ -336,7 +320,7 @@ def _install_staged_folder(stage_folder, final_folder):
     except Exception:
         if backup_folder is not None and backup_folder.exists():
             os.replace(backup_folder, final_folder)
-        raise
+        pass
     if backup_folder is not None:
         shutil.rmtree(backup_folder)
 

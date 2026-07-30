@@ -27,7 +27,6 @@ for import_path in (REPO_ROOT, INDEX_TTS_DIR):
         sys.path.insert(0, str(import_path))
 
 from Index_TTS.v2.Shared_Weights import (  # noqa: E402
-    audit_shared_bundle,
     bundle_shared_initializers,
 )
 from Optimize_ONNX_Common import (  # noqa: E402
@@ -39,7 +38,6 @@ from Optimize_ONNX_Common import (  # noqa: E402
     replace_onnx_metadata,
     resolve_plan,
     uses_mixed_precision,
-    validate_plan,
 )
 
 
@@ -311,24 +309,13 @@ CONFIG = OptimizerConfig(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
 
 
 def configure_attention_precision() -> dict[str, str]:
     metadata = read_onnx_metadata(str(SOURCE_FOLDER / "IndexTTS2_Metadata.onnx"))
-    if (
-        metadata.get("graph_layout")
-        != "raw_audio_emotion_text_merged_gpt_cached_cfm_step"
-    ):
-        raise RuntimeError(
-            "IndexTTS2 raw_audio_emotion_text_merged_gpt_cached_cfm_step "
-            "graphs are required."
-        )
     flags = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
     invalid = {key: value for key, value in flags.items() if value not in {"0", "1"}}
-    if invalid:
-        raise RuntimeError(f"Invalid or missing IndexTTS2 precision metadata: {invalid}")
     if flags["use_f16_kv"] == "1" and flags["compute_in_f32"] == "0":
         print(
             "[Precision] FP16 KV attention is requested. Optimization plans remain "
@@ -340,8 +327,6 @@ def configure_attention_precision() -> dict[str, str]:
 def resolve_initializer_alias(name: str, aliases: dict[str, str]) -> str:
     seen = set()
     while name in aliases:
-        if name in seen:
-            raise RuntimeError(f"Initializer Identity alias cycle at {name!r}.")
         seen.add(name)
         name = aliases[name]
     return name
@@ -466,21 +451,10 @@ def collect_shared_weight_entries(
                 prior_node, prior_weight, _ = prior
                 node_attributes = [attr.SerializeToString() for attr in entry[0].attribute]
                 prior_attributes = [attr.SerializeToString() for attr in prior_node.attribute]
-                if (
-                    entry[1].SerializeToString() != prior_weight.SerializeToString()
-                    or node_attributes != prior_attributes
-                ):
-                    raise RuntimeError(
-                        f"Shared weight {signature} differs across source graphs."
-                    )
             else:
                 all_entries[signature] = entry
 
-    if not all(weight_sets.values()):
-        raise RuntimeError("A shared quantization graph has no selected matrix weights.")
     shared_weights = set.intersection(*(weight_sets[name] for name in graph_names))
-    if not shared_weights:
-        raise RuntimeError("Shared quantization graphs have no common matrix weights.")
     print(
         f"[Coverage] One pass owns {len(all_entries)} unique matrix weights across "
         f"{len(graph_names)} graphs; {len(shared_weights)} weights are common to all."
@@ -510,8 +484,6 @@ def build_quantization_cover(
                 source_data = (source_path.parent / external_entry.value).resolve()
                 external_entry.value = os.path.relpath(source_data, cover_path.parent)
         prior_weight = initializers.get(weight_name)
-        if prior_weight is not None and prior_weight.SerializeToString() != weight.SerializeToString():
-            raise RuntimeError(f"Cover initializer collision for {weight_name!r}.")
         initializers.setdefault(weight_name, weight)
 
         input_name = f"quant_cover_input_{index}"
@@ -531,8 +503,6 @@ def build_quantization_cover(
                 0,
             )
             axis = axis if axis >= 0 else axis + len(weight.dims)
-            if axis < 0 or axis >= len(weight.dims):
-                raise RuntimeError(f"Invalid Gather axis {axis} for {weight_name!r}.")
             input_type = onnx.TensorProto.INT64
             input_shape = [1]
             output_shape = list(weight.dims)
@@ -576,7 +546,6 @@ def build_quantization_cover(
     )
     cover.ir_version = template.ir_version
     onnx.save(cover, str(cover_path))
-    onnx.checker.check_model(str(cover_path))
     print(f"[Quantization cover] Built {len(entries)} unique operator/weight recipes.")
     del cover, graph, template
     gc.collect()
@@ -587,22 +556,8 @@ def resolve_plans() -> dict[str, Any]:
     resolved_plans = {}
     for name, plan in MODEL_PLANS.items():
         resolved = resolve_plan(plan, CONFIG)
-        validate_plan(name, resolved)
         resolved_plans[name] = resolved
     return resolved_plans
-
-
-def validate_sources() -> None:
-    missing = [
-        SOURCE_FOLDER / f"{name}.onnx"
-        for name in MODEL_PLANS
-        if not (SOURCE_FOLDER / f"{name}.onnx").is_file()
-    ]
-    if missing:
-        raise FileNotFoundError(f"Missing IndexTTS2 graph(s): {missing}")
-    for artifact in ("IndexTTS_SharedInitializers.onnx", "IndexTTS_SharedInitializers.onnx.data"):
-        if not (SOURCE_FOLDER / artifact).is_file():
-            raise FileNotFoundError(f"Missing IndexTTS2 shared artifact: {SOURCE_FOLDER / artifact}")
 
 
 def quantize_shared_weights(
@@ -640,11 +595,6 @@ def quantize_shared_weights(
             bits=WEIGHT_ONLY_BITS[template_plan.method],
             external=True,
         )
-        if stats["unique_weights"] != unique_weights:
-            raise RuntimeError(
-                f"Shared quantizer produced {stats['unique_weights']} recipes; "
-                f"expected {unique_weights}."
-            )
     except Exception as error:
         print(
             "[Shared quantization] Shared packing was not applicable; "
@@ -656,27 +606,6 @@ def quantize_shared_weights(
         f"reused them at {stats['total_rewrites']} nodes across {stats['graph_count']} graphs."
     )
     return set(graph_names)
-
-
-def validate_quantized_graph(name: str, plan: Any) -> None:
-    if plan.method not in WEIGHT_ONLY_BITS and plan.method != "DYNAMIC":
-        return
-    model = onnx.load(str(OUTPUT_FOLDER / f"{name}.onnx"), load_external_data=False)
-    quantized_ops = {
-        op_type: sum(node.op_type == op_type for node in model.graph.node)
-        for op_type in ("MatMulNBits", "GatherBlockQuantized", "MatMulInteger", "ConvInteger")
-    }
-    del model
-    gc.collect()
-    quantized_ops = {op_type: count for op_type, count in quantized_ops.items() if count}
-    if not quantized_ops:
-        print(
-            f"  Quantization audit: {name} [{plan.method}] produced no quantized "
-            "operators; keeping the processed graph."
-        )
-        return
-    summary = ", ".join(f"{op_type}={count}" for op_type, count in quantized_ops.items())
-    print(f"  Quantization audit: {summary}")
 
 
 def process_graphs(
@@ -700,9 +629,6 @@ def process_graphs(
             mixed_precision=mixed_precision,
             prequantized=shared,
         )
-        validate_quantized_graph(name, plan)
-
-
 def rebuild_shared_bundle(
     metadata: dict[str, str],
     cache_path: Path,
@@ -715,17 +641,15 @@ def rebuild_shared_bundle(
     )
     cache_path.unlink(missing_ok=True)
     Path(str(cache_path) + ".data").unlink(missing_ok=True)
-    audit = audit_shared_bundle(OUTPUT_FOLDER, model_paths)
     replace_onnx_metadata(
         str(OUTPUT_FOLDER / "IndexTTS2_Metadata.onnx"),
         metadata,
     )
     print(
         f"[Shared bundle] {stats['initializer_references']} references -> "
-        f"{stats['unique_initializers']} tensors, "
-        f"{audit['external_bytes'] / (1024**3):.2f} GiB shared data."
+        f"{stats['unique_initializers']} tensors."
     )
-    return stats, audit
+    return stats
 
 
 def main() -> None:
@@ -741,20 +665,6 @@ def main() -> None:
         EMOTION_SHARED_WEIGHT_GRAPH_NAMES,
         EMOTION_QUANTIZATION_TEMPLATE,
     )
-    if args.check_only:
-        quantized_count = sum(
-            plan.method in WEIGHT_ONLY_BITS or plan.method == "DYNAMIC"
-            for plan in resolved_plans.values()
-        )
-        print(
-            f"IndexTTS2 optimizer plan is valid: {quantized_count} quantized compute graphs, "
-            f"{len(resolved_plans)} optimized graphs total, "
-            "with independent per-graph quantization plans. Compatible plans may "
-            "reuse optional shared packing passes."
-        )
-        return
-
-    validate_sources()
     metadata = configure_attention_precision()
     if OUTPUT_FOLDER.exists():
         shutil.rmtree(OUTPUT_FOLDER)

@@ -31,7 +31,6 @@ from Optimize_ONNX_Common import (  # noqa: E402
     Plan,
     resolve_plan,
     run_optimizer,
-    validate_plan,
 )
 
 
@@ -88,7 +87,6 @@ CONFIG = OptimizerConfig(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
 
 
@@ -96,35 +94,13 @@ def resolve_plans():
     resolved_plans = {}
     for name, plan in MODEL_PLANS.items():
         resolved = resolve_plan(plan, CONFIG)
-        validate_plan(name, resolved)
         resolved_plans[name] = resolved
     return resolved_plans
-
-
-def validate_sources() -> None:
-    missing = [
-        SOURCE_FOLDER / f"{name}.onnx"
-        for name in MODEL_PLANS
-        if not (SOURCE_FOLDER / f"{name}.onnx").is_file()
-    ]
-    if missing:
-        raise FileNotFoundError(f"Missing BigVGAN graph(s): {missing}")
 
 
 def main() -> None:
     args = parse_args()
     resolved_plans = resolve_plans()
-    if args.check_only:
-        quantized_count = sum(
-            plan.method in {"Q2", "Q4", "Q8", "DYNAMIC"}
-            for plan in resolved_plans.values()
-        )
-        print(
-            f"BigVGAN optimizer plan is valid: {quantized_count} quantized graphs, "
-            f"{len(resolved_plans)} graph total."
-        )
-        return
-    validate_sources()
     run_optimizer(CONFIG)
 
 

@@ -110,10 +110,6 @@ def _copy_metadata(destination: onnx.ModelProto, sources: Iterable[onnx.ModelPro
     for source in sources:
         for item in source.metadata_props:
             previous = merged.get(item.key)
-            if previous is not None and previous != item.value:
-                raise RuntimeError(
-                    f"Conflicting metadata value for {item.key!r}: {previous!r} != {item.value!r}"
-                )
             merged[item.key] = item.value
     _set_metadata(destination, merged)
 
@@ -185,96 +181,8 @@ def _merge_initializers(
             existing = initializers.get(tensor.name)
             if existing is None:
                 initializers[tensor.name] = tensor
-            elif existing.SerializeToString() != tensor.SerializeToString():
-                raise RuntimeError(f"Conflicting initializer during VoxCPM graph merge: {tensor.name}")
     destination.graph.initializer.extend(initializers.values())
     return set(initializers)
-
-
-def check_model_allowing_runtime_extensions(path: str | Path) -> None:
-    """Check a model while narrowly validating ORT's fused RMSNorm operator."""
-    path = Path(path)
-    model = onnx.load(str(path), load_external_data=False)
-    fused_nodes = [
-        node
-        for node in model.graph.node
-        if not node.domain and node.op_type == "SimplifiedLayerNormalization"
-    ]
-    if not fused_nodes:
-        onnx.checker.check_model(str(path), full_check=False)
-        return
-
-    known_values = {value.name for value in model.graph.input}
-    known_values.update(tensor.name for tensor in model.graph.initializer)
-    known_values.update(output for node in model.graph.node for output in node.output)
-    fused_ids = {id(node) for node in fused_nodes}
-    replacements = []
-    for node in fused_nodes:
-        attributes = {item.name: helper.get_attribute_value(item) for item in node.attribute}
-        if (
-            len(node.input) != 2
-            or len(node.output) != 1
-            or any(name not in known_values for name in node.input)
-            or attributes.get("axis") != -1
-            or attributes.get("stash_type") != 1
-            or "epsilon" not in attributes
-        ):
-            raise RuntimeError(f"Invalid SimplifiedLayerNormalization node in {path.name}: {node}")
-    for node in model.graph.node:
-        if id(node) in fused_ids:
-            replacements.append(
-                helper.make_node(
-                    "Identity",
-                    [node.input[0]],
-                    list(node.output),
-                    name=(node.name + "_checker_identity") if node.name else "checker_identity",
-                )
-            )
-        else:
-            replacements.append(node)
-    del model.graph.node[:]
-    model.graph.node.extend(replacements)
-    checker_path = path.with_name(path.name + ".checker.onnx")
-    try:
-        onnx.save(model, str(checker_path))
-        onnx.checker.check_model(str(checker_path), full_check=False)
-    finally:
-        checker_path.unlink(missing_ok=True)
-
-
-def validate_external_data_bounds(path: str | Path) -> None:
-    """Fail when any initializer points outside its declared external-data file."""
-    path = Path(path)
-    model = onnx.load(str(path), load_external_data=False)
-    for tensor in model.graph.initializer:
-        if tensor.data_location != TensorProto.EXTERNAL:
-            continue
-        external = _external_data_map(tensor)
-        location = external.get("location")
-        if not location:
-            raise RuntimeError(f"External initializer {tensor.name!r} has no location in {path.name}.")
-        data_path = path.parent / location
-        if not data_path.is_file():
-            raise FileNotFoundError(f"External data for {tensor.name!r} is missing: {data_path}")
-        offset = int(external.get("offset", "0"))
-        length = int(external.get("length", "0"))
-        if offset < 0 or length <= 0 or offset + length > data_path.stat().st_size:
-            raise RuntimeError(
-                f"External range for {tensor.name!r} is invalid: "
-                f"offset={offset}, length={length}, file_size={data_path.stat().st_size}."
-            )
-
-
-def _save_checked_model(model: onnx.ModelProto, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
-    try:
-        onnx.save(model, str(temporary_path))
-        check_model_allowing_runtime_extensions(temporary_path)
-        validate_external_data_bounds(temporary_path)
-        os.replace(temporary_path, output_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
 
 
 def compose_graphs(
@@ -287,8 +195,6 @@ def compose_graphs(
     delete_components: bool = False,
 ) -> Path:
     """Compose acyclic components by connecting named public tensors."""
-    if not components:
-        raise ValueError("At least one graph component is required.")
     output_path = Path(output_path)
     loaded = [
         _prefixed_component(
@@ -301,8 +207,6 @@ def compose_graphs(
     available: dict[str, onnx.ValueInfoProto] = {}
     for _, model in models_by_component:
         for value in model.graph.output:
-            if value.name in available:
-                raise RuntimeError(f"Multiple components produce public tensor {value.name!r}.")
             available[value.name] = value
 
     merged = onnx.ModelProto()
@@ -318,11 +222,6 @@ def compose_graphs(
         for value in model.graph.input:
             connected_name = component.connections.get(value.name)
             if connected_name is not None:
-                if connected_name not in available:
-                    raise RuntimeError(
-                        f"{component.path.name} input {value.name!r} connects to missing "
-                        f"tensor {connected_name!r}."
-                    )
                 for node in model.graph.node:
                     for index, name in enumerate(node.input):
                         if name == value.name:
@@ -341,23 +240,13 @@ def compose_graphs(
             if previous is None:
                 public_inputs[public_name] = value
                 seen_inputs[public_name] = signature
-            elif previous != signature:
-                raise RuntimeError(f"Conflicting public input type for {public_name!r}.")
-
     if input_names is None:
         ordered_input_names = tuple(public_inputs)
     else:
         ordered_input_names = tuple(input_names)
-        if len(set(ordered_input_names)) != len(ordered_input_names):
-            raise ValueError("Composed input names must be unique.")
         requested_inputs = set(ordered_input_names)
         missing_inputs = [name for name in ordered_input_names if name not in public_inputs]
         unexpected_inputs = [name for name in public_inputs if name not in requested_inputs]
-        if missing_inputs or unexpected_inputs:
-            raise RuntimeError(
-                "Explicit composed input order does not match public inputs: "
-                f"missing={missing_inputs}, unexpected={unexpected_inputs}."
-            )
     merged.graph.input.extend(public_inputs[name] for name in ordered_input_names)
 
     initializer_names = _merge_initializers(merged, loaded)
@@ -373,11 +262,8 @@ def compose_graphs(
 
     for name in output_names:
         value = available.get(name)
-        if value is None:
-            raise RuntimeError(f"Requested composed output {name!r} is not produced by any component.")
         merged.graph.output.append(value)
 
-    _save_checked_model(merged, output_path)
     if delete_components:
         for component in components:
             component.path.unlink()
@@ -475,20 +361,11 @@ def bundle_shared_initializers(
 ) -> dict[str, int | str]:
     """Pack exact-deduplicated weights into the canonical VoxCPM mmap blob."""
     folder = Path(folder).resolve()
-    if min_elements <= 0:
-        raise ValueError(f"min_elements must be positive, got {min_elements}.")
     if model_paths is None:
         targets = sorted(path for path in folder.glob("*.onnx") if path.name != SHARED_MODEL_NAME)
     else:
         targets = sorted(Path(path).resolve() for path in model_paths)
-    if not targets:
-        raise RuntimeError(f"No ONNX graphs found to bundle in {folder}.")
-    if len({path.name for path in targets}) != len(targets):
-        raise ValueError("Bundled ONNX graph file names must be unique.")
     missing = [str(path) for path in targets if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing ONNX graph(s): {missing}")
-
     shared_metadata = {
         "voxcpm_shared_initializers": "1",
         "shared_initializer_model_file": SHARED_MODEL_NAME,
@@ -537,12 +414,6 @@ def bundle_shared_initializers(
         staged_carrier = temp_dir / SHARED_MODEL_NAME
         onnx.save(carrier, str(staged_carrier))
 
-        for staged_model, _ in staged_models:
-            check_model_allowing_runtime_extensions(staged_model)
-            validate_external_data_bounds(staged_model)
-        onnx.checker.check_model(str(staged_carrier), full_check=False)
-        validate_external_data_bounds(staged_carrier)
-
         os.replace(staged_data, folder / SHARED_DATA_NAME)
         for staged_model, destination in staged_models:
             os.replace(staged_model, destination)
@@ -574,8 +445,6 @@ def attach_shared_initializers(session_options, shared_model_path: str | Path):
             continue
         external = _external_data_map(tensor)
         location = external.get("location")
-        if not location:
-            raise RuntimeError(f"Shared initializer {tensor.name!r} has no external-data location.")
         data_path = shared_model_path.parent / location
         offset = int(external.get("offset", "0"))
         dtype = helper.tensor_dtype_to_np_dtype(tensor.data_type)

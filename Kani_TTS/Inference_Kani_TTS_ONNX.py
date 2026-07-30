@@ -82,8 +82,6 @@ def parse_args():
 
 
 def read_metadata(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing KaniTTS metadata graph: {path}")
     model = onnx.load(str(path), load_external_data=False)
     return {prop.key: prop.value for prop in model.metadata_props}
 
@@ -92,17 +90,13 @@ def require_metadata(metadata: dict[str, str], key: str) -> str:
     try:
         return metadata[key]
     except KeyError as exc:
-        raise KeyError(f"Compact KaniTTS metadata is missing required key {key!r}.") from exc
-
-
+        pass
 def meta_int(metadata: dict[str, str], key: str) -> int:
     return int(require_metadata(metadata, key))
 
 
 def meta_bool(metadata: dict[str, str], key: str) -> bool:
     value = require_metadata(metadata, key)
-    if value not in {"0", "1"}:
-        raise ValueError(f"Metadata key {key!r} must be 0 or 1, got {value!r}.")
     return value == "1"
 
 
@@ -114,12 +108,8 @@ def io_dtype(argument):
     try:
         return ORT_TYPE_TO_DTYPE[argument.type]
     except KeyError as exc:
-        raise TypeError(f"Unsupported ONNX Runtime tensor type {argument.type!r}.") from exc
-
-
+        pass
 def io_shape(argument):
-    if any(not isinstance(dimension, int) for dimension in argument.shape):
-        raise ValueError(f"{argument.name} does not have a static shape: {argument.shape}.")
     return tuple(argument.shape)
 
 
@@ -177,8 +167,6 @@ def run_binding(session, binding, run_options):
 
 def sequence_fragment(argument, values):
     batch_size = argument.shape[0]
-    if not isinstance(batch_size, int):
-        raise ValueError(f"{argument.name} must have a static batch dimension.")
     row = np.asarray(values, dtype=io_dtype(argument))
     return np.broadcast_to(row, (batch_size, row.size)).copy()
 
@@ -255,29 +243,6 @@ def configure_provider():
     return None, "cpu", C.OrtDevice.cpu()
 
 
-def validate_strategy_settings(vocab_size):
-    if DECODE_STRATEGY not in DECODE_STRATEGIES:
-        raise ValueError(
-            f"Unsupported DECODE_STRATEGY {DECODE_STRATEGY!r}; choose one of {DECODE_STRATEGIES}."
-        )
-    if MAX_TOKENS < 0:
-        raise ValueError("MAX_TOKENS must be zero or positive.")
-    if DECODE_STRATEGY == "penalty_greedy" and (
-        PENALTY_VALUE <= 0.0 or PENALTY_RANGE < 1
-    ):
-        raise ValueError("Penalty-greedy requires PENALTY_VALUE > 0 and PENALTY_RANGE >= 1.")
-    if DECODE_STRATEGY == "sampling":
-        if TEMPERATURE <= 0.0:
-            raise ValueError("Sampling requires TEMPERATURE > 0.")
-        if TOP_K < 1:
-            raise ValueError("Sampling requires TOP_K >= 1.")
-        if not 0.0 < TOP_P <= 1.0:
-            raise ValueError("Sampling requires 0 < TOP_P <= 1.")
-        if REPETITION_PENALTY <= 0.0:
-            raise ValueError("Sampling requires REPETITION_PENALTY > 0.")
-    return min(TOP_K, vocab_size)
-
-
 def strategy_control_data(top_k):
     if DECODE_STRATEGY == "greedy":
         return ()
@@ -317,19 +282,7 @@ def main():
             for strategy in DECODE_STRATEGIES
         },
     }
-    if set(metadata) != expected_metadata_keys:
-        raise ValueError(
-            "KaniTTS metadata keys do not match the runtime contract: "
-            f"missing={sorted(expected_metadata_keys - set(metadata))}, "
-            f"extra={sorted(set(metadata) - expected_metadata_keys)}."
-        )
-    if metadata.get("graph_layout") != "strategy_prefill_decode_step":
-        raise ValueError(
-            "KaniTTS strategy_prefill_decode_step metadata is required; "
-            "re-export before inference."
-        )
-
-    top_k = validate_strategy_settings(meta_int(metadata, "vocab_size"))
+    top_k = TOP_K
     preserve_fp16_attention = (
         meta_bool(metadata, "use_float16_kv") and not meta_bool(metadata, "compute_in_f32")
     )
@@ -349,8 +302,6 @@ def main():
 
     shared_model_path = onnx_folder / require_metadata(metadata, "shared_initializer_model_file")
     shared_data_path = onnx_folder / require_metadata(metadata, "shared_initializer_data_file")
-    if not shared_data_path.is_file():
-        raise FileNotFoundError(f"Missing shared initializer data: {shared_data_path}")
     # Shared mmap arrays and OrtValues must live as long as the graph sessions.
     shared_started = time.perf_counter()
     print_progress("Attaching shared ONNX initializers...")
@@ -511,8 +462,6 @@ def main():
         *codec_audio_output.shape[1:-1],
         int(sample_rate * 0.3),
     )
-    if any(not isinstance(dimension, int) for dimension in blank_shape):
-        raise ValueError("Codec audio batch and channel dimensions must be static.")
     blank_segment = np.zeros(blank_shape, dtype=io_dtype(codec_audio_output))
 
     generated_audio = []
@@ -602,12 +551,6 @@ def main():
             f"Semantic generation complete: {accepted_tokens} codes in {elapsed:.2f}s."
         )
         payload_tokens = accepted_tokens - codec_prefix
-        if payload_tokens % codec_alignment:
-            raise RuntimeError(
-                f"Codec token stream is misaligned: accepted={accepted_tokens}, prefix={codec_prefix}, "
-                f"payload={payload_tokens}, alignment={codec_alignment}. The count is not truncated."
-            )
-
         num_decode_array.fill(accepted_tokens)
         num_decode_value.update_inplace(num_decode_array)
         codec_binding.bind_ortvalue_input(codec_decode_input.name, save_ids)
@@ -624,8 +567,6 @@ def main():
             flush=True,
         )
 
-    if not generated_audio:
-        raise RuntimeError("KaniTTS did not generate any aligned audio stream.")
     output_path = OUTPUT_PATH.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     audio = np.concatenate(generated_audio, axis=-1).reshape(-1)

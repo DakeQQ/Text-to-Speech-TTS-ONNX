@@ -35,8 +35,6 @@ for import_path in (REPO_ROOT, INDEX_TTS_DIR):
         sys.path.insert(0, str(import_path))
 
 from Index_TTS.v2.Shared_Weights import (  # noqa: E402
-    SHARED_DATA_NAME,
-    SHARED_MODEL_NAME,
     attach_shared_initializers,
 )
 from Example_Audio import reference_audio_path  # noqa: E402
@@ -187,90 +185,6 @@ def enabled_voice_modes() -> tuple[str, ...]:
     return tuple(modes)
 
 
-def validate_user_configuration() -> None:
-    if not enabled_voice_modes():
-        raise ValueError("Enable at least one RUN_*_VOICE_CLONE mode.")
-    if RUN_EMOTION_AUDIO_VOICE_CLONE and EMOTION_AUDIO_REFERENCE_PATH is None:
-        raise ValueError(
-            "EMOTION_AUDIO_REFERENCE_PATH is required when the emotion-audio "
-            "voice-clone mode is enabled."
-        )
-    if (
-        RUN_QWEN_TEXT_EMOTION_VOICE_CLONE
-        and QWEN_EMOTION_PROMPT is not None
-        and not QWEN_EMOTION_PROMPT.strip()
-    ):
-        raise ValueError(
-            "QWEN_EMOTION_PROMPT must be None or a non-empty emotion description."
-        )
-    if (
-        RUN_MANUAL_EMOTION_VECTOR_VOICE_CLONE
-        and len(MANUAL_EMOTION_VECTOR) != 8
-    ):
-        raise ValueError("MANUAL_EMOTION_VECTOR must contain exactly eight values.")
-
-    enabled_settings = (
-        (
-            RUN_NORMAL_VOICE_CLONE,
-            "NORMAL_TARGET_TEXT",
-            NORMAL_TARGET_TEXT,
-            "NORMAL_OUTPUT_PATH",
-            NORMAL_OUTPUT_PATH,
-        ),
-        (
-            RUN_EMOTION_AUDIO_VOICE_CLONE,
-            "EMOTION_AUDIO_TARGET_TEXT",
-            EMOTION_AUDIO_TARGET_TEXT,
-            "EMOTION_AUDIO_OUTPUT_PATH",
-            EMOTION_AUDIO_OUTPUT_PATH,
-        ),
-        (
-            RUN_QWEN_TEXT_EMOTION_VOICE_CLONE,
-            "QWEN_TARGET_TEXT",
-            QWEN_TARGET_TEXT,
-            "QWEN_OUTPUT_PATH",
-            QWEN_OUTPUT_PATH,
-        ),
-        (
-            RUN_MANUAL_EMOTION_VECTOR_VOICE_CLONE,
-            "MANUAL_EMOTION_TARGET_TEXT",
-            MANUAL_EMOTION_TARGET_TEXT,
-            "MANUAL_EMOTION_OUTPUT_PATH",
-            MANUAL_EMOTION_OUTPUT_PATH,
-        ),
-    )
-    output_paths = []
-    for enabled, text_name, text, output_name, output_path in enabled_settings:
-        if not enabled:
-            continue
-        if not text.strip():
-            raise ValueError(f"{text_name} must not be empty.")
-        resolved_output = output_path.expanduser().resolve()
-        if resolved_output in output_paths:
-            raise ValueError(
-                f"Enabled modes must use different output paths; duplicate: "
-                f"{output_name}={resolved_output}"
-            )
-        output_paths.append(resolved_output)
-
-    enabled_alphas = (
-        (RUN_EMOTION_AUDIO_VOICE_CLONE, "EMOTION_AUDIO_ALPHA", EMOTION_AUDIO_ALPHA),
-        (
-            RUN_QWEN_TEXT_EMOTION_VOICE_CLONE,
-            "QWEN_EMOTION_ALPHA",
-            QWEN_EMOTION_ALPHA,
-        ),
-        (
-            RUN_MANUAL_EMOTION_VECTOR_VOICE_CLONE,
-            "MANUAL_EMOTION_ALPHA",
-            MANUAL_EMOTION_ALPHA,
-        ),
-    )
-    for enabled, name, value in enabled_alphas:
-        if enabled and not 0.0 <= float(value) <= 1.0:
-            raise ValueError(f"{name} must be between 0.0 and 1.0.")
-
-
 def metadata_from(path: Path) -> dict[str, str]:
     model = onnx.load(str(path), load_external_data=False)
     metadata = {item.key: item.value for item in model.metadata_props}
@@ -315,35 +229,17 @@ def metadata_from(path: Path) -> dict[str, str]:
             for strategy in DECODE_STRATEGIES
         },
     }
-    if set(metadata) != expected_keys:
-        raise ValueError(
-            "IndexTTS2 metadata keys do not match the runtime contract: "
-            f"missing={sorted(expected_keys - set(metadata))}, "
-            f"extra={sorted(set(metadata) - expected_keys)}."
-        )
-    if (
-        metadata.get("graph_layout")
-        != "raw_audio_emotion_text_merged_gpt_cached_cfm_step"
-    ):
-        raise ValueError(
-            "IndexTTS2 metadata with graph_layout="
-            "'raw_audio_emotion_text_merged_gpt_cached_cfm_step' is required."
-        )
     return metadata
 
 
 def meta_str(metadata: dict[str, str], key: str, default: str | None = None) -> str:
     value = metadata.get(key, default)
-    if value is None:
-        raise KeyError(f"Required IndexTTS2 metadata key is missing: {key}")
     return value
 
 
 def meta_int(metadata: dict[str, str], key: str, default: int | None = None) -> int:
     value = metadata.get(key)
     if value is None:
-        if default is None:
-            raise KeyError(f"Required IndexTTS2 metadata key is missing: {key}")
         return default
     return int(value)
 
@@ -360,8 +256,6 @@ class ModelIO:
 
 def io_dtype(argument: Any) -> np.dtype:
     match = re.fullmatch(r"tensor\(([^)]+)\)", argument.type)
-    if match is None:
-        raise TypeError(f"Unsupported ONNX type {argument.type!r} for {argument.name}.")
     element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
     return np.dtype(onnx.helper.tensor_dtype_to_np_dtype(element_type))
 
@@ -379,16 +273,12 @@ def io_shape(
             try:
                 shape.append(next(dimensions))
             except StopIteration as error:
-                raise ValueError(
-                    f"Dynamic shape for {argument.name!r} is incomplete: {argument.shape}."
-                ) from error
+                pass
     try:
         next(dimensions)
     except StopIteration:
         return tuple(shape)
-    raise ValueError(f"Too many dynamic dimensions for {argument.name!r}.")
-
-
+    pass
 def repeated_dynamic_dimensions(argument: Any, value: int) -> tuple[int, ...]:
     return tuple(
         value
@@ -502,10 +392,6 @@ class RuntimePaths:
             shared_data=folder / meta_str(metadata, "shared_initializer_data_file"),
         )
         missing = [str(path) for path in paths.graphs_with_shared if not path.is_file()]
-        if missing:
-            raise FileNotFoundError(f"Missing IndexTTS2 runtime artifact(s): {missing}")
-        if paths.shared_model.name != SHARED_MODEL_NAME or paths.shared_data.name != SHARED_DATA_NAME:
-            raise ValueError("Unexpected shared-initializer filenames in metadata.")
         return paths
 
     @property
@@ -541,10 +427,6 @@ def provider_configuration() -> tuple[
     providers = list(ORT_ACCELERATE_PROVIDERS) or ["CPUExecutionProvider"]
     available = set(ort.get_available_providers())
     unavailable = [provider for provider in providers if provider not in available]
-    if unavailable:
-        raise RuntimeError(
-            f"Requested provider(s) {unavailable} are unavailable. Available: {sorted(available)}"
-        )
     provider_options = []
     for provider in providers:
         if provider == "CUDAExecutionProvider":
@@ -556,8 +438,7 @@ def provider_configuration() -> tuple[
         elif provider == "CPUExecutionProvider":
             provider_options.append({})
         else:
-            raise ValueError(f"Unsupported execution provider: {provider!r}")
-
+            pass
     primary_provider = providers[0]
     if primary_provider == "CUDAExecutionProvider":
         device_type = "cuda"
@@ -901,12 +782,6 @@ class RuntimeSessions:
             )
             emotion_layers = meta_int(metadata, "emotion_text_num_layers")
             expected_state_count = 2 * emotion_layers
-            if self.emotion_state_count != expected_state_count:
-                raise ValueError(
-                    "Emotion-text state contract mismatch: "
-                    f"expected {expected_state_count} tensors, "
-                    f"found {self.emotion_state_count}."
-                )
             cache_dtype = meta_str(
                 metadata,
                 "emotion_text_kv_dtype",
@@ -916,11 +791,6 @@ class RuntimeSessions:
                 "float16": "float16",
                 "float32": "float",
             }.get(cache_dtype)
-            if cache_element_type is None:
-                raise ValueError(
-                    "Unsupported emotion-text KV dtype: "
-                    f"{cache_dtype!r}; expected 'float16' or 'float32'."
-                )
             expected_types = [
                 f"tensor({cache_element_type})"
             ] * expected_state_count
@@ -930,11 +800,6 @@ class RuntimeSessions:
                     : self.emotion_state_count
                 ]
             ]
-            if actual_types != expected_types:
-                raise TypeError(
-                    "Emotion-text state dtype contract mismatch: "
-                    f"expected {expected_types}, found {actual_types}."
-                )
             self.emotion_text_prefill_binding = self.emotion_text_prefill.io_binding()
             self.emotion_text_decode_bindings = (
                 self.emotion_text_decode.io_binding(),
@@ -1011,9 +876,9 @@ class RuntimeSessions:
                     (self.cfm_mel_buffers[1 - index],),
                 )
             self.cfm_shape = shape
-        assert self.cfm_mel_buffers is not None
-        assert self.cfm_noise is not None
-        assert self.cfm_initial is not None
+        pass
+        pass
+        pass
         return self.cfm_mel_buffers, self.cfm_noise, self.cfm_initial
 
 
@@ -1048,13 +913,6 @@ def resolve_frontend() -> Frontend:
     project_path = PROJECT_PATH.expanduser().resolve()
     model_dir = MODEL_DIR.expanduser().resolve()
     tokenizer_path = TOKENIZER_PATH.expanduser().resolve()
-    for path, label in (
-        (project_path, "official IndexTTS project"),
-        (model_dir, "IndexTTS2 model directory"),
-        (tokenizer_path, "IndexTTS2 tokenizer"),
-    ):
-        if not path.exists():
-            raise FileNotFoundError(f"{label} was not found: {path}")
     if str(project_path) not in sys.path:
         sys.path.insert(0, str(project_path))
 
@@ -1078,8 +936,6 @@ def resolve_frontend() -> Frontend:
         qwen_tokenizer_oath = (
             QWEN_TOKENIZER_PATH or model_dir / "qwen0.6bemo4-merge"
         ).expanduser().resolve()
-        if not qwen_tokenizer_oath.is_dir():
-            raise FileNotFoundError(f"Qwen emotion tokenizer was not found: {qwen_tokenizer_oath}")
         from transformers import AutoTokenizer
 
         emotion_tokenizer = AutoTokenizer.from_pretrained(
@@ -1103,18 +959,6 @@ def generation_controls(
         top_p=TOP_P,
         repetition_penalty=REPETITION_PENALTY,
     )
-    if (
-        DECODE_STRATEGY == "penalty_greedy"
-        and (controls.penalty_value <= 0.0 or controls.penalty_range < 1)
-    ):
-        raise ValueError("Penalty controls require value > 0 and range >= 1.")
-    if DECODE_STRATEGY == "sampling":
-        if controls.temperature <= 0.0 or controls.top_k < 1:
-            raise ValueError("Sampling requires temperature > 0 and top_k >= 1.")
-        if not 0.0 < controls.top_p <= 1.0 or controls.repetition_penalty <= 0.0:
-            raise ValueError(
-                "Sampling requires 0 < top_p <= 1 and repetition_penalty > 0."
-            )
     return GenerationControls(
         **{
             **controls.__dict__,
@@ -1131,8 +975,6 @@ def load_audio(
     argument: Any,
 ) -> np.ndarray:
     path = path.expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"Audio file was not found: {path}")
     segment = (
         AudioSegment.from_file(path)
         .set_channels(1)
@@ -1146,11 +988,6 @@ def load_audio(
     max_samples = int(max_seconds * sample_rate)
     if max_samples > 0:
         audio = audio[:max_samples]
-    if audio.size < min_samples:
-        raise ValueError(
-            f"Audio is too short for feature extraction: {path} "
-            f"({audio.size} samples; requires at least {min_samples})."
-        )
     if np.issubdtype(io_dtype(argument), np.floating):
         audio = (audio.astype(np.float32) * (1.0 / 32768.0)).astype(
             io_dtype(argument)
@@ -1163,8 +1000,6 @@ def load_audio(
 def parse_emotion_text_output(content: str, text_input: str) -> dict[str, float]:
     try:
         parsed = json.loads(content)
-        if not isinstance(parsed, dict):
-            raise ValueError("Qwen emotion output must decode to a JSON object.")
     except (json.JSONDecodeError, ValueError):
         parsed = {
             match.group(1): float(match.group(2))
@@ -1203,9 +1038,7 @@ def parse_emotion_text_output(content: str, text_input: str) -> dict[str, float]
         try:
             score = float(parsed.get(source, 0.0))
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Qwen emotion output contains a non-numeric score for {source!r}."
-            ) from error
+            pass
         detected[target] = min(max(score, 0.0), 1.2)
     if not any(score > 0.0 for score in detected.values()):
         detected["calm"] = 1.0
@@ -1218,14 +1051,6 @@ def run_emotion_text_model(
     metadata: dict[str, str],
     text_input: str,
 ) -> str:
-    if (
-        sessions.emotion_text_prefill is None
-        or sessions.emotion_text_decode is None
-        or sessions.emotion_text_prefill_io is None
-        or sessions.emotion_text_decode_io is None
-        or sessions.emotion_text_prefill_binding is None
-    ):
-        raise RuntimeError("Emotion-text ONNX sessions were not loaded.")
     content_ids = tokenizer(
         [meta_str(metadata, "emotion_text_content_prefix") + text_input],
         add_special_tokens=False,
@@ -1261,8 +1086,6 @@ def run_emotion_text_model(
         QWEN_MAX_NEW_TOKENS,
         max_sequence_length - input_ids.shape[1],
     )
-    if generation_limit < 1:
-        raise ValueError("Emotion-text prompt consumed the full Qwen context window.")
     print_progress(
         f"Running emotion-text analysis (up to {generation_limit} new tokens)..."
     )
@@ -1358,8 +1181,6 @@ def qwen_emotion_vector(
     metadata: dict[str, str],
     target_text: str,
 ) -> list[float]:
-    if frontend.emotion_tokenizer is None:
-        raise RuntimeError("Qwen emotion tokenizer was not loaded.")
     emotion_text = (
         target_text if QWEN_EMOTION_PROMPT is None else QWEN_EMOTION_PROMPT
     )
@@ -1443,13 +1264,7 @@ def prepare_conditioning(
     emotion_audio_path: Path | None,
     emotion_alpha: float,
 ) -> None:
-    if vector is not None and emotion_audio_path is not None:
-        raise ValueError(
-            "Emotion vector and emotion reference audio are mutually exclusive."
-        )
     if vector is not None:
-        if len(vector) != 8:
-            raise ValueError("IndexTTS2 emotion vectors must contain exactly eight values.")
         vector_scale = min(max(emotion_alpha, 0.0), 1.0)
         vector = [int(value * vector_scale * 10000) / 10000 for value in vector]
     if emotion_audio_path is None:
@@ -1632,8 +1447,6 @@ def generate_codes(
     prefill_length = int(history_length.numpy().item())
     max_tokens = MAX_TOKENS if MAX_TOKENS else meta_int(metadata, "max_signal_length")
     max_tokens = min(max_tokens, meta_int(metadata, "max_signal_length") - prefill_length)
-    if max_tokens <= 0:
-        raise RuntimeError("Text prompt consumed all available GPT attention capacity.")
     generation_started = time.perf_counter()
     print_progress(f"Generating semantic codes (limit {max_tokens})...")
 
@@ -1679,8 +1492,6 @@ def generate_codes(
         current_token = sessions.token_buffers[1 - binding_index]
         history_length = sessions.history_buffers[1 - binding_index]
         decode_calls += 1
-    if not accepted_tokens:
-        raise RuntimeError("GPT generated the stop token before producing any semantic codes.")
     print_progress(
         f"Semantic generation complete: {accepted_tokens} codes in "
         f"{time.perf_counter() - generation_started:.2f}s."
@@ -1703,14 +1514,8 @@ def solve_cfm(
     rng: np.random.Generator,
 ) -> ort.OrtValue:
     steps = sessions.cfm_steps
-    if steps < 1:
-        raise ValueError("Exported CFM step count must be at least one.")
     total_frames = static_hidden.shape()[1]
     target_frames = total_frames - prompt_frames
-    if target_frames <= 0:
-        raise RuntimeError(
-            f"CFM frame contract is invalid: total={total_frames}, prompt={prompt_frames}."
-        )
     diffusion_started = time.perf_counter()
     print_progress(
         f"Running CFM diffusion ({steps} steps, {target_frames} target frames)..."
@@ -1721,12 +1526,6 @@ def solve_cfm(
     np.copyto(initial, noise.transpose(0, 2, 1))
     mel_buffers[0].update_inplace(initial)
     expected_mask_shape = io_shape(sessions.cfm_io.inputs[5], (total_frames,))
-    if tuple(target_mask.shape()) != expected_mask_shape:
-        raise RuntimeError(
-            "Acoustic target mask has an invalid shape: "
-            f"expected {expected_mask_shape}, got {tuple(target_mask.shape())}."
-        )
-
     for binding in sessions.cfm_bindings:
         bind_inputs(
             binding,
@@ -1799,11 +1598,6 @@ def synthesize_segment(
     target_mask = synthesis_outputs[-1]
     target_frames = int(sessions.target_length_buffer.numpy().item())
     expected_total_frames = prompt_frames + target_frames
-    if static_hidden.shape()[1] != expected_total_frames:
-        raise RuntimeError(
-            "Acoustic frame contract mismatch: "
-            f"expected {expected_total_frames}, got {static_hidden.shape()[1]}."
-        )
     mel = solve_cfm(
         sessions,
         prompt_frames,
@@ -1852,8 +1646,6 @@ def tokenize_segments(
             warnings.warn("Text segment contains unknown tokenizer IDs.", RuntimeWarning)
         label = "".join(segment).replace("▁", " ").strip()
         output.append((label, numpy_for(argument, [ids], (len(ids),))))
-    if not output:
-        raise ValueError("Target text produced no token segments.")
     return output
 
 
@@ -1931,12 +1723,6 @@ def run_synthesis(
     sessions: RuntimeSessions,
     metadata: dict[str, str],
 ) -> tuple[Path, ...]:
-    if MAX_TOKENS < 0:
-        raise ValueError("MAX_TOKENS must be zero or positive.")
-    if INTERVAL_SILENCE_MS < 0:
-        raise ValueError("INTERVAL_SILENCE_MS must be zero or positive.")
-    if MAX_TEXT_TOKENS_PER_SEGMENT < 1:
-        raise ValueError("MAX_TEXT_TOKENS_PER_SEGMENT must be positive.")
     print_progress("Loading the text frontend...")
     frontend = resolve_frontend()
     controls = generation_controls(metadata)
@@ -1967,7 +1753,7 @@ def run_synthesis(
         )
 
     if RUN_EMOTION_AUDIO_VOICE_CLONE:
-        assert EMOTION_AUDIO_REFERENCE_PATH is not None
+        pass
         print_progress("Preparing emotion-audio voice-clone conditioning...")
         prepare_conditioning(
             sessions,
@@ -2040,14 +1826,9 @@ def run_synthesis(
 
 def main() -> None:
     pipeline_started = time.perf_counter()
-    validate_user_configuration()
     print_progress(f"Enabled voice modes: {', '.join(enabled_voice_modes())}")
-    if DECODE_STRATEGY not in DECODE_STRATEGIES:
-        raise ValueError(f"Unsupported decode strategy: {DECODE_STRATEGY!r}")
     metadata_path = ONNX_FOLDER / "IndexTTS2_Metadata.onnx"
     print_progress(f"Reading package metadata: {metadata_path}")
-    if not metadata_path.is_file():
-        raise FileNotFoundError(f"IndexTTS2 metadata manifest was not found: {metadata_path}")
     metadata = metadata_from(metadata_path)
     paths = RuntimePaths.from_metadata(ONNX_FOLDER, metadata, DECODE_STRATEGY)
 

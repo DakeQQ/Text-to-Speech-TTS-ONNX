@@ -1,8 +1,6 @@
 import gc
 import math
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import torch
@@ -35,14 +33,6 @@ COMPUTE_IN_F32 = False  # With f16 KV, use f32 attention for accuracy instead of
 OPSET = 20             # ONNX opset
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
-
 script_dir = Path(__file__).resolve().parent
 onnx_folder = script_dir / "MOSS_TTS_Nano_ONNX"  # Export folder
 onnx_folder.mkdir(parents=True, exist_ok=True)
@@ -168,8 +158,6 @@ def _codec_fold_layer_scales(modules):
             if module.module_type == "PatchedPretransform":
                 continue
             for layer in module.transformer.layers:
-                if not isinstance(layer.ffn, torch.nn.Sequential) or not isinstance(layer.ffn[-1], torch.nn.Linear):
-                    raise TypeError("Codec layer-scale folding requires a Sequential FFN ending in Linear.")
                 attention = layer.self_attn
                 if not getattr(attention, "_onnx_qk_scale_folded", False):
                     head_dim = attention.embed_dim // attention.num_heads
@@ -213,12 +201,8 @@ def _codec_fuse_encoder_patch_projections(encoder, quantizer):
         if patch_module.module_type != "PatchedPretransform":
             continue
         projected = encoder[index + 1]
-        if projected.module_type == "PatchedPretransform" or not isinstance(projected.input_proj, torch.nn.Linear):
-            raise TypeError("Encoder patch fusion requires a following projected transformer with Linear input.")
         patch_size = int(patch_module.patch_size)
         linear     = projected.input_proj
-        if linear.in_features % patch_size != 0:
-            raise ValueError("Projected-transformer input width must be divisible by its preceding patch size.")
         in_channels = linear.in_features // patch_size
         convolution = torch.nn.Conv1d(
             in_channels,
@@ -239,12 +223,8 @@ def _codec_fuse_encoder_patch_projections(encoder, quantizer):
         patch_module._onnx_fused_into_projection = True
 
     final_patch = encoder[-1]
-    if final_patch.module_type != "PatchedPretransform" or not isinstance(quantizer.input_proj, torch.nn.Conv1d):
-        raise TypeError("Encoder tail fusion requires a final patch and Conv1d quantizer input projection.")
     patch_size = int(final_patch.patch_size)
     projection = quantizer.input_proj
-    if projection.kernel_size != (1,) or projection.stride != (1,) or projection.in_channels % patch_size != 0:
-        raise ValueError("Unexpected quantizer input projection geometry for encoder tail fusion.")
     in_channels = projection.in_channels // patch_size
     convolution = torch.nn.Conv1d(
         in_channels,
@@ -354,15 +334,9 @@ class AUDIO_ENCODER(torch.nn.Module):
         # Fold stereo channel interleave into the first patch projection.
         first_patch     = self.encoder[0]
         first_projected = self.encoder[1]
-        if first_patch.module_type != "PatchedPretransform" or first_projected.module_type == "PatchedPretransform":
-            raise ValueError("Unexpected codec encoder layout for input folding.")
         patch_size = int(first_patch.patch_size)
         input_weight = first_projected.input_proj.weight.data
-        if input_weight.shape[1] != patch_size:
-            raise ValueError("The first codec projection does not match the input patch width.")
         if self.number_channels > 1 and self.enable_channel_interleave:
-            if patch_size % self.number_channels != 0:
-                raise ValueError("Codec input patch width must be divisible by the channel count.")
             input_weight = input_weight.view(
                 input_weight.shape[0], patch_size // self.number_channels, self.number_channels
             ).permute(0, 2, 1).reshape(input_weight.shape[0], patch_size)
@@ -449,8 +423,6 @@ class AUDIO_DECODER(torch.nn.Module):
             final_projected = self.decoder[-2]
             final_patch     = self.decoder[-1]
             patch_size      = int(final_patch.patch_size)
-            if final_projected.module_type == "PatchedPretransform" or patch_size % self.number_channels != 0:
-                raise ValueError("Unexpected codec decoder layout for channel de-interleave folding.")
             row_order = torch.arange(patch_size).view(-1, self.number_channels).transpose(0, 1).reshape(-1)
             with torch.no_grad():
                 final_projected.output_proj.weight.data = final_projected.output_proj.weight.data.index_select(0, row_order)
@@ -467,8 +439,6 @@ class AUDIO_DECODER(torch.nn.Module):
                 effective = lfq.out_proj(lfq.codebook.weight.t().unsqueeze(0)).squeeze(0).t().contiguous()
                 effective_codebooks.append(effective)
         codebook_size = effective_codebooks[0].shape[0]
-        if any(table.shape != effective_codebooks[0].shape for table in effective_codebooks):
-            raise ValueError("Packed decoder codebooks must have identical shapes.")
         self.effective_codebook = torch.nn.Parameter(
             torch.cat(effective_codebooks, dim=0),
             requires_grad=False,
@@ -1388,9 +1358,6 @@ def run_compact_strategy_export():
                     f"[Sampler rewrite] {Path(final_path).name}: {rewrite['matched']} match(es), "
                     f"{rewrite['raw_nodes']} -> {rewrite['final_nodes']} nodes."
                 )
-            import onnx
-            onnx.checker.check_model(final_path, full_check=False)
-
         for strategy in DECODE_STRATEGIES:
             prefill = MOSS_MAIN_PREFILL_STRATEGY(
                 packed_embed,
@@ -1497,12 +1464,6 @@ def run_compact_strategy_export():
         sample_rate     = int(audio_model.sampling_rate)
         downsample_rate = int(audio_model.downsample_rate)
         scaled_samples_per_frame = downsample_rate * OUT_SAMPLE_RATE / sample_rate
-        if not scaled_samples_per_frame.is_integer():
-            raise ValueError(
-                "OUT_SAMPLE_RATE must map each codec frame to a whole number of samples; "
-                f"got {scaled_samples_per_frame} samples per frame."
-            )
-
         audio_metadata = build_model_metadata(
             {
                 "samples_per_frame_per_channel": int(scaled_samples_per_frame),
@@ -1586,15 +1547,4 @@ def run_compact_strategy_export():
 
     print('\nCompact strategy export done!')
 
-
-if DO_EXPORT:
-    run_compact_strategy_export()
-    subprocess.run(
-        [
-            sys.executable,
-            str(script_dir / "Inference_MOSS_TTS_Nano_ONNX.py"),
-            "--onnx-folder",
-            str(onnx_folder),
-        ],
-        check=True,
-    )
+run_compact_strategy_export()

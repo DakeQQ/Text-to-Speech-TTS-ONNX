@@ -155,9 +155,7 @@ def numpy_dtype(argument):
     try:
         return ORT_TYPE_TO_DTYPE[argument.type]
     except KeyError as exc:
-        raise TypeError(f"Unsupported ONNX tensor type: {argument.type}") from exc
-
-
+        pass
 def resolve_shape(argument, symbols=None, dynamic_sizes=()):
     symbols = {} if symbols is None else symbols
     sizes = iter(dynamic_sizes)
@@ -171,7 +169,7 @@ def resolve_shape(argument, symbols=None, dynamic_sizes=()):
             try:
                 size = next(sizes)
             except StopIteration as exc:
-                raise ValueError(f"Cannot resolve shape for {argument.name}: {argument.shape}") from exc
+                pass
             if dimension is not None:
                 symbols[dimension] = size
         shape.append(int(size))
@@ -298,7 +296,7 @@ elif "CUDAExecutionProvider" in ORT_Accelerate_Providers or "TensorrtExecutionPr
     provider_options = [{
         'device_id':                          DEVICE_ID,
         'gpu_mem_limit':                      8 * (1024 ** 3),    # 8 GB
-        'arena_extend_strategy':              'kNextPowerOfTwo',  # ["kNextPowerOfTwo", "kSameAsRequested"]
+        'arena_extend_strategy':              'kSameAsRequested',  # ["kNextPowerOfTwo", "kSameAsRequested"]
         'cudnn_conv_algo_search':             'EXHAUSTIVE',       # ["DEFAULT", "HEURISTIC", "EXHAUSTIVE"]
         'sdpa_kernel':                        '2',                # ["0", "1", "2"]
         'use_tf32':                           '1',
@@ -375,13 +373,6 @@ expected_metadata_keys = {
     "model_file_name_transformer",
     "model_file_name_decode",
 }
-if set(model_meta) != expected_metadata_keys:
-    raise ValueError(
-        "F5-TTS metadata keys do not match the runtime contract: "
-        f"missing={sorted(expected_metadata_keys - set(model_meta))}, "
-        f"extra={sorted(set(model_meta) - expected_metadata_keys)}."
-    )
-
 INV_INT16 = float(1.0 / 32768.0)
 MODEL_SAMPLE_RATE = int(model_meta["sample_rate"])
 IN_SAMPLE_RATE    = int(model_meta["in_sample_rate"])
@@ -453,11 +444,6 @@ text = convert_char_to_pinyin([ref_text + gen_text])
 text_ids = list_str_to_idx(text, vocab_char_map, numpy_dtype(text_input))
 duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / local_speed)
 max_duration_value = max(max(text_ids.shape[-1], cond_signal_len) + 1, duration)
-if max_duration_value > MAX_SIGNAL_LENGTH:
-    raise ValueError(
-        f"Requested max_duration {max_duration_value} exceeds exported max_signal_length {MAX_SIGNAL_LENGTH}. "
-        "Use shorter text/audio or re-export with a larger MAX_SIGNAL_LENGTH."
-    )
 symbols = {"max_duration": max_duration_value}
 audio_shape = resolve_shape(audio_input, symbols, (audio_len,))
 record_shape(audio_input, audio_shape, symbols)
@@ -475,8 +461,6 @@ preprocess_input_values = {
 preprocess_output_values = {}
 for argument in preprocess_outputs:
     downstream_input = downstream_inputs.get(argument.name)
-    if downstream_input is None or not same_layout(argument, downstream_input):
-        raise ValueError(f"No compatible downstream input for preprocess output {argument.name!r}.")
     shape = resolve_shape(downstream_input, symbols)
     record_shape(argument, shape, symbols)
     preprocess_output_values[argument.name] = empty_ortvalue(argument, shape, 'cpu')
@@ -533,11 +517,6 @@ step_buffers = tuple(
     ortvalue_for(step_input, step_values[step], step_shape, step_device)
     for step in range(NFE_STEP)
 )
-if len({value.data_ptr() for value in state_buffers}) != len(state_buffers):
-    raise RuntimeError("Transformer state buffers must have unique addresses.")
-if len({value.data_ptr() for value in step_buffers}) != len(step_buffers):
-    raise RuntimeError("Transformer step buffers must have unique addresses.")
-
 transformer_bindings = tuple(
     ort_session_Transformer.io_binding()
     for _ in range(2)

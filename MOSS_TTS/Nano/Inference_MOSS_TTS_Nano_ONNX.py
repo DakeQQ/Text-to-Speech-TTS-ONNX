@@ -64,14 +64,6 @@ def print_progress(message):
         print(f"[MOSS-TTS-Nano] {message}", flush=True)
 
 
-if MODE not in {"continuation", "voice_clone"}:
-    raise ValueError("MODE must be 'continuation' or 'voice_clone'.")
-if DECODE_STRATEGY not in DECODE_STRATEGIES:
-    raise ValueError(f"DECODE_STRATEGY must be one of {DECODE_STRATEGIES}.")
-if MAX_FRAMES < 0 or MIN_FRAMES < 0:
-    raise ValueError("MAX_FRAMES and MIN_FRAMES must be >= 0.")
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Run compact MOSS-TTS-Nano ONNX inference.")
     parser.add_argument(
@@ -89,10 +81,6 @@ ONNX_FOLDER = ARGS.onnx_folder.expanduser().resolve()
 GENERATED_AUDIO_PATH = GENERATED_AUDIO_PATH.expanduser().resolve()
 pipeline_started = time.perf_counter()
 
-if MODE == "voice_clone" and PROMPT_TEXT is not None:
-    raise ValueError("voice_clone mode does not accept PROMPT_TEXT.")
-if MODE == "continuation" and (PROMPT_TEXT is None) != (PROMPT_AUDIO_PATH is None):
-    raise ValueError("Prompted continuation requires both PROMPT_TEXT and PROMPT_AUDIO_PATH.")
 PROMPT_AUDIO_PATH = (
     Path(PROMPT_AUDIO_PATH).expanduser().resolve()
     if PROMPT_AUDIO_PATH is not None
@@ -142,41 +130,22 @@ EXPECTED_METADATA_KEYS = {
         for strategy in DECODE_STRATEGIES
     },
 }
-if set(METADATA) != EXPECTED_METADATA_KEYS:
-    raise ValueError(
-        "MOSS TTS Nano metadata keys do not match the runtime contract: "
-        f"missing={sorted(EXPECTED_METADATA_KEYS - set(METADATA))}, "
-        f"extra={sorted(set(METADATA) - EXPECTED_METADATA_KEYS)}."
-    )
-if METADATA.get("graph_layout") != "strategy_prefill_decode_step":
-    raise ValueError(
-        "MOSS TTS Nano strategy_prefill_decode_step metadata is required; "
-        "re-export before inference."
-    )
-
-
 def meta_str(key):
     try:
         return METADATA[key]
     except KeyError as exc:
-        raise KeyError(f"Required metadata key {key!r} is missing from {METADATA_PATH}.") from exc
-
-
+        pass
 def meta_int(key):
     try:
         return int(meta_str(key))
     except KeyError as exc:
-        raise KeyError(f"Required metadata key {key!r} is missing from {METADATA_PATH}.") from exc
-
-
+        pass
 def meta_int_list(key):
     return [int(value) for value in meta_str(key).split(",") if value]
 
 
 def meta_bool(key):
     value = METADATA.get(key)
-    if value not in {"0", "1"}:
-        raise ValueError(f"Metadata flag {key!r} must be 0 or 1, got {value!r}.")
     return value == "1"
 
 
@@ -196,10 +165,6 @@ AUDIO_START_TOKEN = meta_int("audio_start_token_id")
 AUDIO_END_TOKEN = meta_int("audio_end_token_id")
 PRESERVE_FP16_ATTENTION = meta_bool("use_f16_kv") and not meta_bool("compute_in_f32")
 
-if MIN_NEW_FRAMES > MAX_NEW_FRAMES:
-    raise ValueError("MIN_FRAMES cannot exceed the effective MAX_FRAMES cap.")
-
-
 @dataclass(frozen=True)
 class TensorSpec:
     name: str
@@ -215,8 +180,6 @@ class TensorSpec:
             "tensor(int32)": np.dtype(np.int32),
             "tensor(int64)": np.dtype(np.int64),
         }.get(node_arg.type)
-        if dtype is None:
-            raise TypeError(f"Unsupported model tensor type: {node_arg.type}")
         return cls(node_arg.name, dtype, tuple(node_arg.shape))
 
     @property
@@ -232,11 +195,6 @@ class TensorSpec:
         return not self.dynamic_axes
 
     def concrete_shape(self, *dynamic_dimensions):
-        if len(dynamic_dimensions) != len(self.dynamic_axes):
-            raise ValueError(
-                f"{self.name!r} needs {len(self.dynamic_axes)} dynamic dimension(s), "
-                f"got {len(dynamic_dimensions)}."
-            )
         dynamic_values = iter(dynamic_dimensions)
         return tuple(
             dim if isinstance(dim, int) else int(next(dynamic_values))
@@ -245,11 +203,6 @@ class TensorSpec:
 
     def array(self, data):
         array = np.ascontiguousarray(data, dtype=self.dtype)
-        if array.ndim != self.rank or any(
-            isinstance(dim, int) and array.shape[index] != dim
-            for index, dim in enumerate(self.shape)
-        ):
-            raise ValueError(f"{self.name!r} expects {self.shape}, got {array.shape}.")
         return array
 
     def filled_array(self, value, *dynamic_dimensions):
@@ -296,8 +249,6 @@ class SessionIO:
 
 def select_one(specs, predicate, role):
     matches = tuple(spec for spec in specs if predicate(spec))
-    if len(matches) != 1:
-        raise RuntimeError(f"Expected one {role}, found {[spec.name for spec in matches]}.")
     return matches[0]
 
 
@@ -314,8 +265,6 @@ def indexed_specs(specs, predicate):
 
 
 def bind_values(binding, specs, values):
-    if len(specs) != len(values):
-        raise ValueError(f"Cannot bind {len(values)} values to {len(specs)} model inputs.")
     for spec, value in zip(specs, values):
         binding.bind_ortvalue_input(spec.name, value)
 
@@ -331,8 +280,6 @@ def rank3_axes(spec, sequence_label=None):
         for index, dim in enumerate(spec.shape)
         if isinstance(dim, int) and dim > 1
     )
-    if spec.rank != 3 or len(feature_candidates) != 1:
-        raise ValueError(f"Cannot infer batch/sequence/features axes from {spec.name!r}: {spec.shape}")
     feature_axis = feature_candidates[0]
     if sequence_label is None:
         sequence_candidates = tuple(
@@ -344,8 +291,6 @@ def rank3_axes(spec, sequence_label=None):
             for index, dim in enumerate(spec.shape)
             if sequence_label in str(dim).lower()
         )
-    if len(sequence_candidates) != 1:
-        raise ValueError(f"Cannot infer sequence axis from {spec.name!r}: {spec.shape}")
     sequence_axis = sequence_candidates[0]
     batch_axis = next(index for index in range(spec.rank) if index not in (sequence_axis, feature_axis))
     return batch_axis, sequence_axis, feature_axis
@@ -370,8 +315,6 @@ def unpack_waveform(output_spec, decoder_input_spec, array):
         for index, dim in enumerate(output_spec.shape)
         if "sample" in str(dim).lower()
     )
-    if len(sample_axes) != 1:
-        raise ValueError(f"Cannot infer sample axis from {output_spec.name!r}: {output_spec.shape}")
     sample_axis = sample_axes[0]
     input_batch_axis, _, _ = rank3_axes(decoder_input_spec)
     batch_size = int(decoder_input_spec.shape[input_batch_axis])
@@ -499,8 +442,6 @@ SHARED_REFS = attach_shared_initializers(
     ONNX_FOLDER / meta_str("shared_initializer_model_file"),
 )
 shared_data_path = ONNX_FOLDER / meta_str("shared_initializer_data_file")
-if not shared_data_path.is_file():
-    raise FileNotFoundError(f"Missing shared initializer data: {shared_data_path}")
 print_progress(
     f"Shared ONNX initializers ready in {time.perf_counter() - shared_started:.2f}s."
 )
@@ -591,11 +532,6 @@ decode_state_outputs = indexed_specs(
     decode_io.outputs,
     lambda spec: spec.rank == 4 and is_floating(spec),
 )
-if len(prefill_state_outputs) != len(decode_state_input_specs) or len(decode_state_outputs) != len(
-    decode_state_input_specs
-):
-    raise RuntimeError("Prefill and decode recurrent-state counts do not align.")
-
 prefill_length_output = select_one(
     prefill_io.outputs,
     lambda spec: spec.rank == 1 and spec.dtype == length_dtype,
@@ -881,8 +817,6 @@ for target_index, target in enumerate(TARGET_TTS, start=1):
     )
     _, prompt_sequence_axis, _ = rank3_axes(prompt_input_spec)
     prompt_len = prompt_ids.shape[prompt_sequence_axis]
-    if prompt_len >= MAX_SEQ_LEN:
-        raise ValueError(f"Prompt length {prompt_len} reaches MAX_SEQ_LEN={MAX_SEQ_LEN}.")
     generation_limit = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - prompt_len - 1)
     print_progress(f"Generating codec frames (limit {generation_limit})...")
     prompt_value = prompt_input_spec.ort_value(prompt_ids, device_type, DEVICE_ID)

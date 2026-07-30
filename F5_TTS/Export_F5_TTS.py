@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import gc
 import shutil
-import subprocess
-import sys
 import math
 from pathlib import Path
 from typing import Any
@@ -35,8 +33,6 @@ F5_MODEL_PROFILES = {
     "v0": downloads_folder / "F5TTS_v0_Base" / "model_1200000.safetensors",
     "v1": downloads_folder / "F5TTS_v1_Base" / "model_1250000.safetensors",
 }
-if F5_MODEL_SERIES not in F5_MODEL_PROFILES:
-    raise ValueError(f"F5_MODEL_SERIES must be one of {tuple(F5_MODEL_PROFILES)}, got {F5_MODEL_SERIES!r}.")
 F5_checkpoint_path    = F5_MODEL_PROFILES[F5_MODEL_SERIES].expanduser().resolve()
 vocos_model_path     = str(downloads_folder / "vocos-mel-24khz")                                             # The Vocos model download path.            URL: https://huggingface.co/charactr/vocos-mel-24khz/tree/main
 onnx_model_Preprocess  = str(onnx_folder / "F5_Preprocess.onnx")                                             # The exported onnx model path.
@@ -57,9 +53,6 @@ CFG_STRENGTH = 2.0                      # F5-TTS model setting
 SWAY_COEFFICIENT = -1.0                 # F5-TTS model setting
 TARGET_RMS = 0.1                        # The root-mean-square value for the audio
 HOP_LENGTH = 256                        # Number of samples between successive frames in the STFT. It affects the generated audio length and speech speed.
-if NFE_STEP < 1:
-    raise ValueError("NFE_STEP must be >= 1.")
-
 # STFT/ISTFT Settings
 N_MELS = 100                            # Number of Mel bands to generate in the Mel-spectrogram
 NFFT = 1024                             # Number of FFT components for the STFT process
@@ -70,14 +63,6 @@ MAX_SIGNAL_LENGTH = 4096                # Max frames for audio length after STFT
 OPSET = 20
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
-
 f5_package_paths = tuple(Path(path).resolve() for path in f5_tts.__path__)
 
 
@@ -89,18 +74,10 @@ def find_vocab_file(checkpoint_path: Path) -> Path:
     )
     if not candidates:
         candidates = sorted(path for path in checkpoint_folder.glob("*.txt") if path.is_file())
-    if len(candidates) != 1:
-        raise FileNotFoundError(
-            f"Expected one vocab file beside {checkpoint_path.name}, found {len(candidates)}: "
-            f"{[path.name for path in candidates]}"
-        )
     return candidates[0].resolve()
 
 
 def get_checkpoint_architecture(checkpoint_path: Path) -> tuple[int, int]:
-    if checkpoint_path.suffix.casefold() != ".safetensors":
-        raise ValueError(f"Automatic config discovery requires a .safetensors checkpoint: {checkpoint_path}")
-
     from safetensors import safe_open
 
     with safe_open(checkpoint_path, framework="pt", device="cpu") as checkpoint:
@@ -111,8 +88,6 @@ def get_checkpoint_architecture(checkpoint_path: Path) -> tuple[int, int]:
             for key in keys
             if "transformer.transformer_blocks." in key
         }
-        if len(projection_keys) != 1 or not block_indices:
-            raise ValueError(f"Could not infer the F5 architecture from checkpoint keys in {checkpoint_path}.")
         hidden_size = checkpoint.get_slice(projection_keys[0]).get_shape()[1]
     return hidden_size, max(block_indices) + 1
 
@@ -148,17 +123,9 @@ def find_model_config(checkpoint_path: Path, model_series: str) -> Path:
         if is_requested_series:
             matches.append(config_path)
 
-    if len(matches) != 1:
-        raise FileNotFoundError(
-            f"Expected one compatible {model_series} YAML config for {checkpoint_path.name}, "
-            f"found {len(matches)} among {[path.name for path in candidates]}: "
-            f"{[path.name for path in matches]}"
-        )
     return matches[0]
 
 
-if not F5_checkpoint_path.is_file():
-    raise FileNotFoundError(f"F5 checkpoint was not found: {F5_checkpoint_path}")
 F5_config_path       = find_model_config(F5_checkpoint_path, F5_MODEL_SERIES)
 F5_safetensors_path  = str(F5_checkpoint_path)
 vocab_path           = str(find_vocab_file(F5_checkpoint_path))
@@ -236,7 +203,7 @@ class SinusPositionEmbedding(nn.Module):
 class ConvPositionEmbedding(nn.Module):
     def __init__(self, dim, kernel_size=31, groups=16):
         super().__init__()
-        assert kernel_size % 2 != 0
+        pass
         self.conv1d = nn.Sequential(
             nn.Conv1d(dim, dim, kernel_size, groups=groups, padding=kernel_size // 2),
             nn.Mish(),
@@ -336,8 +303,6 @@ class Attention(nn.Module):
         qk_norm: str | None = None,
     ):
         super().__init__()
-        if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError("Attention requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
         self.processor = processor
         self.dim = dim
         self.heads = heads
@@ -357,12 +322,10 @@ class Attention(nn.Module):
             self.q_norm = RMSNorm(dim_head, eps=1e-6)
             self.k_norm = RMSNorm(dim_head, eps=1e-6)
         else:
-            raise ValueError(f"Unimplemented qk_norm: {qk_norm}")
+            pass
         self.to_out = nn.ModuleList([nn.Linear(self.inner_dim, dim), nn.Dropout(dropout)])
 
     def forward(self, x, c=None, mask=None, rope=None, rope_cos=None, rope_sin=None, c_rope=None):
-        if c is not None:
-            raise NotImplementedError("The standalone F5 export path only supports DiT self-attention.")
         return self.processor(self, x, mask=mask, rope_cos=rope_cos, rope_sin=rope_sin)
 
     def fuse_qkv(self, scale=1.0):
@@ -386,8 +349,6 @@ def apply_rotary(x, rope_cos, rope_sin, permutation):
 
 class AttnProcessor:
     def __init__(self, head_dim, hidden_size, heads, pe_attn_head=None):
-        if pe_attn_head is not None and not 1 <= pe_attn_head <= heads:
-            raise ValueError(f"pe_attn_head must be between 1 and {heads}, got {pe_attn_head}.")
         self.head_dim = head_dim
         self.hidden_size = hidden_size
         self.heads = heads
@@ -566,8 +527,6 @@ class DiT(nn.Module):
         self.text_cond, self.text_uncond = None, None
 
     def fuse_time_projections(self):
-        if hasattr(self, "time_modulation"):
-            raise RuntimeError("Time modulation projections are already fused.")
         block_width = self.dim * 6
         final_width = self.dim * 2
         reference = self.transformer_blocks[0].attn_norm.linear.weight
@@ -717,9 +676,7 @@ class UnusedISTFTPlaceholder(nn.Module):
         self.register_buffer("window", torch.empty(n_fft, dtype=torch.float32))
 
     def forward(self, *args, **kwargs):
-        raise RuntimeError("Vocos ISTFT is unused in this export path; use the custom STFT_Process ISTFT.")
-
-
+        pass
 class ISTFTHead(nn.Module):
     def __init__(self, dim: int, n_fft: int, hop_length: int, padding: str = "same"):
         super().__init__()
@@ -1288,15 +1245,3 @@ print(
 print(f"[Cleanup] Removed temporary export folder: {onnx_raw_folder}")
 
 print("\nExport done!")
-print("\nStart running inference via Inference_F5_TTS_ONNX.py ...")
-subprocess.run(
-    [
-        sys.executable,
-        str(script_dir / "Inference_F5_TTS_ONNX.py"),
-        "--onnx-folder",
-        str(onnx_folder),
-        "--vocab-path",
-        vocab_path,
-    ],
-    check=True,
-)

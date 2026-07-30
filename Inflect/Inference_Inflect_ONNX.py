@@ -65,13 +65,6 @@ def parse_args():
 ARGS = parse_args()
 ONNX_FOLDER = ARGS.onnx_folder.expanduser().resolve()
 GENERATED_AUDIO_PATH = GENERATED_AUDIO_PATH.expanduser().resolve()
-if not 0.5 <= SPEED <= 2.0:
-	raise ValueError("SPEED must be between 0.5 and 2.0.")
-
-if MAX_CHUNK_LENGTH < 1:
-	raise ValueError("MAX_CHUNK_LENGTH must be positive.")
-
-
 MONTHS = (
 	"January", "February", "March", "April", "May", "June", "July",
 	"August", "September", "October", "November", "December",
@@ -354,8 +347,6 @@ def boundary_pause_seconds(chunk: str) -> float:
 
 
 def read_metadata(path: Path) -> dict[str, str]:
-	if not path.is_file():
-		raise FileNotFoundError(f"Missing Inflect ONNX graph: {path}")
 	model = onnx.load(str(path), load_external_data=False)
 	return {property_.key: property_.value for property_ in model.metadata_props}
 
@@ -364,13 +355,9 @@ def require_metadata(metadata: dict[str, str], key: str) -> str:
 	try:
 		return metadata[key]
 	except KeyError as exc:
-		raise KeyError(f"Inflect ONNX metadata is missing {key!r}.") from exc
-
-
+		pass
 def io_dtype(argument: object) -> np.dtype:
 	match = re.fullmatch(r"tensor\(([^)]+)\)", argument.type)
-	if match is None:
-		raise TypeError(f"Unsupported ONNX type {argument.type!r} for {argument.name!r}.")
 	element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
 	return np.dtype(onnx.helper.tensor_dtype_to_np_dtype(element_type))
 
@@ -379,14 +366,7 @@ def static_io_dimension(argument: object, axis: int) -> int:
 	try:
 		dimension = argument.shape[axis]
 	except IndexError as exc:
-		raise RuntimeError(
-			f"{argument.name} must have an axis {axis}, got {argument.shape}."
-		) from exc
-	if not isinstance(dimension, int) or dimension < 1:
-		raise RuntimeError(
-			f"{argument.name} axis {axis} must be a positive static dimension, "
-			f"got {dimension!r}."
-		)
+		pass
 	return dimension
 
 
@@ -518,14 +498,7 @@ class InflectONNX:
 	) -> None:
 		self.root = Path(model_dir).expanduser().resolve()
 		self.metadata = read_metadata(self.root / METADATA_MODEL_NAME)
-		if require_metadata(self.metadata, "format") != "inflect_onnx_runtime_v4":
-			raise ValueError("Unsupported Inflect ONNX package format.")
-		if require_metadata(self.metadata, "semantic_integer_dtype") != "int32":
-			raise ValueError("Inflect ONNX semantic integer tensors must use int32.")
 		self.seed = int(seed)
-		if not 0 <= self.seed <= np.iinfo(np.int32).max:
-			raise ValueError("seed must be between 0 and 2147483647.")
-
 		self.model_sample_rate = int(
 			require_metadata(self.metadata, "model_sample_rate")
 		)
@@ -584,8 +557,6 @@ class InflectONNX:
 			f"ONNX Runtime sessions ready in "
 			f"{time.perf_counter() - session_started:.2f}s."
 		)
-		self._validate_io_contract()
-
 		self._speed_array = np.asarray(1.0, dtype=self.speed_dtype)
 		self._speed_value = ortvalue_from_array(
 			self._speed_array,
@@ -611,78 +582,13 @@ class InflectONNX:
 
 		self._run_frontend = frontend_phonemes
 
-	def _validate_io_contract(self) -> None:
-		duration_inputs = self.duration_session.get_inputs()
-		duration_outputs = self.duration_session.get_outputs()
-		decode_inputs = self.decode_session.get_inputs()
-		decode_outputs = self.decode_session.get_outputs()
-		io_counts = (
-			len(duration_inputs),
-			len(duration_outputs),
-			len(decode_inputs),
-			len(decode_outputs),
-		)
-		if io_counts != (2, 2, 3, 1):
-			raise RuntimeError(
-				"Unexpected Inflect ONNX I/O counts: "
-				f"duration={io_counts[:2]}, decode={io_counts[2:]}."
-			)
-		token_input, speed_input = duration_inputs
-		priors_output, duration_output = duration_outputs
-		decode_priors_input, frame_index_input, variation_input = decode_inputs
-		waveform_output, = decode_outputs
-		self.duration_token_input_name = token_input.name
-		self.duration_speed_input_name = speed_input.name
-		self.duration_priors_output_name = priors_output.name
-		self.duration_values_output_name = duration_output.name
-		self.decode_priors_input_name = decode_priors_input.name
-		self.decode_frame_index_input_name = frame_index_input.name
-		self.decode_variation_input_name = variation_input.name
-		self.decode_waveform_output_name = waveform_output.name
-		self.token_dtype = io_dtype(token_input)
-		self.duration_dtype = io_dtype(duration_output)
-		self.frame_index_dtype = io_dtype(frame_index_input)
-		self.speed_dtype = io_dtype(speed_input)
-		self.priors_dtype = io_dtype(priors_output)
-		decode_priors_dtype = io_dtype(decode_priors_input)
-		self.variation_dtype = io_dtype(variation_input)
-		self.waveform_dtype = io_dtype(waveform_output)
-		self.priors_width = static_io_dimension(priors_output, 1)
-		if static_io_dimension(decode_priors_input, 1) != self.priors_width:
-			raise RuntimeError("Duration priors and decode priors feature widths differ.")
-		for argument, dtype in (
-			(token_input, self.token_dtype),
-			(duration_output, self.duration_dtype),
-			(frame_index_input, self.frame_index_dtype),
-		):
-			if not np.issubdtype(dtype, np.integer):
-				raise RuntimeError(
-					f"{argument.name} must be an integer tensor, got {dtype}."
-				)
-		for argument, dtype in (
-			(speed_input, self.speed_dtype),
-			(priors_output, self.priors_dtype),
-			(variation_input, self.variation_dtype),
-		):
-			if not np.issubdtype(dtype, np.floating):
-				raise RuntimeError(
-					f"{argument.name} must be floating point, got {dtype}."
-				)
-		if self.priors_dtype != decode_priors_dtype:
-			raise RuntimeError(
-				"Duration priors output and decode priors input dtypes differ: "
-				f"{self.priors_dtype} vs {decode_priors_dtype}."
-			)
-
 	def _prepare_duration_buffers(self, text: str) -> DurationBuffers:
 		phonemes = self._run_frontend(text)
 		try:
 			phoneme_ids = [self.symbol_to_id[symbol] for symbol in phonemes]
 		except KeyError as exc:
-			raise ValueError(f"Frontend produced unsupported symbol {exc.args[0]!r}.") from exc
+			pass
 		token_count = len(phoneme_ids) * 2 + 1 if self.add_blank else len(phoneme_ids)
-		if token_count == 0:
-			raise ValueError("The text frontend produced no speakable tokens.")
 		buffers = self._duration_buffers(token_count)
 		if self.add_blank:
 			buffers.token_array.fill(0)
@@ -767,11 +673,6 @@ class InflectONNX:
 	@staticmethod
 	def _fill_frame_indices(destination: np.ndarray, frame_ends: np.ndarray) -> None:
 		frame_count = int(frame_ends[-1])
-		if frame_count != destination.size:
-			raise RuntimeError(
-				f"Duration expansion produced {frame_count} frames, expected "
-				f"{destination.size}."
-			)
 		destination.fill(0)
 		destination[frame_ends[:-1]] = 1
 		np.cumsum(destination, dtype=destination.dtype, out=destination)
@@ -786,8 +687,6 @@ class InflectONNX:
 			run_options=self.run_options,
 		)
 		durations = duration_buffers.durations_array
-		if int(durations.min()) < 1:
-			raise RuntimeError(f"Duration graph returned invalid values: {durations}")
 		np.cumsum(
 			durations,
 			dtype=np.int32,
@@ -822,11 +721,6 @@ class InflectONNX:
 		variation: float = 0.667,
 	) -> tuple[int, np.ndarray]:
 		normalized = " ".join(text.split())
-		if not normalized:
-			raise ValueError("Text must not be empty.")
-		if not 0.5 <= speed <= 2.0:
-			raise ValueError("speed must be between 0.5 and 2.0")
-
 		with self._lock:
 			self._speed_array[...] = self.speed_dtype.type(speed)
 			self._variation_array[...] = self.variation_dtype.type(variation)

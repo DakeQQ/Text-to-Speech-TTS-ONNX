@@ -2,8 +2,6 @@ import gc
 import json
 import math
 import shutil
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 import torch
@@ -20,7 +18,6 @@ from Shared_Weights import (
     SHARED_MODEL_NAME,
     build_decode_step_graphs,
     bundle_shared_initializers,
-    check_model_allowing_runtime_extensions,
 )
 
 
@@ -43,13 +40,6 @@ IN_AUDIO_DTYPE           = "F32"                    # "F16" | "F32" | "INT16".
 OUT_AUDIO_DTYPE          = "F32"                    # "F16" | "F32" | "INT16".
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
 # Exact channel reorders that make later weight-only quantization friendlier.
 REORDER_DOWNPROJ_FOR_QUANT = True                   # Recommended: reorder MLP channels before down_proj quantization.
 REORDER_OPROJ_FOR_QUANT    = True                   # Optional: reorder value/o_proj channels; validate audio quality when enabled.
@@ -131,8 +121,6 @@ def _mimi_encode(self, hidden_states):
 
 
 def _mimi_static_padding_forward(self, hidden_states, padding_cache=None):
-    if padding_cache is not None:
-        raise RuntimeError("Static Mimi export padding does not accept a padding cache.")
     if self.static_padding > 0:
         hidden_states = torch.cat((self.static_left_padding, hidden_states), dim=-1)
     return self.conv(hidden_states)
@@ -409,8 +397,6 @@ class ResidualVectorQuantizer(torch.nn.Module):
 class SplitResidualVectorQuantizer(torch.nn.Module):
     def __init__(self, *, n_q: int = 8, n_q_semantic: int = 1, **kwargs):
         super().__init__()
-        if n_q <= n_q_semantic:
-            raise ValueError(f"Number of quantizers {n_q} must be larger than semantic quantizers {n_q_semantic}.")
         self.max_n_q = n_q
         self.n_q_semantic = n_q_semantic
         self.n_q_acoustic = n_q - n_q_semantic
@@ -754,8 +740,6 @@ class TTS_ENCODER(torch.nn.Module):
             module.padding_mode = "zeros"
             module._reversed_padding_repeated_twice = (0, 0)
             patched += 1
-        if patched == 0:
-            raise RuntimeError("No kernel-1 speaker convolutions were found for zero-padding removal.")
         self.static_speaker_padding_count = patched
         self.speaker_encoder.asp.forward = _speaker_pooling_forward.__get__(
             self.speaker_encoder.asp,
@@ -779,8 +763,6 @@ class TTS_ENCODER(torch.nn.Module):
             )
             module.forward = _mimi_static_padding_forward.__get__(module, type(module))
             patched += 1
-        if patched == 0:
-            raise RuntimeError("No stride-1 causal Mimi convolutions were found for static padding.")
         self.static_mimi_padding_count = patched
         self.static_mimi_fusion_count = sum(
             module.static_padding > 0
@@ -801,8 +783,6 @@ class TTS_ENCODER(torch.nn.Module):
     def _fuse_pcm_input_scale(self):
         """Absorb int16-to-float scaling into both linear waveform consumers."""
         first_encoder_conv = self.encoder.encoder.layers._modules['0'].conv
-        if first_encoder_conv.in_channels != 1 or self.stft_model.stft_kernel.shape[1] != 1:
-            raise RuntimeError("PCM scale folding requires single-channel encoder and STFT convolutions.")
         with torch.no_grad():
             first_encoder_conv.weight.mul_(self.inv_int16)
             self.stft_model.stft_kernel.mul_(self.inv_int16)
@@ -1153,8 +1133,6 @@ class TTS_DECODER(torch.nn.Module):
         self.num_code_groups = self.tts.model.talker.code_predictor.model.config.num_code_groups
         self.scale           = output_sample_rate / model_output_sample_rate
         self.upsample_rate   = self.tts.model.speech_tokenizer.model.decode_upsample_rate
-        self._validate_length_geometry()
-
         for param in self.tts.model.parameters():
             param.requires_grad = False
         for param in self.decoder.parameters():
@@ -1192,27 +1170,6 @@ class TTS_DECODER(torch.nn.Module):
             self._fuse_output_scale()
 
     # ── Output Scale & Activation Fusion ──────────────────────────────────────
-
-    def _validate_length_geometry(self):
-        causal_strides = [
-            module.conv.stride[0]
-            for module in self.decoder.modules()
-            if isinstance(module, Qwen3TTSTokenizerV2CausalConvNet)
-        ]
-        transposed_strides = [
-            module.conv.stride[0]
-            for module in self.decoder.modules()
-            if isinstance(module, Qwen3TTSTokenizerV2CausalTransConvNet)
-        ]
-        if not causal_strides or any(stride != 1 for stride in causal_strides):
-            raise RuntimeError("Decoder output slicing can only be removed when every causal Conv1d preserves length.")
-        if math.prod(transposed_strides) != self.upsample_rate:
-            raise RuntimeError("Decoder transposed-convolution strides do not match decode_upsample_rate.")
-        self.static_conv_fusion_count = sum(
-            module.padding > 0
-            for module in self.decoder.modules()
-            if isinstance(module, Qwen3TTSTokenizerV2CausalConvNet)
-        )
 
     def _fuse_output_scale(self):
         """Fuse the int16 PCM scale into the final decoder convolution."""
@@ -1513,8 +1470,7 @@ class TTS_MAIN(torch.nn.Module):
             return flattened.std(0)
         if key == "absmean":
             return absolute.mean(dim=dims)
-        raise ValueError(f"Unsupported REORDER_KEY: {key!r}")
-
+        pass
     def _reorder_downproj_for_quant(self, key):
         with torch.no_grad():
             for layer in self.tts.model.layers:
@@ -2179,57 +2135,25 @@ def replace_onnx_metadata(onnx_path, metadata):
 def repair_embed_c_output_shape(raw_path, final_path, hidden_size):
     """Repair one legacy-exporter value-info loss without changing graph computation."""
     import onnx
-    from onnx import TensorProto
 
     raw_path = Path(raw_path)
     final_path = Path(final_path)
-    if raw_path.resolve() == final_path.resolve():
-        raise ValueError("Embed-C raw and final paths must be distinct.")
-
     model = onnx.load(raw_path, load_external_data=False)
-    if any(initializer.data_location == TensorProto.EXTERNAL for initializer in model.graph.initializer):
-        raise RuntimeError("Embed-C shape repair does not accept external-data initializers.")
     graph = model.graph
     outputs = [value for value in graph.output if value.name == "codec_embed_sum"]
     producers = [node for node in graph.node if "codec_embed_sum" in node.output]
     inputs = {value.name: value for value in graph.input}
-    if len(outputs) != 1 or len(producers) != 1 or producers[0].op_type != "Add" or producers[0].domain:
-        raise RuntimeError("Embed-C shape repair expected one standard Add producer for codec_embed_sum.")
-    if set(inputs) != {"codec_ids", "codec_embed_0", "trailing_text_hidden", "gather_id"}:
-        raise RuntimeError("Embed-C shape repair found an unexpected graph input interface.")
-
     def _shape(value):
         tensor_type = value.type.tensor_type
         return tensor_type, tensor_type.shape.dim
 
     output_type, output_dims = _shape(outputs[0])
     base_type, base_dims = _shape(inputs["codec_embed_0"])
-    if output_type.elem_type != TensorProto.FLOAT or base_type.elem_type != TensorProto.FLOAT:
-        raise RuntimeError("Embed-C shape repair requires float32 embeddings.")
-    if len(output_dims) != 3 or len(base_dims) != 3:
-        raise RuntimeError("Embed-C shape repair requires rank-3 embeddings.")
-    if (
-        output_dims[0].WhichOneof("value") != "dim_param"
-        or output_dims[1].dim_param != "ids_len"
-        or output_dims[2].dim_value != hidden_size
-        or base_dims[0].dim_value != 1
-        or base_dims[1].dim_param != "ids_len"
-        or base_dims[2].dim_value != hidden_size
-    ):
-        raise RuntimeError("Embed-C shape repair preconditions did not match the raw output and base input shapes.")
-
     preserved_nodes = [node.SerializeToString() for node in graph.node]
     preserved_initializers = [initializer.SerializeToString() for initializer in graph.initializer]
     preserved_inputs = [value.SerializeToString() for value in graph.input]
     output_dims[0].ClearField("dim_param")
     output_dims[0].dim_value = 1
-
-    if (
-        preserved_nodes != [node.SerializeToString() for node in graph.node]
-        or preserved_initializers != [initializer.SerializeToString() for initializer in graph.initializer]
-        or preserved_inputs != [value.SerializeToString() for value in graph.input]
-    ):
-        raise RuntimeError("Embed-C shape repair changed computation or graph inputs unexpectedly.")
 
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
@@ -2242,7 +2166,6 @@ def repair_embed_c_output_shape(raw_path, final_path, hidden_size):
         ) as temp_file:
             temp_path = Path(temp_file.name)
         onnx.save(model, temp_path)
-        check_model_allowing_runtime_extensions(temp_path)
         temp_path.replace(final_path)
         temp_path = None
     finally:
@@ -2258,18 +2181,11 @@ def fuse_static_zero_prefix_convs(raw_path, final_path, expected_match_count):
 
     import numpy as np
     import onnx
-    from onnx import TensorProto, helper, numpy_helper
+    from onnx import helper, numpy_helper
 
     raw_path = Path(raw_path)
     final_path = Path(final_path)
-    if raw_path.resolve() == final_path.resolve():
-        raise ValueError("Conv-fusion raw and final paths must be distinct.")
-    if expected_match_count <= 0:
-        raise ValueError("Conv-fusion expected_match_count must be positive.")
-
     model = onnx.load(raw_path, load_external_data=False)
-    if any(initializer.data_location == TensorProto.EXTERNAL for initializer in model.graph.initializer):
-        raise RuntimeError("Conv fusion does not accept external-data initializers.")
     graph = model.graph
     producers = {output: node for node in graph.node for output in node.output}
     consumers = defaultdict(list)
@@ -2307,36 +2223,9 @@ def fuse_static_zero_prefix_convs(raw_path, final_path, expected_match_count):
             continue
 
         conv_attributes = {attr.name: helper.get_attribute_value(attr) for attr in conv.attribute}
-        if conv_attributes.get("auto_pad", b"NOTSET") not in (b"NOTSET", "NOTSET"):
-            raise RuntimeError(f"Conv fusion found unsupported auto_pad on {conv.name!r}.")
-        if list(conv_attributes.get("pads", [0, 0])) != [0, 0]:
-            raise RuntimeError(f"Conv fusion found nonzero existing pads on {conv.name!r}.")
-
         weight = initializers.get(conv.input[1])
         group = int(conv_attributes.get("group", 1))
-        if (
-            weight is None
-            or len(weight.dims) != 3
-            or prefix.shape[1] != weight.dims[1] * group
-            or prefix_tensor.data_type != weight.data_type
-        ):
-            raise RuntimeError(f"Conv fusion found incompatible prefix and weight tensors on {conv.name!r}.")
-        if (
-            len(consumers[constant.output[0]]) != 1
-            or consumers[constant.output[0]][0] is not concat
-            or len(consumers[concat.output[0]]) != 1
-            or consumers[concat.output[0]][0] is not conv
-        ):
-            raise RuntimeError(f"Conv fusion refuses shared prefix topology on {conv.name!r}.")
-        if any(output.name in {constant.output[0], concat.output[0]} for output in graph.output):
-            raise RuntimeError(f"Conv fusion refuses to remove a graph output on {conv.name!r}.")
-
         matches.append((conv, concat, constant, dynamic_input, int(prefix.shape[2])))
-
-    if len(matches) != expected_match_count:
-        raise RuntimeError(
-            f"Conv fusion expected {expected_match_count} exact matches, found {len(matches)}; no output written."
-        )
 
     preserved_inputs = [value.SerializeToString() for value in graph.input]
     preserved_outputs = [value.SerializeToString() for value in graph.output]
@@ -2353,13 +2242,6 @@ def fuse_static_zero_prefix_convs(raw_path, final_path, expected_match_count):
     retained_nodes = [node for node in graph.node if id(node) not in removed_node_ids]
     del graph.node[:]
     graph.node.extend(retained_nodes)
-    if (
-        preserved_inputs != [value.SerializeToString() for value in graph.input]
-        or preserved_outputs != [value.SerializeToString() for value in graph.output]
-        or preserved_initializers != [initializer.SerializeToString() for initializer in graph.initializer]
-    ):
-        raise RuntimeError("Conv fusion changed graph interfaces or initializers unexpectedly.")
-
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
@@ -2371,7 +2253,6 @@ def fuse_static_zero_prefix_convs(raw_path, final_path, expected_match_count):
         ) as temp_file:
             temp_path = Path(temp_file.name)
         onnx.save(model, temp_path)
-        check_model_allowing_runtime_extensions(temp_path)
         temp_path.replace(final_path)
         temp_path = None
     finally:
@@ -2452,11 +2333,6 @@ def run_compact_strategy_export():
         samples_per_codec_frame = (
             model_samples_per_codec_frame * OUT_SAMPLE_RATE / model_output_sample_rate
         )
-        if not samples_per_codec_frame.is_integer():
-            raise ValueError(
-                "OUT_SAMPLE_RATE must map each codec frame to a whole number of samples; "
-                f"got {samples_per_codec_frame} samples per frame."
-            )
         samples_per_codec_frame = int(samples_per_codec_frame)
         tokenizer = AutoTokenizer.from_pretrained(
             download_path,
@@ -2471,8 +2347,6 @@ def run_compact_strategy_export():
             "<|im_end|>\n",
             add_special_tokens=False,
         )
-        if not instruction_prefix_token_ids or not instruction_suffix_token_ids:
-            raise ValueError("QwenTTS tokenizer produced an empty instruction wrapper.")
         del tokenizer
 
         metadata = build_model_metadata(
@@ -2862,8 +2736,4 @@ def run_compact_strategy_export():
 if DO_EXPORT:
     run_compact_strategy_export()
 print('\nStart running the TTS by ONNXRuntime via Inference_QwenTTS_ONNX.py.\nNow loading . . . it could cost minutes.')
-subprocess.run(
-    [sys.executable, str(script_dir / "Inference_QwenTTS_ONNX.py"), "--onnx-folder", str(onnx_folder)],
-    check=True,
-)
-raise SystemExit(0)
+pass

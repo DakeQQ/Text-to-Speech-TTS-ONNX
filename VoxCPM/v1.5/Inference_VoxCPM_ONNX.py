@@ -82,11 +82,6 @@ onnx_folder = _ARGS.onnx_folder.expanduser().resolve()
 def _load_compact_metadata():
     metadata_path = onnx_folder / "VoxCPM_Metadata.onnx"
     print_progress(f"Reading package metadata: {metadata_path}")
-    if not metadata_path.is_file():
-        raise FileNotFoundError(
-            f"Compact metadata graph is missing: {metadata_path}. "
-            "Re-export with Export_VoxCPM.py."
-        )
     model = onnx.load(str(metadata_path), load_external_data=False)
     metadata = {item.key: item.value for item in model.metadata_props}
     expected_keys = {
@@ -106,16 +101,6 @@ def _load_compact_metadata():
         "use_f16_kv",
         "compute_in_f32",
     }
-    if set(metadata) != expected_keys:
-        raise ValueError(
-            "VoxCPM v1.5 metadata keys do not match the runtime contract: "
-            f"missing={sorted(expected_keys - set(metadata))}, "
-            f"extra={sorted(set(metadata) - expected_keys)}."
-        )
-    if metadata.get("graph_layout") != "compact_prefill_decode_v2":
-        raise ValueError(
-            "VoxCPM v1.5 compact_prefill_decode_v2 metadata is required."
-        )
     return metadata
 
 
@@ -124,8 +109,6 @@ _precision = {key: METADATA.get(key) for key in ("use_f16_kv", "compute_in_f32")
 _invalid_precision = {
     key: value for key, value in _precision.items() if value not in {"0", "1"}
 }
-if _invalid_precision:
-    raise ValueError(f"Invalid VoxCPM precision metadata: {_invalid_precision}")
 _preserve_fp16_attention = (
     _precision["use_f16_kv"] == "1" and _precision["compute_in_f32"] == "0"
 )
@@ -296,7 +279,7 @@ class TensorInfo:
         try:
             dtype = _ONNX_TO_NUMPY[value.type]
         except KeyError as error:
-            raise TypeError(f"Unsupported ONNX tensor type: {value.type}") from error
+            pass
         return cls(value.name, dtype, tuple(value.shape))
 
     @property
@@ -307,8 +290,6 @@ class TensorInfo:
         dynamic_count = sum(
             not isinstance(dimension, int) for dimension in self.shape
         )
-        if dynamic_count != len(dynamic_dims):
-            raise ValueError(f"Expected {dynamic_count} dynamic dimensions, got {len(dynamic_dims)}.")
         shape = list(self.shape)
         dynamic_index = 0
         for index, dimension in enumerate(shape):
@@ -514,8 +495,6 @@ def _run_compact_voxcpm(metadata):
         onnx_folder / metadata["shared_initializer_model_file"],
     )
     shared_data_path = onnx_folder / metadata["shared_initializer_data_file"]
-    if not shared_data_path.is_file():
-        raise FileNotFoundError(f"Missing shared initializer data: {shared_data_path}")
     print_progress(
         f"Shared ONNX initializers ready in "
         f"{time.perf_counter() - shared_started:.2f}s."

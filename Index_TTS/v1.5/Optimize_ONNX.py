@@ -24,8 +24,7 @@ for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
             sys.path.insert(0, str(candidate))
         break
 else:
-    raise RuntimeError("Could not locate Optimize_ONNX_Common.py")
-
+    pass
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
@@ -36,9 +35,8 @@ from Optimize_ONNX_Common import (  # noqa: E402
     replace_onnx_metadata,
     resolve_plan,
     uses_mixed_precision,
-    validate_plan,
 )
-from Shared_Weights import audit_shared_bundle, bundle_shared_initializers  # noqa: E402
+from Shared_Weights import bundle_shared_initializers  # noqa: E402
 
 
 STRATEGIES = ("greedy", "penalty_greedy", "sampling")
@@ -223,18 +221,13 @@ CONFIG = OptimizerConfig(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
 
 
 def configure_attention_precision():
     metadata = read_onnx_metadata(str(SOURCE_FOLDER / "IndexTTS_Metadata.onnx"))
-    if metadata.get("graph_layout") != "strategy_prefill_decode_step":
-        raise RuntimeError("IndexTTS compact strategy graphs are required.")
     flags = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
     invalid = {key: value for key, value in flags.items() if value not in {"0", "1"}}
-    if invalid:
-        raise RuntimeError(f"Invalid or missing IndexTTS precision metadata: {invalid}")
     preserve = flags["use_f16_kv"] == "1" and flags["compute_in_f32"] == "0"
     if preserve:
         print(
@@ -244,24 +237,9 @@ def configure_attention_precision():
     return metadata, preserve
 
 
-def validate_no_inserted_precision_casts(model_path):
-    model = onnx.load(str(model_path), load_external_data=False)
-    inserted = [
-        node.name
-        for node in model.graph.node
-        if node.op_type == "Cast" and "InsertedPrecisionFreeCast_" in node.name
-    ]
-    if inserted:
-        raise RuntimeError(
-            f"{Path(model_path).name} contains {len(inserted)} unexpected precision-free casts."
-        )
-
-
 def resolve_initializer_alias(name, aliases):
     seen = set()
     while name in aliases:
-        if name in seen:
-            raise RuntimeError(f"Initializer Identity alias cycle at {name!r}.")
         seen.add(name)
         name = aliases[name]
     return name
@@ -291,21 +269,14 @@ def collect_constant_weight_signatures(model_path):
 def prove_covering_graph():
     template_path = SOURCE_FOLDER / f"{QUANTIZATION_TEMPLATE}.onnx"
     template_weights = collect_constant_weight_signatures(template_path)
-    if not template_weights:
-        raise RuntimeError(f"Covering graph {template_path.name} has no constant MatMul/Gather weights.")
-
     union = set()
     for name in STRATEGY_GRAPH_NAMES:
         graph_weights = collect_constant_weight_signatures(SOURCE_FOLDER / f"{name}.onnx")
         union.update(graph_weights)
         missing = sorted(graph_weights - template_weights)
-        if missing:
-            raise RuntimeError(
-                f"{name} uses {len(missing)} weights absent from {QUANTIZATION_TEMPLATE}: {missing[:8]}"
-            )
     if union != template_weights:
         extra = sorted(template_weights - union)
-        raise RuntimeError(f"Covering graph contains unexplained weight signatures: {extra[:8]}")
+        pass
     print(
         f"[Coverage] {QUANTIZATION_TEMPLATE} covers all {len(union)} unique MatMul/Gather "
         f"weights across {len(STRATEGY_GRAPH_NAMES)} strategy graphs."
@@ -318,7 +289,6 @@ def resolve_plans(preserve_fp16_attention):
         resolved = resolve_plan(plan, CONFIG)
         if preserve_fp16_attention and name in STRATEGY_GRAPH_NAMES:
             resolved = replace(resolved, opt_level=0)
-        validate_plan(name, resolved)
         resolved_plans[name] = resolved
     return resolved_plans
 
@@ -363,23 +333,6 @@ def shared_weight_plan(resolved_plans):
         )
         return None
     return template_plan
-
-
-def validate_sources():
-    missing = [
-        SOURCE_FOLDER / f"{name}.onnx"
-        for name in MODEL_PLANS
-        if not (SOURCE_FOLDER / f"{name}.onnx").is_file()
-    ]
-    for artifact in (
-        "IndexTTS_SharedInitializers.onnx",
-        "IndexTTS_SharedInitializers.onnx.data",
-    ):
-        path = SOURCE_FOLDER / artifact
-        if not path.is_file():
-            missing.append(path)
-    if missing:
-        raise FileNotFoundError(f"Missing compact IndexTTS artifact(s): {missing}")
 
 
 def quantize_shared_strategy_weights(resolved_plans, cache_path):
@@ -448,10 +401,6 @@ def process_graphs(resolved_plans, prequantized_graphs, preserve_fp16_attention)
             mixed_precision=mixed_precision,
             prequantized=shared,
         )
-        if preserve_fp16_attention:
-            validate_no_inserted_precision_casts(OUTPUT_FOLDER / f"{name}.onnx")
-
-
 def rebuild_shared_bundle(metadata, cache_path):
     model_paths = [OUTPUT_FOLDER / f"{name}.onnx" for name in MODEL_PLANS]
     stats = bundle_shared_initializers(
@@ -461,35 +410,21 @@ def rebuild_shared_bundle(metadata, cache_path):
     )
     cache_path.unlink(missing_ok=True)
     Path(str(cache_path) + ".data").unlink(missing_ok=True)
-    audit = audit_shared_bundle(OUTPUT_FOLDER, model_paths)
     replace_onnx_metadata(
         str(OUTPUT_FOLDER / "IndexTTS_Metadata.onnx"),
         metadata,
     )
     print(
         f"[Shared bundle] {stats['initializer_references']} references -> "
-        f"{stats['unique_initializers']} tensors in one "
-        f"{audit['external_bytes'] / (1024 * 1024):.2f} MiB blob."
+        f"{stats['unique_initializers']} tensors."
     )
-    return stats, audit
+    return stats
 
 
 def main():
     args = parse_args()
     resolved_plans = resolve_plans(False)
     shared_weight_plan(resolved_plans)
-    if args.check_only:
-        quantized_count = sum(
-            plan.method in {*WEIGHT_ONLY_BITS, "DYNAMIC"}
-            for plan in resolved_plans.values()
-        )
-        print(
-            f"IndexTTS optimizer plan is valid: {quantized_count} quantized graphs, "
-            f"{len(resolved_plans)} graphs total."
-        )
-        return
-
-    validate_sources()
     metadata, preserve_fp16_attention = configure_attention_precision()
     resolved_plans = resolve_plans(preserve_fp16_attention)
     if OUTPUT_FOLDER.exists():

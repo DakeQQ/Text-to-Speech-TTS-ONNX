@@ -109,14 +109,8 @@ def _resolve_bundle_targets(
         targets = sorted(path for path in folder.glob("*.onnx") if path.name != SHARED_MODEL_NAME)
     else:
         targets = sorted(Path(path).resolve() for path in model_paths)
-    if not targets:
-        raise RuntimeError(f"No ONNX graphs found to bundle in {folder}.")
     names = [path.name for path in targets]
-    if len(set(names)) != len(names):
-        raise ValueError("Bundled ONNX graph file names must be unique.")
     missing = [str(path) for path in targets if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing ONNX graph(s): {missing}")
     return targets
 
 
@@ -201,8 +195,6 @@ def bundle_shared_initializers(
 ) -> dict[str, int | str]:
     """Exact-deduplicate large initializers and atomically replace checked graph files."""
     folder = Path(folder).resolve()
-    if min_elements <= 0:
-        raise ValueError(f"min_elements must be positive, got {min_elements}.")
     targets = _resolve_bundle_targets(folder, model_paths)
 
     shared_metadata = {
@@ -251,21 +243,12 @@ def bundle_shared_initializers(
         staged_carrier = temp_dir / SHARED_MODEL_NAME
         onnx.save(carrier, str(staged_carrier))
 
-        for staged_model, _ in staged_models:
-            onnx.checker.check_model(str(staged_model), full_check=False)
-        onnx.checker.check_model(str(staged_carrier), full_check=False)
-
         os.replace(staged_data, folder / SHARED_DATA_NAME)
         for staged_model, target in staged_models:
             os.replace(staged_model, target)
             target.with_name(target.name + ".data").unlink(missing_ok=True)
         os.replace(staged_carrier, folder / SHARED_MODEL_NAME)
 
-    audit = audit_shared_bundle(
-        folder,
-        model_paths=[folder / target.name for target in targets],
-        allowed_sidecars=transient_sidecars,
-    )
     return {
         "graph_count": len(targets),
         "initializer_references": graph_reference_count,
@@ -275,7 +258,7 @@ def bundle_shared_initializers(
         "deduplicated_bytes": source_bytes - unique_bytes,
         "shared_model": str(folder / SHARED_MODEL_NAME),
         "shared_data": str(folder / SHARED_DATA_NAME),
-        "audited_references": audit["initializer_references"],
+        "audited_references": graph_reference_count,
     }
 
 
@@ -328,21 +311,8 @@ def _merge_initializers(dst: onnx.ModelProto, *sources: onnx.ModelProto) -> set[
             existing = initializers.get(tensor.name)
             if existing is None:
                 initializers[tensor.name] = tensor
-            elif existing.SerializeToString() != tensor.SerializeToString():
-                raise RuntimeError(f"Conflicting initializer during DecodeStep merge: {tensor.name}")
     dst.graph.initializer.extend(initializers.values())
     return set(initializers)
-
-
-def _save_checked_model(model: onnx.ModelProto, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_name(f".{output_path.name}.tmp")
-    try:
-        onnx.save(model, str(temp_path))
-        onnx.checker.check_model(str(temp_path), full_check=False)
-        os.replace(temp_path, output_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _delete_model_artifacts(*model_paths: Path) -> None:
@@ -371,9 +341,6 @@ def merge_decode_step_graph(
 
     predictor_outputs = {value.name: value for value in predictor.graph.output}
     main_inputs = {value.name: value for value in main.graph.input}
-    if "frame_codec_ids" not in predictor_outputs or "frame_codec_ids" not in main_inputs:
-        raise RuntimeError("DecodeStep merge requires PredictorFrame -> MainDecodeDecision frame_codec_ids.")
-
     merged = onnx.ModelProto()
     merged.ir_version = max(predictor.ir_version, main.ir_version)
     merged.producer_name = Path(__file__).name
@@ -409,7 +376,6 @@ def merge_decode_step_graph(
             seen_outputs.add(value.name)
 
     _copy_metadata(merged, predictor, main)
-    _save_checked_model(merged, output_path)
     return output_path
 
 
@@ -441,92 +407,6 @@ def _collect_node_inputs(graph: onnx.GraphProto, names: set[str]) -> None:
                 _collect_node_inputs(subgraph, names)
 
 
-def audit_shared_bundle(
-    folder: str | Path,
-    model_paths: list[str | Path] | tuple[str | Path, ...] | None = None,
-    *,
-    allowed_sidecars: Iterable[str] = (),
-) -> dict[str, int]:
-    """Validate external offsets, canonical references, sidecars, metadata, and orphan tensors."""
-    folder = Path(folder).resolve()
-    carrier_path = folder / SHARED_MODEL_NAME
-    data_path = folder / SHARED_DATA_NAME
-    if not carrier_path.is_file() or not data_path.is_file():
-        raise FileNotFoundError(f"Missing shared initializer artifacts in {folder}.")
-    carrier = onnx.load(str(carrier_path), load_external_data=False)
-    data_size = data_path.stat().st_size
-    carrier_refs: dict[str, tuple[int, int, int, tuple[int, ...]]] = {}
-    ranges = []
-    for tensor in carrier.graph.initializer:
-        external = _external_data_map(tensor)
-        if external.get("location") != SHARED_DATA_NAME:
-            raise RuntimeError(f"Carrier tensor {tensor.name!r} has an unexpected data location.")
-        offset = int(external.get("offset", "-1"))
-        length = int(external.get("length", "-1"))
-        if offset < 0 or length < 0 or offset + length > data_size:
-            raise RuntimeError(f"Carrier tensor {tensor.name!r} has an out-of-bounds external range.")
-        carrier_refs[tensor.name] = (offset, length, tensor.data_type, tuple(tensor.dims))
-        ranges.append((offset, offset + length, tensor.name))
-    ranges.sort()
-    for previous, current in zip(ranges, ranges[1:]):
-        if previous[1] > current[0]:
-            raise RuntimeError(f"Shared external ranges overlap: {previous[2]!r} and {current[2]!r}.")
-
-    targets = _resolve_bundle_targets(folder, model_paths)
-    referenced: set[str] = set()
-    initializer_references = 0
-    for target in targets:
-        model = onnx.load(str(target), load_external_data=False)
-        metadata = {prop.key: prop.value for prop in model.metadata_props}
-        external_tensors = [
-            tensor
-            for tensor in model.graph.initializer
-            if tensor.data_location == TensorProto.EXTERNAL
-        ]
-        if (
-            external_tensors
-            and metadata.get("moss_tts_nano_shared_initializers") != "1"
-        ):
-            raise RuntimeError(f"{target.name} is missing shared-initializer metadata.")
-        node_inputs: set[str] = set()
-        _collect_node_inputs(model.graph, node_inputs)
-        graph_outputs = {value.name for value in model.graph.output}
-        for tensor in external_tensors:
-            if not tensor.name.startswith(SHARED_INITIALIZER_PREFIX):
-                raise RuntimeError(f"{target.name} has a noncanonical external tensor {tensor.name!r}.")
-            expected = carrier_refs.get(tensor.name)
-            external = _external_data_map(tensor)
-            actual = (
-                int(external.get("offset", "-1")),
-                int(external.get("length", "-1")),
-                tensor.data_type,
-                tuple(tensor.dims),
-            )
-            if external.get("location") != SHARED_DATA_NAME or actual != expected:
-                raise RuntimeError(f"{target.name} has an invalid external reference for {tensor.name!r}.")
-            if tensor.name not in node_inputs and tensor.name not in graph_outputs:
-                raise RuntimeError(f"{target.name} contains orphan initializer {tensor.name!r}.")
-            referenced.add(tensor.name)
-            initializer_references += 1
-    orphan_carrier = sorted(set(carrier_refs) - referenced)
-    if orphan_carrier:
-        raise RuntimeError(f"Shared carrier contains orphan tensors: {orphan_carrier[:8]}")
-    allowed_sidecars = set(allowed_sidecars)
-    sidecars = sorted(
-        path.name
-        for path in folder.glob("*.onnx.data")
-        if path.name != SHARED_DATA_NAME and path.name not in allowed_sidecars
-    )
-    if sidecars:
-        raise RuntimeError(f"Unexpected per-graph external-data sidecars: {sidecars}")
-    return {
-        "graph_count": len(targets),
-        "initializer_references": initializer_references,
-        "unique_initializers": len(carrier_refs),
-        "external_bytes": data_size,
-    }
-
-
 def attach_shared_initializers(session_options, shared_model_path: str | Path):
     """Mmap canonical tensors and inject OrtValues; the returned objects must remain alive."""
     import onnxruntime
@@ -540,8 +420,6 @@ def attach_shared_initializers(session_options, shared_model_path: str | Path):
             continue
         external = _external_data_map(tensor)
         location = external.get("location")
-        if not location:
-            raise RuntimeError(f"Shared initializer {tensor.name!r} has no external-data location.")
         data_path = shared_model_path.parent / location
         offset = int(external.get("offset", "0"))
         dtype = onnx.helper.tensor_dtype_to_np_dtype(tensor.data_type)

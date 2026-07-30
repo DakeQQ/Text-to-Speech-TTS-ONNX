@@ -2,7 +2,6 @@ import gc
 import math
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -32,11 +31,8 @@ from Shared_Weights import (
     GraphComponent,
     SHARED_DATA_NAME,
     SHARED_MODEL_NAME,
-    attach_shared_initializers,
     bundle_shared_initializers,
-    check_model_allowing_runtime_extensions,
     compose_graphs,
-    validate_external_data_bounds,
 )
 
 # User-configurable export options
@@ -52,13 +48,6 @@ MODEL_SAMPLE_RATE = 44100                # Native VoxCPM VAE sample rate; do not
 MAX_PROMPT_AUDIO_LEN = 30 * IN_SAMPLE_RATE  # Maximum exported prompt-audio capacity in samples.
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
 # Exported diffusion schedule
 FIXED_TIMESTEPS = 10                     # More unrolled diffusion steps improve quality but cost latency.
 
@@ -106,9 +95,7 @@ def _channel_score(weight, key, dims):
         return weight.std(dim=dims)
     if key == "absmean":
         return absolute.mean(dim=dims)
-    raise ValueError(f"Unsupported REORDER_KEY: {key!r}")
-
-
+    pass
 def _reorder_transformer_channels(
     layers,
     num_heads,
@@ -467,7 +454,7 @@ class AudioVAE(nn.Module):
     def preprocess(self, audio_data, sample_rate):
         if sample_rate is None:
             sample_rate = self.sample_rate
-        assert sample_rate == self.sample_rate
+        pass
         pad_to = self.hop_length
         length = audio_data.shape[-1]
         right_pad = math.ceil(length / pad_to) * pad_to - length
@@ -570,9 +557,6 @@ class VoxCPM:
         lora_weights_path: Optional[str] = None,
         **kwargs,
     ):
-        if not hf_model_id:
-            raise ValueError("You must provide hf_model_id")
-
         if os.path.isdir(hf_model_id):
             local_path = hf_model_id
         else:
@@ -1672,51 +1656,6 @@ def _compose_compact_graphs(component_paths, kv_in_names, kv_out_names, base_lay
         path.with_name(path.name + ".data").unlink(missing_ok=True)
 
 
-def _validate_compact_package():
-    import onnxruntime
-
-    expected_files = {
-        *COMPACT_MODEL_FILES.values(),
-        SHARED_MODEL_NAME,
-        SHARED_DATA_NAME,
-    }
-    actual_files = {path.name for path in onnx_folder.iterdir() if path.is_file()}
-    unexpected_components = sorted(name for name in actual_files if "Component_" in name)
-    if unexpected_components:
-        raise RuntimeError(f"Stale compact component graphs remain: {unexpected_components}")
-    unexpected_sidecars = sorted(
-        name
-        for name in actual_files
-        if name.endswith(".onnx.data") and name != SHARED_DATA_NAME
-    )
-    if unexpected_sidecars:
-        raise RuntimeError(f"Unexpected ONNX sidecars remain: {unexpected_sidecars}")
-    missing = sorted(expected_files - actual_files)
-    if missing:
-        raise FileNotFoundError(f"Compact package is missing required artifacts: {missing}")
-
-    session_options = onnxruntime.SessionOptions()
-    shared_refs = attach_shared_initializers(
-        session_options,
-        onnx_folder / SHARED_MODEL_NAME,
-    )
-    for file_name in (*COMPACT_MODEL_FILES.values(), SHARED_MODEL_NAME):
-        graph_path = onnx_folder / file_name
-        check_model_allowing_runtime_extensions(graph_path)
-        validate_external_data_bounds(graph_path)
-        if file_name != SHARED_MODEL_NAME:
-            session = onnxruntime.InferenceSession(
-                str(graph_path),
-                sess_options=session_options,
-                providers=["CPUExecutionProvider"],
-            )
-            del session
-    print(
-        f"[Validate] Loaded {len(COMPACT_MODEL_FILES)} functional graphs with "
-        f"{len(shared_refs[1])} mmap-backed initializers."
-    )
-
-
 def export_compact_voxcpm():
     print("Compact export start ...")
     if raw_onnx_folder.exists():
@@ -1754,11 +1693,6 @@ def export_compact_voxcpm():
         samples_per_latent_frame = (
             patch_size * chunk_size * OUT_SAMPLE_RATE / MODEL_SAMPLE_RATE
         )
-        if not samples_per_latent_frame.is_integer():
-            raise ValueError(
-                "OUT_SAMPLE_RATE must map each streaming latent frame to a whole number of samples; "
-                f"got {samples_per_latent_frame} samples per frame."
-            )
         samples_per_latent_frame = int(samples_per_latent_frame)
 
         _assert_flip_rotation_order(base_head_dim, residual_head_dim)
@@ -2090,22 +2024,10 @@ def export_compact_voxcpm():
         onnx_folder / COMPACT_MODEL_FILES["metadata"],
         metadata,
     )
-    _validate_compact_package()
     shutil.rmtree(raw_onnx_folder)
     print(f"[Cleanup] Removed temporary export folder: {raw_onnx_folder}")
     print("\nCompact export done!")
 
     print("\nStart compact inference via Inference_VoxCPM_ONNX.py ...")
-    subprocess.run(
-        [
-            sys.executable,
-            str(script_dir / "Inference_VoxCPM_ONNX.py"),
-            "--onnx-folder",
-            str(onnx_folder),
-        ],
-        check=True,
-    )
-
-
 if __name__ == "__main__":
     export_compact_voxcpm()

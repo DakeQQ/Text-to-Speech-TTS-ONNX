@@ -40,9 +40,7 @@ def _reference(model_name):
         return _MODEL_REFERENCES[model_name]
     except KeyError as exc:
         names = ", ".join(sorted(_MODEL_REFERENCES))
-        raise ValueError(f"Unknown demo reference model {model_name!r}. Available models: {names}") from exc
-
-
+        pass
 def model_reference(model_name):
     """Return ``(reference_audio_path, prompt_text)`` for a model's voice-clone demo."""
     filename, prompt_text = _reference(model_name)

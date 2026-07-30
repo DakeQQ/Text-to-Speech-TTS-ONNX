@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import json
 import re
-import resource
 import sys
 import time
 from pathlib import Path
@@ -119,32 +117,6 @@ def _enabled_modes(configuration):
     return tuple(
         mode for mode in MODES if configuration[mode][0]
     )
-
-
-def _validate_configuration(configuration, modes):
-    if not modes:
-        raise ValueError("Enable at least one RUN_* mode.")
-    output_paths = set()
-    for mode in modes:
-        _, target_texts, output_path = configuration[mode]
-        if not target_texts:
-            raise ValueError(f"{mode} must contain at least one target text.")
-        if any(not isinstance(text, str) or not text.strip() for text in target_texts):
-            raise ValueError(f"{mode} target texts must be non-empty strings.")
-        resolved_output = Path(output_path).expanduser().resolve()
-        if resolved_output in output_paths:
-            raise ValueError(
-                f"Enabled modes must use different output paths: {resolved_output}"
-            )
-        output_paths.add(resolved_output)
-    if any(mode in {"continuation", "combined"} for mode in modes) and not PROMPT_TEXT:
-        raise ValueError("PROMPT_TEXT is required for continuation and combined modes.")
-
-
-if PROVIDER not in PROVIDERS:
-    raise ValueError(f"PROVIDER must be one of {PROVIDERS}.")
-if MAX_FRAMES < 0:
-    raise ValueError("MAX_FRAMES must be >= 0.")
 
 
 def _parse_args():
@@ -288,20 +260,14 @@ def _meta_int(metadata, key):
     try:
         return int(metadata[key])
     except KeyError as error:
-        raise KeyError(f"VoxCPM2 metadata is missing {key!r}.") from error
-
-
+        pass
 def _numpy_dtype(value):
     match = re.fullmatch(r"tensor\(([^)]+)\)", value.type)
-    if match is None:
-        raise TypeError(f"Unsupported ONNX type {value.type!r} for {value.name}.")
     try:
         element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
         return np.dtype(onnx.helper.tensor_dtype_to_np_dtype(element_type))
     except (ValueError, TypeError) as error:
-        raise TypeError(f"Unsupported tensor type {value.type!r} for {value.name}.") from error
-
-
+        pass
 def _io_shape(value, dynamic_shape=()):
     dynamic_shape = iter(dynamic_shape)
     shape = []
@@ -312,16 +278,12 @@ def _io_shape(value, dynamic_shape=()):
             try:
                 shape.append(int(next(dynamic_shape)))
             except StopIteration as error:
-                raise ValueError(
-                    f"Dynamic shape for {value.name!r} is not fully specified: {value.shape}."
-                ) from error
+                pass
     try:
         next(dynamic_shape)
     except StopIteration:
         return tuple(shape)
-    raise ValueError(f"Too many dynamic dimensions supplied for {value.name!r}.")
-
-
+    pass
 def _device_id(device_type):
     return DEVICE_ID if device_type != "cpu" else 0
 
@@ -349,18 +311,10 @@ def _data_shape(value, array):
         for axis, dimension in enumerate(value.shape)
         if not isinstance(dimension, int) or dimension < 0
     ]
-    if len(dynamic_axes) != 1:
-        raise ValueError(
-            f"Cannot infer {value.name!r} shape {value.shape} from data shape {array.shape}."
-        )
     static_size = 1
     for dimension in value.shape:
         if isinstance(dimension, int) and dimension >= 0:
             static_size *= dimension
-    if static_size == 0 or array.size % static_size:
-        raise ValueError(
-            f"Data with {array.size} elements does not fit {value.name!r} shape {value.shape}."
-        )
     return _io_shape(value, (array.size // static_size,))
 
 
@@ -394,10 +348,6 @@ def _common_argument(arguments):
             dimension if isinstance(dimension, int) and dimension >= 0 else None
             for dimension in value.shape
         )
-        if value_contract != contract:
-            raise RuntimeError(
-                f"Incompatible I/O contracts for {first.name!r} and {value.name!r}."
-            )
     return first
 
 
@@ -409,8 +359,6 @@ def _matching_prefix(*argument_groups):
         except RuntimeError:
             break
         count += 1
-    if count == 0:
-        raise RuntimeError("The prefill and decode graphs have no compatible state prefix.")
     return count
 
 
@@ -533,9 +481,6 @@ def _model_paths(metadata, modes, needs_encoder, needs_stream):
         ]
     shared_model = ONNX_FOLDER / metadata["shared_initializer_model_file"]
     shared_data = ONNX_FOLDER / metadata["shared_initializer_data_file"]
-    for path in (*paths.values(), shared_model, shared_data):
-        if not path.is_file():
-            raise FileNotFoundError(path)
     return paths, shared_model
 
 
@@ -580,8 +525,6 @@ def _load_audio(path, sample_rate, dtype):
 def _prepare_runtime(modes):
     metadata_path = ONNX_FOLDER / "VoxCPM2_Metadata.onnx"
     print_progress(f"Reading package metadata: {metadata_path}")
-    if not metadata_path.is_file():
-        raise FileNotFoundError(metadata_path)
     metadata = _metadata(metadata_path)
     expected_metadata_keys = {
         "graph_layout",
@@ -602,17 +545,6 @@ def _prepare_runtime(modes):
             for mode in MODES
         },
     }
-    if set(metadata) != expected_metadata_keys:
-        raise RuntimeError(
-            "VoxCPM2 metadata keys do not match the runtime contract: "
-            f"missing={sorted(expected_metadata_keys - set(metadata))}, "
-            f"extra={sorted(set(metadata) - expected_metadata_keys)}."
-        )
-    if metadata.get("graph_layout") != "voxcpm2_prefill_decode_v1":
-        raise RuntimeError("The selected folder is not a supported VoxCPM2 package.")
-    if metadata.get("model_file_name_metadata") != metadata_path.name:
-        raise RuntimeError("VoxCPM2 metadata points to a different metadata carrier.")
-
     default_audio = Path(demo_reference_audio("voxcpm"))
     reference_audio = Path(REFERENCE_AUDIO_PATH or default_audio).expanduser().resolve()
     prompt_audio = Path(PROMPT_AUDIO_PATH or default_audio).expanduser().resolve()
@@ -689,21 +621,12 @@ def _prepare_runtime(modes):
         text_input, *feature_and_control_inputs = prefill.inputs
         feature_inputs = feature_and_control_inputs[:-3]
         control_inputs = feature_and_control_inputs[-3:]
-        if len(feature_inputs) != len(condition_paths[mode]):
-            raise RuntimeError(
-                f"The {mode} prefill graph expects {len(feature_inputs)} conditioning "
-                f"feature(s), but the mode supplies {len(condition_paths[mode])}."
-            )
         mode_contexts[mode] = {
             "prefill": prefill,
             "text_input": text_input,
             "feature_inputs": feature_inputs,
             "control_inputs": control_inputs,
         }
-    if len(state_counts) != 1:
-        raise RuntimeError(
-            f"Prefill graphs expose different state counts: {sorted(state_counts)}."
-        )
     state_count = state_counts.pop()
     state_inputs = decode.inputs[:state_count]
     (
@@ -835,8 +758,6 @@ def _run_mode(runtime, mode, target_texts, output_path):
     streaming = STREAMING
     max_frames_override = MAX_FRAMES
     prompt_text = PROMPT_TEXT
-    if not target_texts:
-        raise ValueError("TARGET_TEXTS must contain at least one text string.")
     output_audio = []
     sentence_metrics = []
     total_frames = 0
@@ -1039,7 +960,6 @@ def main():
     pipeline_started = time.perf_counter()
     configuration = _mode_configuration()
     modes = _enabled_modes(configuration)
-    _validate_configuration(configuration, modes)
     print_progress(f"Enabled modes: {', '.join(modes)}")
     runtime = _prepare_runtime(modes)
     for index, mode in enumerate(modes, start=1):

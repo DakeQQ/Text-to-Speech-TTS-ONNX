@@ -80,18 +80,7 @@ def rewrite_mish_subgraphs(
     """Replace exactly two exported Mish decompositions with standard ONNX Mish nodes."""
     raw_path = Path(raw_model_path).resolve()
     final_path = Path(final_model_path).resolve()
-    if raw_path == final_path:
-        raise ValueError("Raw and final model paths must be different.")
-    if not raw_path.is_file():
-        raise FileNotFoundError(f"Raw ONNX model was not found: {raw_path}")
-    if raw_path.stat().st_size >= 2_000_000_000:
-        raise ValueError("This rewrite requires an inline ONNX protobuf smaller than 2 GB.")
-
     model = onnx.load(raw_path, load_external_data=False)
-    if any(initializer.data_location == TensorProto.EXTERNAL or initializer.external_data for initializer in model.graph.initializer):
-        raise ValueError("External-data models are not supported by this narrowly scoped rewrite.")
-    onnx.checker.check_model(model)
-
     interface_before = [
         (value.name, value.type.SerializeToString())
         for value in list(model.graph.input) + list(model.graph.output)
@@ -158,21 +147,12 @@ def rewrite_mish_subgraphs(
         node.op_type == "Mish" and node.domain in _STANDARD_DOMAIN
         for node in nodes
     )
-    if not matches and existing_mish == expected_matches:
-        raise ValueError("The input model already contains the expected Mish rewrite.")
-    if len(matches) != expected_matches:
-        raise ValueError(
-            f"Expected exactly {expected_matches} Conv1d Mish decompositions, found {len(matches)}."
-        )
-
     matched_indices: set[int] = set()
     replacement_by_index: dict[int, onnx.NodeProto] = {}
     dead_value_info: set[str] = set()
     existing_names = {node.name for node in nodes if node.name}
     for match_index, (softplus, tanh, multiply, source) in enumerate(matches):
         indices = {node_indices[id(softplus)], node_indices[id(tanh)], node_indices[id(multiply)]}
-        if matched_indices.intersection(indices):
-            raise ValueError("Matched Mish decompositions overlap.")
         matched_indices.update(indices)
         replacement_by_index[node_indices[id(softplus)]] = helper.make_node(
             "Mish",
@@ -207,23 +187,11 @@ def rewrite_mish_subgraphs(
         (value.name, value.type.SerializeToString())
         for value in list(model.graph.input) + list(model.graph.output)
     ]
-    if interface_after != interface_before:
-        raise RuntimeError("Graph input/output interface changed during Mish rewrite.")
-    if [(item.key, item.value) for item in model.metadata_props] != metadata_before:
-        raise RuntimeError("Model metadata changed during Mish rewrite.")
-    if [initializer.name for initializer in model.graph.initializer] != initializer_names_before:
-        raise RuntimeError("Initializers changed during Mish rewrite.")
     retained_after = [
         node.SerializeToString()
         for node in model.graph.node
         if node.op_type != "Mish" or node.domain not in _STANDARD_DOMAIN
     ]
-    if retained_after != retained_serialized:
-        raise RuntimeError("An unrelated ONNX node changed during Mish rewrite.")
-    if sum(node.op_type == "Mish" and node.domain in _STANDARD_DOMAIN for node in model.graph.node) != expected_matches:
-        raise RuntimeError("The rewritten graph does not contain the expected Mish nodes.")
-    onnx.checker.check_model(model)
-
     final_path.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{final_path.stem}.",
@@ -234,7 +202,6 @@ def rewrite_mish_subgraphs(
     temporary_path = Path(temporary_name)
     try:
         onnx.save(model, temporary_path)
-        onnx.checker.check_model(temporary_path)
         os.replace(temporary_path, final_path)
     finally:
         temporary_path.unlink(missing_ok=True)

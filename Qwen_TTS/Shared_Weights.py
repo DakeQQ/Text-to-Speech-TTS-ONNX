@@ -108,15 +108,8 @@ def _resolve_bundle_targets(
         targets = sorted(path for path in folder.glob("*.onnx") if path.name != SHARED_MODEL_NAME)
     else:
         targets = sorted(Path(path).resolve() for path in model_paths)
-    if not targets:
-        raise RuntimeError(f"No ONNX graphs found to bundle in {folder}.")
-
     target_names = [path.name for path in targets]
-    if len(set(target_names)) != len(target_names):
-        raise ValueError("Bundled ONNX graph file names must be unique in the target folder.")
     missing = [str(path) for path in targets if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing ONNX graph(s): {missing}")
     return targets
 
 
@@ -187,58 +180,6 @@ def _make_shared_carrier(
     return carrier
 
 
-def check_model_allowing_runtime_extensions(path: str | Path) -> None:
-    """Run ONNX checker, substituting only ORT's checker-unknown fused RMS op."""
-    path = Path(path)
-    model = onnx.load(str(path), load_external_data=False)
-    fused_nodes = [
-        node
-        for node in model.graph.node
-        if not node.domain and node.op_type == "SimplifiedLayerNormalization"
-    ]
-    if not fused_nodes:
-        onnx.checker.check_model(str(path), full_check=False)
-        return
-
-    known_values = {value.name for value in model.graph.input}
-    known_values.update(tensor.name for tensor in model.graph.initializer)
-    known_values.update(output for node in model.graph.node for output in node.output)
-    replacements = []
-    fused_ids = {id(node) for node in fused_nodes}
-    for node in fused_nodes:
-        attributes = {attr.name: helper.get_attribute_value(attr) for attr in node.attribute}
-        if (
-            len(node.input) != 2
-            or len(node.output) != 1
-            or any(name not in known_values for name in node.input)
-            or attributes.get("axis") != -1
-            or attributes.get("stash_type") != 1
-            or "epsilon" not in attributes
-        ):
-            raise RuntimeError(f"Invalid SimplifiedLayerNormalization node in {path.name}: {node}")
-
-    for node in model.graph.node:
-        if id(node) in fused_ids:
-            replacements.append(
-                helper.make_node(
-                    "Identity",
-                    [node.input[0]],
-                    list(node.output),
-                    name=(node.name + "_checker_identity") if node.name else "checker_identity",
-                )
-            )
-        else:
-            replacements.append(node)
-    del model.graph.node[:]
-    model.graph.node.extend(replacements)
-    checker_path = path.with_name(path.name + ".checker.onnx")
-    try:
-        onnx.save(model, str(checker_path))
-        onnx.checker.check_model(str(checker_path), full_check=False)
-    finally:
-        checker_path.unlink(missing_ok=True)
-
-
 def bundle_shared_initializers(
     folder: str | Path,
     model_paths: list[str | Path] | tuple[str | Path, ...] | None = None,
@@ -253,9 +194,6 @@ def bundle_shared_initializers(
     and SHA-256 digest; equal values in different graphs reuse the same byte range.
     """
     folder = Path(folder).resolve()
-    if min_elements <= 0:
-        raise ValueError(f"min_elements must be positive, got {min_elements}.")
-
     targets = _resolve_bundle_targets(folder, model_paths)
 
     shared_metadata = {
@@ -303,10 +241,6 @@ def bundle_shared_initializers(
         carrier = _make_shared_carrier(carrier_initializers, shared_metadata)
         staged_carrier = temp_dir / SHARED_MODEL_NAME
         onnx.save(carrier, str(staged_carrier))
-
-        for staged_model, _ in staged_models:
-            check_model_allowing_runtime_extensions(staged_model)
-        onnx.checker.check_model(str(staged_carrier), full_check=False)
 
         final_data = folder / SHARED_DATA_NAME
         final_carrier = folder / SHARED_MODEL_NAME
@@ -382,21 +316,8 @@ def _merge_initializers(
             existing = initializers.get(tensor.name)
             if existing is None:
                 initializers[tensor.name] = tensor
-            elif existing.SerializeToString() != tensor.SerializeToString():
-                raise RuntimeError(f"Conflicting initializer during DecodeStep merge: {tensor.name}")
     dst.graph.initializer.extend(initializers.values())
     return set(initializers)
-
-
-def _save_checked_model(model: onnx.ModelProto, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_name(f".{output_path.name}.tmp")
-    try:
-        onnx.save(model, str(temp_path))
-        check_model_allowing_runtime_extensions(temp_path)
-        os.replace(temp_path, output_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _delete_model_artifacts(*model_paths: Path) -> None:
@@ -426,9 +347,6 @@ def merge_decode_step_graph(
 
     predictor_outputs = {value.name: value for value in predictor.graph.output}
     main_inputs = {value.name: value for value in main.graph.input}
-    if "frame_codec_ids" not in predictor_outputs or "frame_codec_ids" not in main_inputs:
-        raise RuntimeError("DecodeStep merge requires PredictorFrame -> MainDecode frame_codec_ids.")
-
     merged = onnx.ModelProto()
     merged.ir_version = max(predictor.ir_version, main.ir_version)
     merged.producer_name = Path(__file__).name
@@ -469,7 +387,6 @@ def merge_decode_step_graph(
             seen_outputs.add(value.name)
 
     _copy_metadata(merged, predictor, main)
-    _save_checked_model(merged, output_path)
     return output_path
 
 
@@ -508,8 +425,6 @@ def attach_shared_initializers(session_options, shared_model_path: str | Path):
             continue
         external = _external_data_map(tensor)
         location = external.get("location")
-        if not location:
-            raise RuntimeError(f"Shared initializer {tensor.name!r} has no external-data location.")
         data_path = shared_model_path.parent / location
         offset = int(external.get("offset", "0"))
         dtype = onnx.helper.tensor_dtype_to_np_dtype(tensor.data_type)

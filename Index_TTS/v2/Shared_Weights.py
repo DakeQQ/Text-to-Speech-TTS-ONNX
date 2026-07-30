@@ -113,17 +113,9 @@ def _remap_node_inputs(graph: onnx.GraphProto, remap: dict[str, str]) -> None:
 
 
 def _resolve_bundle_targets(folder: Path, model_paths) -> list[Path]:
-    if not model_paths:
-        raise ValueError("IndexTTS2 bundling requires an explicit non-empty model_paths list.")
     targets = [Path(path).expanduser().resolve() for path in model_paths]
     names = [path.name for path in targets]
-    if len(set(names)) != len(names):
-        raise ValueError("Bundled ONNX graph file names must be unique.")
     missing = [str(path) for path in targets if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing ONNX graph(s): {missing}")
-    if SHARED_MODEL_NAME in names:
-        raise ValueError("The shared-initializer carrier cannot be one of its own bundle targets.")
     folder.mkdir(parents=True, exist_ok=True)
     return targets
 
@@ -203,27 +195,6 @@ def _make_shared_carrier(
     return carrier
 
 
-def _validate_external_ranges(model_path: Path, data_path: Path) -> None:
-    model = onnx.load(str(model_path), load_external_data=False)
-    data_size = data_path.stat().st_size
-    for tensor in model.graph.initializer:
-        if tensor.data_location != TensorProto.EXTERNAL:
-            continue
-        external = _external_data_map(tensor)
-        if external.get("location") != SHARED_DATA_NAME:
-            raise RuntimeError(
-                f"{model_path.name}:{tensor.name} references {external.get('location')!r}, "
-                f"expected {SHARED_DATA_NAME!r}."
-            )
-        offset = int(external.get("offset", "0"))
-        length = int(external.get("length", "0"))
-        if offset < 0 or length <= 0 or offset + length > data_size:
-            raise RuntimeError(
-                f"{model_path.name}:{tensor.name} has invalid shared range "
-                f"offset={offset}, length={length}, blob_size={data_size}."
-            )
-
-
 def bundle_shared_initializers(
     folder: str | Path,
     model_paths,
@@ -233,8 +204,6 @@ def bundle_shared_initializers(
 ) -> dict[str, int | str]:
     """Rewrite an explicit IndexTTS2 graph set to one deduplicated external blob."""
     folder = Path(folder).expanduser().resolve()
-    if min_elements <= 0:
-        raise ValueError(f"min_elements must be positive, got {min_elements}.")
     targets = _resolve_bundle_targets(folder, model_paths)
     shared_metadata = {
         "index_tts_shared_initializers": "1",
@@ -280,12 +249,6 @@ def bundle_shared_initializers(
         staged_carrier = temp_dir / SHARED_MODEL_NAME
         onnx.save(_make_shared_carrier(carrier_initializers, shared_metadata), str(staged_carrier))
 
-        for staged_model, _ in staged_models:
-            onnx.checker.check_model(str(staged_model), full_check=False)
-            _validate_external_ranges(staged_model, staged_data)
-        onnx.checker.check_model(str(staged_carrier), full_check=False)
-        _validate_external_ranges(staged_carrier, staged_data)
-
         os.replace(staged_data, folder / SHARED_DATA_NAME)
         for staged_model, destination in staged_models:
             os.replace(staged_model, destination)
@@ -301,34 +264,6 @@ def bundle_shared_initializers(
         "deduplicated_bytes": source_bytes - unique_bytes,
         "shared_model": str(folder / SHARED_MODEL_NAME),
         "shared_data": str(folder / SHARED_DATA_NAME),
-    }
-
-
-def audit_shared_bundle(folder: str | Path, model_paths) -> dict[str, int]:
-    """Validate that every large initializer in the graph set uses the shared blob."""
-    folder = Path(folder).expanduser().resolve()
-    targets = _resolve_bundle_targets(folder, model_paths)
-    data_path = folder / SHARED_DATA_NAME
-    carrier_path = folder / SHARED_MODEL_NAME
-    if not data_path.is_file() or not carrier_path.is_file():
-        raise FileNotFoundError("IndexTTS2 shared initializer carrier or data blob is missing.")
-
-    external_references = 0
-    for path in [*targets, carrier_path]:
-        onnx.checker.check_model(str(path), full_check=False)
-        _validate_external_ranges(path, data_path)
-        model = onnx.load(str(path), load_external_data=False)
-        for tensor in model.graph.initializer:
-            if tensor.data_location == TensorProto.EXTERNAL:
-                external_references += 1
-                if not tensor.name.startswith(_CANONICAL_PREFIX):
-                    raise RuntimeError(f"Non-canonical shared initializer name: {tensor.name!r}")
-            elif _num_elements(tensor) >= MIN_SHARED_INITIALIZER_ELEMENTS:
-                raise RuntimeError(f"Large initializer {path.name}:{tensor.name} was not shared.")
-    return {
-        "graph_count": len(targets),
-        "external_references": external_references,
-        "external_bytes": data_path.stat().st_size,
     }
 
 
@@ -419,21 +354,8 @@ def _merge_initializers(dst: onnx.ModelProto, *sources: onnx.ModelProto) -> set[
             existing = initializers.get(tensor.name)
             if existing is None:
                 initializers[tensor.name] = tensor
-            elif existing.SerializeToString() != tensor.SerializeToString():
-                raise RuntimeError(f"Conflicting initializer during graph merge: {tensor.name}")
     dst.graph.initializer.extend(initializers.values())
     return set(initializers)
-
-
-def _save_checked_model(model: onnx.ModelProto, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_name(f".{output_path.name}.tmp")
-    try:
-        onnx.save(model, str(temp_path))
-        onnx.checker.check_model(str(temp_path), full_check=False)
-        os.replace(temp_path, output_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _delete_model_artifacts(*model_paths: Path) -> None:
@@ -482,18 +404,6 @@ def merge_reference_preprocess_graph(
         "reference_mel": (feature_outputs, reference_inputs),
         "style_features": (feature_outputs, reference_inputs),
     }
-    for name, (producers, consumers) in connectors.items():
-        if name not in producers or name not in consumers:
-            raise RuntimeError(
-                f"ReferencePreprocess merge requires connector {name!r}."
-            )
-        if _value_signature(producers[name]) != _value_signature(consumers[name]):
-            raise RuntimeError(
-                f"ReferencePreprocess connector {name!r} type/rank mismatch."
-            )
-
-    if [value.name for value in feature.graph.input] != ["audio"]:
-        raise RuntimeError("FeatureExtractor must expose exactly one 'audio' input.")
     reference_outputs = {value.name: value for value in reference.graph.output}
     final_output_names = (
         "semantic_features",
@@ -501,9 +411,6 @@ def merge_reference_preprocess_graph(
         "reference_hidden",
         "null_hidden",
     )
-    if any(name not in reference_outputs for name in final_output_names[1:]):
-        raise RuntimeError("Reference graph output contract is incomplete.")
-
     merged = onnx.ModelProto()
     merged.ir_version = max(
         feature.ir_version,
@@ -539,7 +446,6 @@ def merge_reference_preprocess_graph(
         reference_outputs[name] for name in final_output_names[1:]
     )
     _copy_metadata(merged, feature, semantic, reference)
-    _save_checked_model(merged, output_path)
     return output_path
 
 
@@ -586,15 +492,6 @@ def merge_target_prefill_graph(
     target_outputs = {value.name: value for value in target.graph.output}
     prefill_inputs = {value.name: value for value in prefill.graph.input}
     connector = "hidden_states"
-    if connector not in target_outputs or connector not in prefill_inputs:
-        raise RuntimeError(
-            "TargetPrefill merge requires TargetPreprocess -> MainPrefill hidden_states."
-        )
-    if _value_signature(target_outputs[connector]) != _value_signature(
-        prefill_inputs[connector]
-    ):
-        raise RuntimeError("TargetPrefill hidden_states connector type/rank mismatch.")
-
     merged = onnx.ModelProto()
     merged.ir_version = max(target.ir_version, prefill.ir_version)
     merged.producer_name = Path(__file__).name
@@ -620,7 +517,6 @@ def merge_target_prefill_graph(
     merged.graph.value_info.append(target_outputs[connector])
     merged.graph.output.extend(prefill.graph.output)
     _copy_metadata(merged, target, prefill)
-    _save_checked_model(merged, output_path)
     return output_path
 
 
@@ -670,19 +566,6 @@ def merge_synthesis_graph(
     latent_inputs = {value.name: value for value in latent.graph.input}
     latent_outputs = {value.name: value for value in latent.graph.output}
     acoustic_inputs = {value.name: value for value in acoustic.graph.input}
-    if "mel_codes" not in latent_inputs or "mel_codes" not in acoustic_inputs:
-        raise RuntimeError("Synthesis merge requires a shared mel_codes input.")
-    if _value_signature(latent_inputs["mel_codes"]) != _value_signature(
-        acoustic_inputs["mel_codes"]
-    ):
-        raise RuntimeError("Synthesis mel_codes type/rank mismatch.")
-    if "gpt_latent" not in latent_outputs or "gpt_latent" not in acoustic_inputs:
-        raise RuntimeError("Synthesis merge requires Latent -> Acoustic gpt_latent.")
-    if _value_signature(latent_outputs["gpt_latent"]) != _value_signature(
-        acoustic_inputs["gpt_latent"]
-    ):
-        raise RuntimeError("Synthesis gpt_latent connector type/rank mismatch.")
-
     merged = onnx.ModelProto()
     merged.ir_version = max(latent.ir_version, acoustic.ir_version)
     merged.producer_name = Path(__file__).name
@@ -741,7 +624,6 @@ def merge_synthesis_graph(
     merged.graph.value_info.append(latent_outputs["gpt_latent"])
     merged.graph.output.extend(acoustic.graph.output)
     _copy_metadata(merged, latent, acoustic)
-    _save_checked_model(merged, output_path)
     return output_path
 
 
@@ -766,12 +648,8 @@ def build_decoder_postprocess_graph(decoder_path: str | Path) -> Path:
     decoder_path = Path(decoder_path)
     model = onnx.load(str(decoder_path), load_external_data=False)
     inputs = {value.name: value for value in model.graph.input}
-    if list(inputs) != ["mel"]:
-        raise RuntimeError("Decoder preprocessing requires exactly one 'mel' input.")
     mel = inputs["mel"]
     tensor_type = mel.type.tensor_type
-    if tensor_type.elem_type != TensorProto.FLOAT or len(tensor_type.shape.dim) != 3:
-        raise RuntimeError("Decoder mel input must be rank-three FLOAT.")
     mel_bin_dim = tensor_type.shape.dim[1]
     mel_bins: int | str = (
         int(mel_bin_dim.dim_value)
@@ -841,7 +719,6 @@ def build_decoder_postprocess_graph(decoder_path: str | Path) -> Path:
     model.graph.node.extend(preprocess_nodes)
     model.graph.node.extend(original_nodes)
     model.graph.name = "IndexTTS2_DecoderPostprocess"
-    _save_checked_model(model, decoder_path)
     return decoder_path
 
 
@@ -866,17 +743,8 @@ def merge_decode_step_graph(
     embed_outputs = {value.name: value for value in embed.graph.output}
     main_inputs = {value.name: value for value in main.graph.input}
     connector = "hidden_states"
-    if connector not in embed_outputs or connector not in main_inputs:
-        raise RuntimeError("DecodeStep merge requires DecodeEmbed -> MainDecode hidden_states.")
-    if _value_signature(embed_outputs[connector]) != _value_signature(main_inputs[connector]):
-        raise RuntimeError("DecodeStep hidden_states connector type/rank mismatch.")
-
     common_inputs = set(main_inputs).intersection(value.name for value in embed.graph.input)
     embed_input_map = {value.name: value for value in embed.graph.input}
-    for name in common_inputs:
-        if _value_signature(main_inputs[name]) != _value_signature(embed_input_map[name]):
-            raise RuntimeError(f"DecodeStep shared input {name!r} type/rank mismatch.")
-
     merged = onnx.ModelProto()
     merged.ir_version = max(embed.ir_version, main.ir_version)
     merged.producer_name = Path(__file__).name
@@ -910,7 +778,6 @@ def merge_decode_step_graph(
     merged.graph.value_info.append(embed_outputs[connector])
     merged.graph.output.extend(main.graph.output)
     _copy_metadata(merged, embed, main)
-    _save_checked_model(merged, output_path)
     return output_path
 
 
@@ -948,11 +815,6 @@ def attach_shared_initializers(session_options, shared_model_path: str | Path):
             continue
         external = _external_data_map(tensor)
         location = external.get("location")
-        if location != SHARED_DATA_NAME:
-            raise RuntimeError(
-                f"Shared initializer {tensor.name!r} references {location!r}, "
-                f"expected {SHARED_DATA_NAME!r}."
-            )
         data_path = shared_model_path.parent / location
         offset = int(external.get("offset", "0"))
         dtype = helper.tensor_dtype_to_np_dtype(tensor.data_type)

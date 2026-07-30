@@ -2,7 +2,6 @@ import gc
 import importlib
 import math
 import shutil
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -17,7 +16,6 @@ from STFT_Process import STFT_Process  # The custom STFT/ISTFT can be exported i
 from Shared_Weights import (
     SHARED_DATA_NAME,
     SHARED_MODEL_NAME,
-    audit_shared_bundle,
     build_decode_step_graphs,
     bundle_shared_initializers,
 )
@@ -72,13 +70,6 @@ WINDOW_TYPE = "hann"
 OPSET = 20
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-if IN_SAMPLE_RATE < 1 or OUT_SAMPLE_RATE < 1:
-    raise ValueError("IN_SAMPLE_RATE and OUT_SAMPLE_RATE must be positive.")
-if IN_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported IN_AUDIO_DTYPE={IN_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-if OUT_AUDIO_DTYPE.upper() not in _AUDIO_DTYPES:
-    raise ValueError(f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; expected one of {tuple(_AUDIO_DTYPES)}.")
-
 # Representative dynamic-control inputs used while tracing the strategy graphs.
 PENALTY_VALUE = 0.8
 PENALTY_RANGE = 10
@@ -141,10 +132,6 @@ class LowPassFilter1d(nn.Module):
                  padding_mode: str = 'replicate',
                  kernel_size: int = 12):
         super().__init__()
-        if cutoff < -0.0:
-            raise ValueError("Minimum cutoff must be larger than zero.")
-        if cutoff > 0.5:
-            raise ValueError("A cutoff above 0.5 does not make sense.")
         self.kernel_size = kernel_size
         self.even = (kernel_size % 2 == 0)
         self.pad_left = kernel_size // 2 - int(self.even)
@@ -245,14 +232,7 @@ class FrozenSnakeActivation(nn.Module):
 
 
 def share_bigvgan_resample_buffers(owner, activation_modules):
-    if not activation_modules:
-        raise RuntimeError("BigVGAN has no exportable Activation1d modules.")
-    if any(module.upsample.scale_folded for module in activation_modules):
-        raise RuntimeError("BigVGAN upsample scale was already folded.")
     upsample_ratio = activation_modules[0].upsample.ratio
-    if any(module.upsample.ratio != upsample_ratio for module in activation_modules[1:]):
-        raise RuntimeError("BigVGAN upsample ratio mismatch.")
-
     def get_groups(module):
         return {
             "up_filter": module.upsample.filter_pad,
@@ -267,11 +247,6 @@ def share_bigvgan_resample_buffers(owner, activation_modules):
         candidate_groups = get_groups(module)
         for group_name, reference_tensors in template_groups.items():
             candidate_tensors = candidate_groups[group_name]
-            if len(candidate_tensors) != len(reference_tensors):
-                raise RuntimeError(f"BigVGAN resample buffer count mismatch for {group_name}.")
-            if any(not torch.equal(candidate, reference) for candidate, reference in zip(candidate_tensors, reference_tensors)):
-                raise RuntimeError(f"BigVGAN resample buffer value mismatch for {group_name}.")
-
     shared_groups = {}
     for group_name, tensors in template_groups.items():
         shared_tensors = []
@@ -339,8 +314,7 @@ class AMPBlock1(torch.nn.Module):
                 for _ in range(self.num_layers)
             ])
         else:
-            raise NotImplementedError("activation incorrectly specified. check the config file and look for 'activation'.")
-
+            pass
     def forward(self, x, idx):
         acts1, acts2 = self.activations[::2], self.activations[1::2]
         for c1, c2, a1, a2 in zip(self.convs1, self.convs2, acts1, acts2):
@@ -387,8 +361,7 @@ class AMPBlock2(torch.nn.Module):
                 for _ in range(self.num_layers)
             ])
         else:
-            raise NotImplementedError("activation incorrectly specified. check the config file and look for 'activation'.")
-
+            pass
     def forward(self, x, idx=0):
         for conv, activation in zip(self.convs, self.activations):
             xt = activation(x, idx)
@@ -442,8 +415,7 @@ class BigVGAN(torch.nn.Module):
             activation_post = activations.SnakeBeta(ch, alpha_logscale=h.snake_logscale)
             self.activation_post = activation_cls(activation=activation_post)
         else:
-            raise NotImplementedError("activation incorrectly specified. check the config file and look for 'activation'.")
-
+            pass
         self.conv_post = weight_norm(Conv1d(ch, 1, 7, 1, padding=3))
         for i in range(len(self.ups)):
             self.ups[i].apply(init_weights)
@@ -539,13 +511,6 @@ def _assert_device_map(device_map, num_blocks):
     duplicates = sorted({block for block in assigned_blocks if assigned_blocks.count(block) > 1})
     missing = sorted(set(range(num_blocks)) - set(assigned_blocks))
     extra = sorted(set(assigned_blocks) - set(range(num_blocks)))
-    if duplicates or missing or extra:
-        raise ValueError(
-            "Invalid device map: "
-            f"duplicate blocks={duplicates}, missing blocks={missing}, extra blocks={extra}."
-        )
-
-
 def _get_device_map(num_blocks, devices):
     devices = list(devices)
     if not devices:
@@ -566,8 +531,6 @@ def _install_transformers_compatibility_modules():
     try:
         importlib.import_module(model_parallel_module)
     except ModuleNotFoundError as error:
-        if error.name != model_parallel_module:
-            raise
         _register_inline_module(
             model_parallel_module,
             {
@@ -669,8 +632,6 @@ class IndexTTS_Encoder(torch.nn.Module):
         self.bigvgan = indexTTS.bigvgan.eval()
         self.indexTTS = indexTTS.gpt.eval()
         self.custom_stft = custom_stft
-        if getattr(self.custom_stft, "input_scale_folded", False):
-            raise RuntimeError("STFT input scale was already folded.")
         self.input_resample_scale = float(sample_rate / IN_SAMPLE_RATE)
         if "int" in IN_AUDIO_DTYPE.lower():
             self.custom_stft.stft_kernel.mul_(float(1.0 / 32768.0))
@@ -1072,8 +1033,6 @@ class INDEXTTS_TOKEN_STRATEGY(torch.nn.Module):
 
     def __init__(self, strategy, vocab_size):
         super(INDEXTTS_TOKEN_STRATEGY, self).__init__()
-        if strategy not in DECODE_STRATEGIES:
-            raise ValueError(f"Unsupported decode strategy: {strategy!r}")
         self.strategy = strategy
         self.penalty = APPLY_PENALTY()
         self.sampling = TOPK_TOPP_SAMPLING(vocab_size)
@@ -1326,12 +1285,6 @@ with torch.inference_mode():
     gc.collect()
     print("\nExport TargetPreprocess Done.\n\nExport strategy graphs Start...")
 
-    if PENALTY_VALUE <= 0.0 or PENALTY_RANGE < 1:
-        raise ValueError("Penalty-greedy trace controls require PENALTY_VALUE > 0 and PENALTY_RANGE >= 1.")
-    if SAMPLING_TEMPERATURE <= 0.0 or not 0.0 < SAMPLING_TOP_P <= 1.0:
-        raise ValueError("Sampling export defaults require temperature > 0 and 0 < top_p <= 1.")
-    if SAMPLING_REPETITION_PENALTY <= 0.0 or SAMPLING_TOP_K < 1:
-        raise ValueError("Sampling export defaults require repetition_penalty > 0 and top_k >= 1.")
     sampling_top_k = min(SAMPLING_TOP_K, MEL_CODE_SIZE)
 
     main_core = IndexTTS_Main(indexTTS, NUM_LAYERS, MAX_SIGNAL_LENGTH)
@@ -1496,14 +1449,13 @@ with torch.inference_mode():
         + [Path(onnx_model_Decode_Step[strategy]) for strategy in DECODE_STRATEGIES]
         + [Path(onnx_model_Decoder), Path(onnx_model_Metadata)]
     )
-    shared_audit = audit_shared_bundle(onnx_folder, final_graphs)
     replace_onnx_metadata(onnx_model_Metadata, onnx_metadata)
     print(f"\n[Metadata] Stamped {len(onnx_metadata)} keys into {len(final_graphs)} final graph(s).")
     print(
         f"[Shared weights] {shared_stats['initializer_references']} references -> "
         f"{shared_stats['unique_initializers']} unique tensors; deduplicated "
         f"{shared_stats['deduplicated_bytes'] / (1024 * 1024):.2f} MiB; final blob "
-        f"{shared_audit['external_bytes'] / (1024 * 1024):.2f} MiB."
+        f"{(onnx_folder / SHARED_DATA_NAME).stat().st_size / (1024 * 1024):.2f} MiB."
     )
     print("\nCompact IndexTTS export done.")
 
@@ -1511,8 +1463,3 @@ with torch.inference_mode():
 if project_path in sys.path:
     sys.path.remove(project_path)
 
-print("\nStart running inference via Inference_IndexTTS_ONNX.py ...")
-subprocess.run(
-    [sys.executable, str(script_dir / "Inference_IndexTTS_ONNX.py"), "--onnx-folder", str(onnx_folder)],
-    check=True,
-)

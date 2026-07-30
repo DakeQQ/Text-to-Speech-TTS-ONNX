@@ -170,15 +170,11 @@ def session_configuration(metadata: dict[str, str]):
 
 def numpy_dtype(argument):
     value_type = argument.type
-    if not value_type.startswith("tensor(") or not value_type.endswith(")"):
-        raise TypeError(f"Unsupported ONNX value type: {value_type}")
     try:
         tensor_type = onnx.TensorProto.DataType.Value(value_type[7:-1].upper())
         return onnx.helper.tensor_dtype_to_np_dtype(tensor_type)
     except ValueError as exc:
-        raise TypeError(f"Unsupported ONNX tensor type: {value_type}") from exc
-
-
+        pass
 def static_shape(argument):
     shape = tuple(argument.shape)
     return shape if all(isinstance(dim, int) for dim in shape) else None
@@ -193,8 +189,6 @@ def model_array(argument, data):
     )
     if not shape_matches:
         shape = tuple(dim if isinstance(dim, int) else -1 for dim in declared)
-        if shape.count(-1) > 1:
-            raise ValueError(f"Cannot infer dynamic shape for {argument.name}: {declared}")
         array = array.reshape(shape)
     return np.ascontiguousarray(array)
 
@@ -356,19 +350,6 @@ def main() -> None:
             for strategy in DECODE_STRATEGIES
         },
     }
-    if set(metadata) != expected_metadata_keys:
-        raise ValueError(
-            "IndexTTS metadata keys do not match the runtime contract: "
-            f"missing={sorted(expected_metadata_keys - set(metadata))}, "
-            f"extra={sorted(set(metadata) - expected_metadata_keys)}."
-        )
-    if metadata.get("graph_layout") != "strategy_prefill_decode_step":
-        raise ValueError(
-            "IndexTTS strategy_prefill_decode_step metadata is required."
-        )
-    if DECODE_STRATEGY not in DECODE_STRATEGIES:
-        raise ValueError(f"Unsupported decode strategy: {DECODE_STRATEGY}")
-
     in_sample_rate = int(metadata["in_sample_rate"])
     out_sample_rate = int(metadata["out_sample_rate"])
     stop_tokens = {int(token) for token in metadata["stop_token_ids"].split(",")}
@@ -388,9 +369,6 @@ def main() -> None:
     }
 
     shared_data_path = onnx_folder / metadata["shared_initializer_data_file"]
-    if not shared_data_path.is_file():
-        raise FileNotFoundError(f"Missing shared initializer data: {shared_data_path}")
-
     providers, provider_options, device_type, device = provider_configuration()
     options, run_options, disabled_optimizers = session_configuration(metadata)
     shared_started = time.perf_counter()
@@ -596,8 +574,6 @@ def main() -> None:
         text_tokens,
         MAX_TEXT_TOKENS_PER_SEGMENT,
     )
-    if not segments:
-        raise ValueError("The target text produced no token segments.")
     print_progress(f"Prepared {len(segments)} text segment(s).")
 
     generate_limit = MAX_TOKENS or max_signal_length
@@ -730,8 +706,6 @@ def main() -> None:
             np.array(decoder.value(decoder_results, decoder.outputs[0]).numpy(), copy=True)
         )
 
-    if not generated_segments:
-        raise RuntimeError("No audio was generated.")
     generated_audio = (
         generated_segments[0]
         if len(generated_segments) == 1

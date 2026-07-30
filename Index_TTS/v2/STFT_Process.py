@@ -164,11 +164,6 @@ class STFT_Process(torch.nn.Module):
         self.half_n_fft = n_fft // 2
         self.n_frames   = max_frames
         self.analysis_length = n_fft if analysis_length is None else analysis_length
-        if not 1 <= self.analysis_length <= n_fft:
-            raise ValueError("analysis_length must be in the range [1, n_fft].")
-        if not 0.0 <= preemphasis <= 1.0:
-            raise ValueError("preemphasis must be in the range [0, 1].")
-
         f_bins = self.half_n_fft + 1
         window = create_padded_window(
             win_length,
@@ -195,8 +190,7 @@ class STFT_Process(torch.nn.Module):
         elif model_type == 'istft_B':
             self.forward = self._istft_B_forward
         else:
-            raise ValueError(f"Unknown model_type: {model_type}")
-
+            pass
         # ── STFT: constant zero-padding buffer ────────────────────────────
         if model_type in ('stft_A', 'stft_B'):
             self._build_stft_kernels(

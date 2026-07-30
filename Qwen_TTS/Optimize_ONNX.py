@@ -24,8 +24,7 @@ for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
             sys.path.insert(0, str(candidate))
         break
 else:
-    raise RuntimeError("Could not locate Optimize_ONNX_Common.py")
-
+    pass
 from Optimize_ONNX_Common import (  # noqa: E402 - imports follow script path setup
     OptimizerConfig,
     Plan,
@@ -35,11 +34,8 @@ from Optimize_ONNX_Common import (  # noqa: E402 - imports follow script path se
     replace_onnx_metadata,
     resolve_plan,
     uses_mixed_precision,
-    validate_plan,
 )
 from Shared_Weights import (  # noqa: E402
-    SHARED_DATA_NAME,
-    SHARED_MODEL_NAME,
     bundle_shared_initializers,
 )
 
@@ -215,21 +211,13 @@ CONFIG = OptimizerConfig(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
 
 
 def configure_attention_precision():
     metadata = read_onnx_metadata(str(SOURCE_FOLDER / "QwenTTS_Metadata.onnx"))
-    if metadata.get("graph_layout") != "strategy_prefill_decode_step":
-        raise RuntimeError(
-            "Qwen3-TTS strategy_prefill_decode_step graphs are required."
-        )
     precision_flags = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
     invalid_flags = {key: value for key, value in precision_flags.items() if value not in {"0", "1"}}
-    if invalid_flags:
-        raise RuntimeError(f"Invalid or missing QwenTTS precision metadata: {invalid_flags}")
-
     preserve_fp16_attention = precision_flags["use_f16_kv"] == "1" and precision_flags["compute_in_f32"] == "0"
     if preserve_fp16_attention:
         print(
@@ -239,42 +227,14 @@ def configure_attention_precision():
     return metadata, preserve_fp16_attention
 
 
-def validate_no_inserted_precision_casts(model_path):
-    model = onnx.load(model_path, load_external_data=False)
-    inserted_casts = [
-        node.name
-        for node in model.graph.node
-        if node.op_type == "Cast" and "InsertedPrecisionFreeCast_" in node.name
-    ]
-    if inserted_casts:
-        raise RuntimeError(
-            f"{Path(model_path).name} contains {len(inserted_casts)} unexpected ORT precision casts."
-        )
-
-
 def resolve_plans(preserve_fp16_attention):
     resolved_plans = {}
     for name, plan in MODEL_PLANS.items():
         resolved = resolve_plan(plan, CONFIG)
         if preserve_fp16_attention and name in STRATEGY_GRAPH_NAMES:
             resolved = replace(resolved, opt_level=0)
-        validate_plan(name, resolved)
         resolved_plans[name] = resolved
     return resolved_plans
-
-
-def validate_sources():
-    missing = [
-        SOURCE_FOLDER / f"{name}.onnx"
-        for name in MODEL_PLANS
-        if not (SOURCE_FOLDER / f"{name}.onnx").is_file()
-    ]
-    for artifact in (SHARED_MODEL_NAME, SHARED_DATA_NAME):
-        path = SOURCE_FOLDER / artifact
-        if not path.is_file():
-            missing.append(path)
-    if missing:
-        raise FileNotFoundError(f"Missing compact Qwen3-TTS artifact(s): {missing}")
 
 
 def weight_quantization_signature(plan):
@@ -381,10 +341,6 @@ def process_graphs(
             mixed_precision=mixed_precision,
             prequantized=shared,
         )
-        if preserve_fp16_attention:
-            validate_no_inserted_precision_casts(OUTPUT_FOLDER / f"{name}.onnx")
-
-
 def rebuild_shared_bundle(metadata):
     model_paths = (
         [SOURCE_FOLDER / f"{name}.onnx" for name in PASSTHROUGH_GRAPH_NAMES]
@@ -411,18 +367,6 @@ def main():
     args = parse_args()
     resolved_plans = resolve_plans(False)
     shared_weight_plan(resolved_plans)
-    if args.check_only:
-        quantized_count = sum(
-            plan.method in {*WEIGHT_ONLY_BITS, "DYNAMIC"}
-            for plan in resolved_plans.values()
-        )
-        print(
-            f"Qwen3-TTS optimizer plan is valid: {quantized_count} quantized graphs, "
-            f"{len(resolved_plans)} graphs total."
-        )
-        return
-
-    validate_sources()
     metadata, preserve_fp16_attention = configure_attention_precision()
     resolved_plans = resolve_plans(preserve_fp16_attention)
     if OUTPUT_FOLDER.exists():

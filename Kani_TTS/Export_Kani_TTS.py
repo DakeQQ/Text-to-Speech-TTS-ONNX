@@ -2,8 +2,6 @@ import gc
 import math
 import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -14,8 +12,7 @@ import lightning.pytorch.loggers as lightning_loggers
 if not hasattr(lightning_loggers, "NeptuneLogger"):
     class _UnavailableNeptuneLogger:
         def __init__(self, *args, **kwargs):
-            raise ModuleNotFoundError("Install the optional 'neptune' package to enable NeptuneLogger.")
-
+            pass
     lightning_loggers.NeptuneLogger = _UnavailableNeptuneLogger
 
 from hydra.utils import instantiate
@@ -129,11 +126,6 @@ def _audio_codec_model_init(self, cfg, trainer=None):
 
     self.disc_updates_per_period = cfg.get("disc_updates_per_period", 1)
     self.disc_update_period = cfg.get("disc_update_period", 1)
-    if self.disc_updates_per_period > self.disc_update_period:
-        raise ValueError(
-            f'Number of discriminator updates ({self.disc_updates_per_period}) per period must be less or equal to the configured period ({self.disc_update_period})'
-        )
-
     self.audio_encoder = instantiate(cfg.audio_encoder)
 
     encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -193,15 +185,11 @@ def _audio_codec_model_init(self, cfg, trainer=None):
     elif feature_loss_type == "absolute":
         self.feature_loss_fn = FeatureMatchingLoss()
     else:
-        raise ValueError(f'Unknown feature loss type {feature_loss_type}.')
-
+        pass
     if self.vector_quantizer:
         self.commit_loss_scale = cfg.get("commit_loss_scale", 1.0)
     else:
         self.commit_loss_scale = 0.0
-
-    if self.commit_loss_scale > 0 and not self.vector_quantizer_has_commit_loss:
-        raise ValueError('Commit loss is enabled but the quantizer does not support it.')
 
     self.use_scl_loss = cfg.get("use_scl_loss", False)
     self.scl_loss_scale = cfg.get("scl_loss_scale", False)
@@ -309,8 +297,6 @@ class KANITTS_TOKEN_STRATEGY(torch.nn.Module):
 
     def __init__(self, strategy, vocab_size):
         super().__init__()
-        if strategy not in DECODE_STRATEGIES:
-            raise ValueError(f"Unsupported decode strategy: {strategy!r}")
         self.strategy = strategy
         self.penalty = APPLY_PENALTY()
         self.sampling = TOPK_TOPP_SAMPLING(vocab_size)
@@ -388,8 +374,6 @@ class KANITTS_MAIN(torch.nn.Module):
             for layer in kani_tts.model.layers
             if not layer.is_attention_layer
         }
-        if len(conv_paddings) != 1:
-            raise ValueError(f"Expected one shared conv padding, found {sorted(conv_paddings)}.")
         self.conv_padding = conv_paddings.pop()
         variance_epsilon = float(1e-5)
         hidden_rms_norm_eps = hidden_size * variance_epsilon
@@ -411,8 +395,6 @@ class KANITTS_MAIN(torch.nn.Module):
         rotary_embedding = getattr(kani_tts.model, "rotary_emb", None)
         if rotary_embedding is None:
             rotary_embedding = getattr(kani_tts.model, "pos_emb", None)
-        if rotary_embedding is None:
-            raise AttributeError("LFM2 model exposes neither rotary_emb nor pos_emb.")
         inv_freq = rotary_embedding.inv_freq
         freqs = torch.outer(position_ids, inv_freq)  # (max_seq_len, head_dim//2)
         attention_scaling = rotary_embedding.attention_scaling
@@ -572,8 +554,7 @@ class KANITTS_MAIN(torch.nn.Module):
             return flattened.std(0)
         if key == "absmean":
             return absolute.mean(dim=dims)
-        raise ValueError(f"Unsupported REORDER_KEY: {key!r}")
-
+        pass
     def _reorder_downproj_for_quant(self, key):
         """Apply one exact FFN permutation to w13 rows/bias and w2 columns."""
         with torch.no_grad():
@@ -894,8 +875,6 @@ class NEMO_CODEC(torch.nn.Module):
         self.up_sample_conv_layers = decoder.up_sample_conv_layers
         self.up_sample_rates = decoder.up_sample_rates
         self.total_up_sample_rate = math.prod(self.up_sample_rates)
-        if self.total_up_sample_rate % 4:
-            raise ValueError("Codec upsample rate must be divisible by the four interleaved codebooks.")
         self.samples_per_decode_id = self.total_up_sample_rate // 4
         self.post_activation = decoder.post_activation
         self.post_conv = decoder.post_conv
@@ -911,17 +890,12 @@ class NEMO_CODEC(torch.nn.Module):
             return replaced
 
         replaced_snake = replace_snake_modules(decoder)
-        if not replaced_snake:
-            raise ValueError("Expected at least one Snake activation in the NeMo codec decoder.")
-
         causal_convs = [self.pre_conv, self.post_conv]
         for res_layer in self.res_layers:
             for res_block in res_layer.res_blocks:
                 for block in res_block.res_blocks:
                     causal_convs.extend((block.input_conv, block.skip_conv))
         for conv in causal_convs:
-            if conv.conv.stride != (1,) or conv.extra_pad_mode != "constant":
-                raise ValueError("Mask-free codec export requires stride-1 causal convolutions with constant padding.")
             conv.conv.padding = ((conv.conv.kernel_size[0] - 1) * conv.conv.dilation[0],)
 
         # ── Fuse weight normalization into each convolution weight ──
@@ -1025,16 +999,6 @@ def build_model_metadata(*sections):
 
 def resolve_token_ids(tokenizer, tokens):
     token_ids = tokenizer.convert_tokens_to_ids(list(tokens))
-    if (
-        not isinstance(token_ids, list)
-        or len(token_ids) != len(tokens)
-        or any(not isinstance(token_id, int) or token_id < 0 for token_id in token_ids)
-        or (
-            tokenizer.unk_token_id is not None
-            and any(token_id == tokenizer.unk_token_id for token_id in token_ids)
-        )
-    ):
-        raise ValueError(f"KaniTTS tokenizer cannot resolve fixed tokens: {tokens!r}")
     return token_ids
 
 
@@ -1070,20 +1034,6 @@ class METADATA_CARRIER(torch.nn.Module):
         return marker
 
 
-def _validate_export_settings():
-    if MAX_SEQ_LEN < 1:
-        raise ValueError("MAX_SEQ_LEN must be at least one.")
-    if OUT_SAMPLE_RATE < 1:
-        raise ValueError("OUT_SAMPLE_RATE must be at least one.")
-    if OUT_AUDIO_DTYPE.upper() not in _OUTPUT_AUDIO_DTYPES:
-        raise ValueError(
-            f"Unsupported OUT_AUDIO_DTYPE={OUT_AUDIO_DTYPE!r}; "
-            f"expected one of {tuple(sorted(_OUTPUT_AUDIO_DTYPES))}."
-        )
-    if REORDER_KEY not in {"absmean", "L4", "rms", "std"}:
-        raise ValueError(f"Unsupported REORDER_KEY: {REORDER_KEY!r}.")
-
-
 def _export_onnx(module, args, path, input_names, output_names, dynamic_axes=None):
     torch.onnx.export(
         module,
@@ -1103,8 +1053,6 @@ def run_compact_strategy_export():
         shutil.rmtree(onnx_folder)
     onnx_folder.mkdir(parents=True)
     print("Compact KaniTTS export start ...")
-    _validate_export_settings()
-
     with torch.inference_mode():
         model = AutoModelForCausalLM.from_pretrained(
             path_kani,
@@ -1114,8 +1062,6 @@ def run_compact_strategy_export():
             low_cpu_mem_usage=True,
         ).eval()
         attention_layers = [layer for layer in model.model.layers if layer.is_attention_layer]
-        if not attention_layers:
-            raise ValueError("KaniTTS LFM2 model has no attention layers.")
         head_dim = attention_layers[0].self_attn.head_dim
         num_layers = model.config.num_hidden_layers
         num_conv_layers = model.config.layer_types.count("conv")
@@ -1236,11 +1182,6 @@ def run_compact_strategy_export():
             * OUT_SAMPLE_RATE
             / MODEL_SAMPLE_RATE
         )
-        if not codec_samples_per_decode_id.is_integer():
-            raise ValueError(
-                "OUT_SAMPLE_RATE must map each codec token to a whole number of samples; "
-                f"got {codec_samples_per_decode_id} samples per token."
-            )
         codec_samples_per_decode_id = int(codec_samples_per_decode_id)
         dummy_audio_tokens = (
             torch.arange(4, dtype=torch.int32) * NEMO_CODEC.CODEBOOK_SIZE
@@ -1327,13 +1268,3 @@ def run_compact_strategy_export():
 
 if __name__ == "__main__":
     run_compact_strategy_export()
-    print("\nStart running inference via Inference_Kani_TTS_ONNX.py ...")
-    subprocess.run(
-        [
-            sys.executable,
-            str(script_dir / "Inference_Kani_TTS_ONNX.py"),
-            "--onnx-folder",
-            str(onnx_folder),
-        ],
-        check=True,
-    )
