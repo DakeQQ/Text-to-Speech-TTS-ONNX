@@ -17,6 +17,8 @@ import onnx
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -32,6 +34,7 @@ from Shared_Weights import (  # noqa: E402
 )
 
 
+# User configuration
 SOURCE_FOLDER = SCRIPT_DIR / "VoxCPM_ONNX"
 OUTPUT_FOLDER = SCRIPT_DIR / "VoxCPM_Optimized"
 GRAPH_LAYOUT = "voxcpm2_prefill_decode_v1"
@@ -56,6 +59,15 @@ EXCLUDED_PREFIXES = (
     "accumulator/",
 )
 
+# Quantization and optimization defaults
+MATMUL_ALGORITHM = "AFFINE_REFINE_V2"
+BLOCK_SIZE = 32
+ACCURACY_LEVEL = 4
+# The 8.7 GiB shared transformer template is intentionally fitted with one
+# symmetric Q4 candidate per block. This avoids the asymmetric 16-zero-point
+# sweep while retaining portable MatMulNBits/GatherBlockQuantized operators.
+Q4_SYMMETRIC = True
+
 
 def select_quantizable_nodes(model_path):
     selected, _ = _constant_weight_nodes(model_path)
@@ -66,6 +78,7 @@ def select_quantizable_nodes(model_path):
     ]
 
 
+# Per-graph quantization and optimization plan
 MODEL_PLANS: dict[str, Plan] = {
     "VoxCPM2_AudioVAE_Encode": Plan(
         method="F32",
@@ -75,11 +88,11 @@ MODEL_PLANS: dict[str, Plan] = {
     ),
     "VoxCPM2_MainPrefill_VoiceDesign": Plan(
         method="Q4",
-        algo="k_quant",
+        algo=MATMUL_ALGORITHM,
         op_types=("MatMul", "Gather"),
         axes=(0, 1),
-        block_size=32,
-        accuracy_level=4,
+        block_size=BLOCK_SIZE,
+        accuracy_level=ACCURACY_LEVEL,
         nodes_to_include=select_quantizable_nodes,
         optimize=True,
         transformer=True,
@@ -87,11 +100,11 @@ MODEL_PLANS: dict[str, Plan] = {
     ),
     "VoxCPM2_MainPrefill_Continuation": Plan(
         method="Q4",
-        algo="k_quant",
+        algo=MATMUL_ALGORITHM,
         op_types=("MatMul", "Gather"),
         axes=(0, 1),
-        block_size=32,
-        accuracy_level=4,
+        block_size=BLOCK_SIZE,
+        accuracy_level=ACCURACY_LEVEL,
         nodes_to_include=select_quantizable_nodes,
         optimize=True,
         transformer=True,
@@ -99,11 +112,11 @@ MODEL_PLANS: dict[str, Plan] = {
     ),
     "VoxCPM2_MainPrefill_ReferenceOnly": Plan(
         method="Q4",
-        algo="k_quant",
+        algo=MATMUL_ALGORITHM,
         op_types=("MatMul", "Gather"),
         axes=(0, 1),
-        block_size=32,
-        accuracy_level=4,
+        block_size=BLOCK_SIZE,
+        accuracy_level=ACCURACY_LEVEL,
         nodes_to_include=select_quantizable_nodes,
         optimize=True,
         transformer=True,
@@ -111,11 +124,11 @@ MODEL_PLANS: dict[str, Plan] = {
     ),
     "VoxCPM2_MainPrefill_Combined": Plan(
         method="Q4",
-        algo="k_quant",
+        algo=MATMUL_ALGORITHM,
         op_types=("MatMul", "Gather"),
         axes=(0, 1),
-        block_size=32,
-        accuracy_level=4,
+        block_size=BLOCK_SIZE,
+        accuracy_level=ACCURACY_LEVEL,
         nodes_to_include=select_quantizable_nodes,
         optimize=True,
         transformer=True,
@@ -123,11 +136,11 @@ MODEL_PLANS: dict[str, Plan] = {
     ),
     "VoxCPM2_DecodeStep": Plan(
         method="Q4",
-        algo="k_quant",
+        algo=MATMUL_ALGORITHM,
         op_types=("MatMul", "Gather"),
         axes=(0, 1),
-        block_size=32,
-        accuracy_level=4,
+        block_size=BLOCK_SIZE,
+        accuracy_level=ACCURACY_LEVEL,
         nodes_to_include=select_quantizable_nodes,
         optimize=True,
         transformer=True,
@@ -157,6 +170,12 @@ CONFIG = OptimizerConfig(
     original_folder_path=str(SOURCE_FOLDER),
     optimized_folder_path=str(OUTPUT_FOLDER),
     model_plans=MODEL_PLANS,
+    quant_symmetric=Q4_SYMMETRIC,
+    affine_v2_seed_iterations=1,
+    affine_v2_seed_zp_radius=0,
+    affine_v2_iterations=1,
+    affine_v2_clip_ratios=(1.0,),
+    affine_v2_chunk_blocks=4096,
 )
 
 

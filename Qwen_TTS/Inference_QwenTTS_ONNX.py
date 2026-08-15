@@ -34,7 +34,7 @@ GENERATED_AUDIO_PATH = str(SCRIPT_DIR / "generated.wav")
 
 TARGET_TTS = [
     "大家好，我现在正在大可奇奇体验AI科技。",
-    "Hello everyone, I'm currently experiencing iamj's AI technology.",
+    "Hello everyone, I'm currently experiencing DakeQQ's AI technology.",
 ]
 TTS_LANGUAGE = "Chinese"
 PROMPT_AUDIO_PATH = reference_audio_path("qwen_tts")
@@ -43,15 +43,15 @@ SPEAKER_NAME = "Vivian"
 INSTRUCT_TEXT = "Speak very happily"
 VOICE_DESCRIPTION = "A young female with a warm, gentle tone and slight breathiness"
 
-DECODE_STRATEGY = "penalty_greedy"  # greedy | penalty_greedy | sampling
+DECODE_STRATEGY = "penalty_greedy"   # greedy | penalty_greedy | sampling
 MAX_FRAMES = 0                       # Optional generation cap; 0 uses graph capacity.
 MIN_SEQ_LEN = 2                      # Minimum frames before a stop token is accepted.
-PENALTY_RANGE = 5                    # Recent-token window for penalty-greedy decoding.
+PENALTY_RANGE = 10                   # Recent-token window for penalty-greedy decoding.
 REPEAT_PENALTY = 0.8                 # Penalty-greedy repeat score multiplier.
-TOP_K = 10                           # Sampling candidate count.
+TOP_K = 20                           # Sampling candidate count.
 TOP_P = 0.95                         # Sampling nucleus probability.
 TEMPERATURE = 0.8                    # Sampling temperature.
-SAMPLING_REPETITION_PENALTY = 1.1    # Sampling repetition penalty.
+SAMPLING_REPETITION_PENALTY = 1.05   # Sampling repetition penalty.
 
 STREAMING = False                    # Decode audio incrementally.
 USE_AUDIO_NORMALIZER = False         # Normalize prompt and generated audio loudness.
@@ -179,10 +179,17 @@ def bind_io_inputs(binding, arguments, values):
         binding.bind_ortvalue_input(argument.name, value)
 
 
-def bind_io_outputs(binding, arguments, ort_device, device, device_id):
+def bind_io_outputs(
+    binding,
+    arguments,
+    ort_device,
+    device,
+    device_id,
+    device_allocate_all=False,
+):
     buffers = []
     for argument in arguments:
-        if static_io_shape(argument) is None:
+        if device_allocate_all or static_io_shape(argument) is None:
             binding._iobinding.bind_output(argument.name, ort_device)
             buffers.append(None)
         else:
@@ -214,10 +221,11 @@ class IOBindingBank:
     def __init__(self, session, count, ort_device, device, device_id):
         self.session = session
         self.output_arguments = tuple(session.get_outputs())
-        self.dynamic_outputs = tuple(
+        self.device_allocate_all = device == "cuda"
+        self.outputs_to_rebind = tuple(
             argument
             for argument in self.output_arguments
-            if static_io_shape(argument) is None
+            if self.device_allocate_all or static_io_shape(argument) is None
         )
         self.bindings = tuple(session.io_binding() for _ in range(count))
         self.output_buffers = tuple(
@@ -227,6 +235,7 @@ class IOBindingBank:
                 ort_device,
                 device,
                 device_id,
+                device_allocate_all=self.device_allocate_all,
             )
             for binding in self.bindings
         )
@@ -240,7 +249,7 @@ class IOBindingBank:
     def run(self, slot, run_options):
         binding = self.bindings[slot]
         if self.used[slot]:
-            for argument in self.dynamic_outputs:
+            for argument in self.outputs_to_rebind:
                 binding._iobinding.bind_output(argument.name, self.ort_device)
         self.session.run_with_iobinding(binding, run_options=run_options)
         self.used[slot] = True
@@ -297,11 +306,20 @@ elif metadata_mode == "voice_design":
         {"instruction_prefix_token_ids", "instruction_suffix_token_ids"}
     )
 else:
-    pass
+    raise ValueError(f"Unsupported QwenTTS package mode: {metadata_mode!r}.")
+missing_metadata = sorted(expected_metadata_keys - metadata.keys())
+if missing_metadata:
+    raise ValueError(
+        f"{metadata_path.name} is missing required metadata key(s): {missing_metadata}."
+    )
 precision_flags = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
 invalid_precision = {
     key: value for key, value in precision_flags.items() if value not in {"0", "1"}
 }
+if invalid_precision:
+    raise ValueError(
+        f"{metadata_path.name} has invalid precision metadata: {invalid_precision}."
+    )
 preserve_fp16_attention = (
     precision_flags["use_f16_kv"] == "1"
     and precision_flags["compute_in_f32"] == "0"
@@ -386,7 +404,7 @@ def meta_str(key):
     try:
         return metadata[key]
     except KeyError as exc:
-        pass
+        raise ValueError(f"Missing required QwenTTS metadata key: {key!r}.") from exc
 def meta_int(key):
     return int(meta_str(key))
 
@@ -724,7 +742,6 @@ for target_index, target in enumerate(TARGET_TTS, start=1):
 
     for binding in decode_bindings:
         binding.bind_ortvalue_input(decode_trailing_argument.name, trailing_text_hidden)
-    control_rebinds_left = [2, 2]
     decode_step = 0
     selected_token_id = int(codec_token_main.numpy().flat[0])
 
@@ -740,11 +757,9 @@ for target_index, target in enumerate(TARGET_TTS, start=1):
         gather_id_buffer.update_inplace(gather_id_numpy)
         binding_index = decode_step & 1
         binding = decode_bindings[binding_index]
-        if control_rebinds_left[binding_index]:
-            control_rebinds_left[binding_index] -= 1
-            binding.bind_ortvalue_input(decode_history_argument.name, history_len)
-            binding.bind_ortvalue_input(decode_predictor_arguments[0].name, codec_token_main)
-            binding.bind_ortvalue_input(decode_predictor_arguments[1].name, last_hidden_state)
+        binding.bind_ortvalue_input(decode_history_argument.name, history_len)
+        binding.bind_ortvalue_input(decode_predictor_arguments[0].name, codec_token_main)
+        binding.bind_ortvalue_input(decode_predictor_arguments[1].name, last_hidden_state)
         bind_io_inputs(binding, decode_state_arguments, cached_state_tensors)
         binding.bind_ortvalue_input(decode_predictor_arguments[2].name, generated_codec)
         if main_save_ids is not None:
@@ -767,10 +782,9 @@ for target_index, target in enumerate(TARGET_TTS, start=1):
                 f"Codec generation: {generated_frames}/{generation_limit} frames"
             )
 
-        if any(control_rebinds_left):
-            last_hidden_state = decode_outputs[decode_last_hidden_pos]
-            codec_token_main = decode_outputs[decode_token_pos]
-            history_len = decode_outputs[decode_history_pos]
+        last_hidden_state = decode_outputs[decode_last_hidden_pos]
+        codec_token_main = decode_outputs[decode_token_pos]
+        history_len = decode_outputs[decode_history_pos]
 
         if STREAMING:
             frame_numpy = decode_outputs[decode_frame_pos].numpy().copy()

@@ -260,14 +260,14 @@ def _meta_int(metadata, key):
     try:
         return int(metadata[key])
     except KeyError as error:
-        pass
+        raise ValueError(f"Missing required VoxCPM2 metadata key: {key!r}.") from error
 def _numpy_dtype(value):
     match = re.fullmatch(r"tensor\(([^)]+)\)", value.type)
     try:
         element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
         return np.dtype(onnx.helper.tensor_dtype_to_np_dtype(element_type))
-    except (ValueError, TypeError) as error:
-        pass
+    except (AttributeError, ValueError, TypeError) as error:
+        raise ValueError(f"Unsupported ONNX tensor type: {value.type!r}.") from error
 def _io_shape(value, dynamic_shape=()):
     dynamic_shape = iter(dynamic_shape)
     shape = []
@@ -278,12 +278,14 @@ def _io_shape(value, dynamic_shape=()):
             try:
                 shape.append(int(next(dynamic_shape)))
             except StopIteration as error:
-                pass
+                raise ValueError(
+                    f"Missing dynamic dimension for ONNX value {value.name!r}."
+                ) from error
     try:
         next(dynamic_shape)
     except StopIteration:
         return tuple(shape)
-    pass
+    raise ValueError(f"Too many dynamic dimensions supplied for ONNX value {value.name!r}.")
 def _device_id(device_type):
     return DEVICE_ID if device_type != "cpu" else 0
 
@@ -348,6 +350,11 @@ def _common_argument(arguments):
             dimension if isinstance(dimension, int) and dimension >= 0 else None
             for dimension in value.shape
         )
+        if value_contract != contract:
+            raise RuntimeError(
+                f"Incompatible state ABI: {first.name}={contract!r}, "
+                f"{value.name}={value_contract!r}."
+            )
     return first
 
 
@@ -381,7 +388,12 @@ class _IoRunner:
         self.ort_device_type = ort_device_type
         self.inputs = tuple(session.get_inputs())
         self.outputs = tuple(session.get_outputs())
-        self.dynamic_outputs = tuple(value for value in self.outputs if not _is_static(value))
+        self.use_fixed_output_buffers = device_type != "cuda"
+        self.auto_bound_outputs = tuple(
+            value
+            for value in self.outputs
+            if not self.use_fixed_output_buffers or not _is_static(value)
+        )
         self.bindings = []
         self.input_buffers = []
         self.output_buffers = []
@@ -390,7 +402,7 @@ class _IoRunner:
             binding = session.io_binding()
             buffers = []
             for value in self.outputs:
-                if _is_static(value):
+                if self.use_fixed_output_buffers and _is_static(value):
                     buffer = _empty_ort_value(value, device_type)
                     binding.bind_ortvalue_output(value.name, buffer)
                     buffers.append(buffer)
@@ -411,7 +423,7 @@ class _IoRunner:
     def run(self, binding_index=0):
         binding = self.bindings[binding_index]
         if self.has_run[binding_index]:
-            for value in self.dynamic_outputs:
+            for value in self.auto_bound_outputs:
                 binding._iobinding.bind_output(value.name, self.ort_device_type)
         self.session.run_with_iobinding(binding, run_options=self.run_options)
         self.has_run[binding_index] = True
@@ -545,6 +557,11 @@ def _prepare_runtime(modes):
             for mode in MODES
         },
     }
+    missing_metadata = sorted(expected_metadata_keys - metadata.keys())
+    if missing_metadata:
+        raise ValueError(
+            f"{metadata_path.name} is missing required metadata key(s): {missing_metadata}."
+        )
     default_audio = Path(demo_reference_audio("voxcpm"))
     reference_audio = Path(REFERENCE_AUDIO_PATH or default_audio).expanduser().resolve()
     prompt_audio = Path(PROMPT_AUDIO_PATH or default_audio).expanduser().resolve()

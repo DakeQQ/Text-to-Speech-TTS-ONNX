@@ -58,7 +58,7 @@ PENALTY_RANGE = 10                      # Recent-token window; penalty_greedy on
 SAMPLING_TEMPERATURE = 0.8              # Higher values produce more variation.
 SAMPLING_TOP_K = 20                     # Candidate count; sampling only.
 SAMPLING_TOP_P = 0.95                   # Nucleus threshold; sampling only, range (0, 1].
-SAMPLING_REPETITION_PENALTY = 1.2       # Repetition control; sampling only.
+SAMPLING_REPETITION_PENALTY = 1.05      # Repetition control; sampling only.
 MAX_TOKENS = 600                        # Per-segment limit; 0 uses full graph capacity.
 MAX_TEXT_TOKENS_PER_SEGMENT = 120       # Long text is split at this token count.
 
@@ -174,7 +174,7 @@ def numpy_dtype(argument):
         tensor_type = onnx.TensorProto.DataType.Value(value_type[7:-1].upper())
         return onnx.helper.tensor_dtype_to_np_dtype(tensor_type)
     except ValueError as exc:
-        pass
+        raise ValueError(f"Unsupported ONNX tensor type: {value_type!r}.") from exc
 def static_shape(argument):
     shape = tuple(argument.shape)
     return shape if all(isinstance(dim, int) for dim in shape) else None
@@ -241,16 +241,16 @@ class RuntimeBinding:
             argument.name: index for index, argument in enumerate(self.outputs)
         }
         self.binding = session.io_binding()
-        self.output_buffers = dict(output_buffers or {})
-        self.dynamic_outputs = []
+        self.output_buffers = {} if device_type == "cuda" else dict(output_buffers or {})
+        self.auto_bound_outputs = []
         for argument in self.outputs:
             value = self.output_buffers.get(argument.name)
-            if value is None and static_shape(argument) is not None:
+            if value is None and device_type != "cuda" and static_shape(argument) is not None:
                 value = empty_ortvalue(argument, device_type)
                 self.output_buffers[argument.name] = value
             if value is None:
                 self.binding._iobinding.bind_output(argument.name, device)
-                self.dynamic_outputs.append(argument)
+                self.auto_bound_outputs.append(argument)
             else:
                 self.binding.bind_ortvalue_output(argument.name, value)
         self.has_run = False
@@ -260,9 +260,9 @@ class RuntimeBinding:
             self.binding.bind_ortvalue_input(argument.name, value)
 
     def run(self):
-        # Auto-bound dynamic outputs become shape-owned after a run and must be refreshed.
+        # Auto-bound outputs become shape-owned after a run and must be refreshed.
         if self.has_run:
-            for argument in self.dynamic_outputs:
+            for argument in self.auto_bound_outputs:
                 self.binding._iobinding.bind_output(argument.name, self.device)
         self.session.run_with_iobinding(self.binding, run_options=self.run_options)
         self.has_run = True
@@ -350,6 +350,11 @@ def main() -> None:
             for strategy in DECODE_STRATEGIES
         },
     }
+    missing_metadata = sorted(expected_metadata_keys - metadata.keys())
+    if missing_metadata:
+        raise ValueError(
+            f"{metadata_path.name} is missing required metadata key(s): {missing_metadata}."
+        )
     in_sample_rate = int(metadata["in_sample_rate"])
     out_sample_rate = int(metadata["out_sample_rate"])
     stop_tokens = {int(token) for token in metadata["stop_token_ids"].split(",")}
@@ -372,15 +377,22 @@ def main() -> None:
     providers, provider_options, device_type, device = provider_configuration()
     options, run_options, disabled_optimizers = session_configuration(metadata)
     shared_started = time.perf_counter()
-    print_progress("Attaching shared ONNX initializers...")
-    _shared_refs = attach_shared_initializers(
-        options,
-        onnx_folder / metadata["shared_initializer_model_file"],
-    )
-    print_progress(
-        f"Shared ONNX initializers ready in "
-        f"{time.perf_counter() - shared_started:.2f}s."
-    )
+    if device_type == "cpu":
+        print_progress("Attaching shared ONNX initializers...")
+        _shared_refs = attach_shared_initializers(
+            options,
+            onnx_folder / metadata["shared_initializer_model_file"],
+        )
+        print_progress(
+            f"Shared ONNX initializers ready in "
+            f"{time.perf_counter() - shared_started:.2f}s."
+        )
+    else:
+        _shared_refs = ()
+        print_progress(
+            "Using native ONNX external shared initializers in "
+            f"{time.perf_counter() - shared_started:.2f}s."
+        )
 
     def load(path):
         return ort.InferenceSession(

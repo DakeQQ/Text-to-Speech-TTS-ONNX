@@ -29,7 +29,6 @@ if str(REPO_ROOT) not in sys.path:
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
-    resolve_plan,
     run_optimizer,
 )
 
@@ -90,17 +89,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_plans():
-    resolved_plans = {}
-    for name, plan in MODEL_PLANS.items():
-        resolved = resolve_plan(plan, CONFIG)
-        resolved_plans[name] = resolved
-    return resolved_plans
-
-
 def main() -> None:
-    args = parse_args()
-    resolved_plans = resolve_plans()
+    parse_args()
     run_optimizer(CONFIG)
 
 

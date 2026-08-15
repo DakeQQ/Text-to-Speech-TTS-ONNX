@@ -1,4 +1,4 @@
-"""Run the compact IndexTTS2 ONNX pipeline.
+"""Run the compact IndexTTS2 v2 or v2.5 ONNX pipeline.
 
 Raw-audio feature extraction, neural forwards, and each fused Euler update run
 in ONNX Runtime. Audio I/O, text normalization/tokenization, random diffusion
@@ -10,6 +10,7 @@ initialization, and loop control remain in Python to match official inference.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import sys
@@ -30,7 +31,7 @@ import soundfile as sf
 SCRIPT_DIR = Path(__file__).resolve().parent
 INDEX_TTS_DIR = SCRIPT_DIR.parent
 REPO_ROOT = INDEX_TTS_DIR.parent
-for import_path in (REPO_ROOT, INDEX_TTS_DIR):
+for import_path in (SCRIPT_DIR, REPO_ROOT, INDEX_TTS_DIR):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
@@ -42,6 +43,197 @@ from Example_Audio import reference_audio_path  # noqa: E402
 
 DECODE_STRATEGIES = ("greedy", "penalty_greedy", "sampling")
 
+# User configuration
+#
+# This single runtime supports both official releases. The retained v2.5
+# package is selected by default; set this to ``"2"`` for IndexTTS2 v2. Keep
+# the selected package folder in this v2 directory; the release-specific
+# tokenizer and ONNX input contract are selected below without a separate v2.5
+# source folder.
+MODEL_VERSION = "2.5"  # "2" | "2.5"
+_PACKAGE_FOLDERS = {
+    "2": "IndexTTS2_Optimized",
+    "2.5": "IndexTTS2_5_Optimized",
+}
+_TEXT_TOKENIZER_FILES = {
+    "2": "bpe.model",
+    "2.5": "multilingual_zh_ja_yue_char_del.tiktoken",
+}
+if MODEL_VERSION not in _PACKAGE_FOLDERS:
+    raise ValueError(f"Unsupported MODEL_VERSION: {MODEL_VERSION!r}")
+IS_V25 = MODEL_VERSION == "2.5"
+TEXT_TOKENIZER_FILE = _TEXT_TOKENIZER_FILES[MODEL_VERSION]
+QWEN_TOKENIZER_FOLDER = "qwen0.6bemo4-merge"
+
+_LANGUAGE_CODES = (
+    "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl",
+    "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk",
+    "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur",
+    "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv",
+    "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy",
+    "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km",
+    "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am",
+    "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb",
+    "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw",
+    "su", "yue", "minnan", "wuyu", "dialect", "zh/en", "en/zh", "common",
+)
+_AUDIO_EVENT_NAMES = (
+    "ASR", "AED", "SER", "Speech", "/Speech", "BGM", "/BGM", "Laughter",
+    "/Laughter", "Applause", "/Applause",
+)
+_EMOTION_NAMES = ("HAPPY", "SAD", "ANGRY", "NEUTRAL")
+_TTS_VOCAL_NAMES = (
+    "TTS/B", "TTS/O", "TTS/Q", "TTS/A", "TTS/CO", "TTS/CL", "TTS/H",
+    *(f"TTS/SP{index:02d}" for index in range(1, 14)),
+)
+
+
+class LocalTextNormalizer:
+    def __init__(self) -> None:
+        self.char_rep_map = {
+            "：": ",", "；": ",", ";": ",", "，": ",", "。": ".",
+            "！": "!", "？": "?", "\n": " ", "·": "-", "...": "…",
+            ",,,": "…", "，，，": "…", "……": "…", "“": "'", "”": "'",
+            '"': "'", "‘": "'", "’": "'", "（": "'", "）": "'", "(": "'",
+            ")": "'", "《": "'", "》": "'", "【": "'", "】": "'", "[": "'",
+            "]": "'", "—": "-", "～": "-", "~": "-", "「": "'", "」": "'",
+            ":": ",",
+        }
+        self.clean_pattern = re.compile(
+            "|".join(re.escape(value) for value in self.char_rep_map)
+        )
+
+    def normalize(self, text: str) -> str:
+        return self.clean_pattern.sub(
+            lambda match: self.char_rep_map[match.group()],
+            text,
+        )
+
+
+_CJK_PATTERN = re.compile(
+    r"([\u1100-\u11ff\u2e80-\ua4cf\ua840-\uD7AF\uF900-\uFAFF"
+    r"\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
+)
+
+
+def _tokenize_by_cjk_char(text: str) -> str:
+    pieces = re.split(_CJK_PATTERN, text.strip())
+    return " ".join(piece.strip().upper() for piece in pieces if piece.strip())
+
+
+class LocalSentencePieceTokenizer:
+    def __init__(self, path: Path, normalizer: LocalTextNormalizer) -> None:
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing text tokenizer: {path}")
+        from sentencepiece import SentencePieceProcessor
+
+        self.sp_model = SentencePieceProcessor(model_file=str(path))
+        self.normalizer = normalizer
+
+    @property
+    def unk_token_id(self) -> int:
+        return self.sp_model.unk_id()
+
+    def tokenize(self, text: str) -> list[str]:
+        if not text:
+            return []
+        text = self.normalizer.normalize(text)
+        if len(text.strip()) != 1:
+            text = _tokenize_by_cjk_char(text)
+        return list(self.sp_model.encode(text, out_type=str))
+
+    def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
+        return [self.sp_model.piece_to_id(token) for token in tokens]
+
+    def split_segments(self, tokens: list[str], max_tokens: int) -> list[list[str]]:
+        if not tokens:
+            return []
+        max_tokens = max(1, max_tokens)
+        punctuation = {".", "!", "?", "▁.", "▁?", "▁..."}
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for index, token in enumerate(tokens):
+            current.append(token)
+            if token in punctuation and len(current) > 2:
+                if index + 1 < len(tokens) and tokens[index + 1] in {"'", "▁'"}:
+                    continue
+                segments.append(current)
+                current = []
+            elif len(current) > max_tokens:
+                segments.extend(
+                    current[offset : offset + max_tokens]
+                    for offset in range(0, len(current), max_tokens)
+                )
+                current = []
+        if current:
+            segments.append(current)
+        merged: list[list[str]] = []
+        total_tokens = 0
+        for segment in segments:
+            total_tokens += len(segment)
+            if (
+                merged
+                and len(merged[-1]) + len(segment) <= max_tokens
+                and total_tokens > 0
+            ):
+                merged[-1].extend(segment)
+            elif not merged or len(merged[-1]) + len(segment) > max_tokens // 2:
+                merged.append(segment)
+        return merged
+
+
+def _load_multilingual_encoding(path: Path) -> Any:
+    import tiktoken
+
+    ranks = {}
+    with path.open("r", encoding="utf-8") as vocabulary:
+        for line in vocabulary:
+            if line.strip():
+                token, rank = line.split()
+                ranks[base64.b64decode(token)] = int(rank)
+
+    special_names = [
+        "<|endoftext|>",
+        "<|startoftranscript|>",
+        *(f"<|{language}|>" for language in _LANGUAGE_CODES[:99]),
+        *(f"<|{event}|>" for event in _AUDIO_EVENT_NAMES),
+        *(f"<|{emotion}|>" for emotion in _EMOTION_NAMES),
+        "<|translate|>",
+        "<|transcribe|>",
+        "<|startoflm|>",
+        "<|startofprev|>",
+        "<|nospeech|>",
+        "<|notimestamps|>",
+        *(f"<|SPECIAL_TOKEN_{index}|>" for index in range(1, 31)),
+        *(f"<|{name}|>" for name in _TTS_VOCAL_NAMES),
+        *(f"<|{index * 0.02:.2f}|>" for index in range(1501)),
+    ]
+    first_special_id = len(ranks)
+    special_tokens = {
+        name: first_special_id + index
+        for index, name in enumerate(special_names)
+    }
+    return tiktoken.Encoding(
+        name=path.name,
+        explicit_n_vocab=first_special_id + len(special_names),
+        pat_str=(
+            r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+"
+            r"|\s+(?!\S)|\s+"
+        ),
+        mergeable_ranks=ranks,
+        special_tokens=special_tokens,
+    )
+
+
+class LocalMultilingualTokenizer:
+    def __init__(self, path: Path) -> None:
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing text tokenizer: {path}")
+        self.encoding = _load_multilingual_encoding(path)
+
+    def encode(self, text: str, **kwargs: Any) -> list[int]:
+        return self.encoding.encode(text, **kwargs)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -50,7 +242,7 @@ def parse_args() -> argparse.Namespace:
         "--model-folder",
         dest="onnx_folder",
         type=Path,
-        default=SCRIPT_DIR / "IndexTTS2_Optimized",
+        default=SCRIPT_DIR / _PACKAGE_FOLDERS[MODEL_VERSION],
         help="Folder containing exported or optimized IndexTTS2 graphs.",
     )
     return parser.parse_args()
@@ -77,18 +269,18 @@ ONNX_FOLDER = ARGS.onnx_folder.expanduser().resolve()
 # The default configuration runs all four modes and generates four WAV files.
 
 # 公共路径与声音来源 / Shared paths and voice source ---------------------------
-PROJECT_PATH = Path.home() / "Downloads" / "index-tts-main"
-MODEL_DIR = Path.home() / "Downloads" / "IndexTTS-2"
-TOKENIZER_PATH = MODEL_DIR / "bpe.model"
+LANGUAGE = "zh"
 REFERENCE_AUDIO_PATH = Path(reference_audio_path("indextts"))
 MAX_REFERENCE_SECONDS = 15.0
+TEXT_NORMALIZATION = IS_V25
+_OUTPUT_TAG = "v2_5" if IS_V25 else "v2"
 
 # 模式 1：普通声音克隆 / Mode 1: Normal voice clone ---------------------------
 # 只使用 REFERENCE_AUDIO_PATH 的音色和原始情绪。/ Uses only the timbre and original emotion from REFERENCE_AUDIO_PATH.
 # 此输出跳过 Qwen，并忽略情绪参考音频、手动情绪向量及其强度。 / This output skips Qwen and ignores emotion-reference audio and manual vectors.
 RUN_NORMAL_VOICE_CLONE = True
 NORMAL_TARGET_TEXT = "大家好，我现在正在大可奇奇体验 AI 科技。"
-NORMAL_OUTPUT_PATH = SCRIPT_DIR / "generated_v2.wav"
+NORMAL_OUTPUT_PATH = SCRIPT_DIR / f"generated_{_OUTPUT_TAG}.wav"
 
 # 模式 2：情绪参考音频 / Mode 2: Emotion-reference audio ----------------------
 # 音色来自 REFERENCE_AUDIO_PATH，情绪来自 EMOTION_AUDIO_REFERENCE_PATH。
@@ -102,7 +294,7 @@ RUN_EMOTION_AUDIO_VOICE_CLONE = True
 EMOTION_AUDIO_REFERENCE_PATH: Path | None = REFERENCE_AUDIO_PATH
 EMOTION_AUDIO_ALPHA = 1.0
 EMOTION_AUDIO_TARGET_TEXT = "酒楼丧尽天良，开始借机竞拍房间，唉，一群蠢货。"
-EMOTION_AUDIO_OUTPUT_PATH = SCRIPT_DIR / "generated_v2_emotion_audio.wav"
+EMOTION_AUDIO_OUTPUT_PATH = SCRIPT_DIR / f"generated_{_OUTPUT_TAG}_emotion_audio.wav"
 
 # 模式 3：Qwen 文本情绪 -------------------------------------------------------
 # QWEN_TARGET_TEXT 是最终合成并朗读的文本。
@@ -121,12 +313,11 @@ EMOTION_AUDIO_OUTPUT_PATH = SCRIPT_DIR / "generated_v2_emotion_audio.wav"
 # This mode does not use emotion-reference audio and ignores MANUAL_EMOTION_VECTOR.
 # When set to False, the Qwen tokenizer and two Qwen ONNX sessions are not loaded, and the other settings in this section have no effect.
 RUN_QWEN_TEXT_EMOTION_VOICE_CLONE = True
-QWEN_TOKENIZER_PATH = MODEL_DIR / "qwen0.6bemo4-merge"
 QWEN_TARGET_TEXT = "快躲起來！是他要來了！他要來抓我們了！"
 QWEN_EMOTION_PROMPT: str | None = "极度恐惧、慌张，并带有强烈的惊讶感。"
 QWEN_EMOTION_ALPHA = 0.6
 QWEN_MAX_NEW_TOKENS = 512
-QWEN_OUTPUT_PATH = SCRIPT_DIR / "generated_v2_emotion.wav"
+QWEN_OUTPUT_PATH = SCRIPT_DIR / f"generated_{_OUTPUT_TAG}_emotion.wav"
 
 # 模式 4：手动情绪向量 / Mode 4: Manual emotion vector ------------------------
 # 向量顺序：[高兴, 愤怒, 悲伤, 恐惧, 反感, 低落, 惊讶, 自然]。
@@ -137,7 +328,7 @@ RUN_MANUAL_EMOTION_VECTOR_VOICE_CLONE = True
 MANUAL_EMOTION_VECTOR = [0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0]
 MANUAL_EMOTION_ALPHA = 1.0
 MANUAL_EMOTION_TARGET_TEXT = "对不起嘛！我的记性真的不太好。"
-MANUAL_EMOTION_OUTPUT_PATH = SCRIPT_DIR / "generated_v2_emotion_vector.wav"
+MANUAL_EMOTION_OUTPUT_PATH = SCRIPT_DIR / f"generated_{_OUTPUT_TAG}_emotion_vector.wav"
 
 # 生成设置 / Generation settings ------------------------------------------------
 # 每次只加载一种解码策略。Only one decoding strategy is loaded per process.
@@ -147,19 +338,20 @@ PENALTY_VALUE = 0.8              # penalty_greedy 的乘法惩罚 / Multiplicati
 PENALTY_RANGE = 20               # penalty_greedy 的近期窗口 / Recent-token window.
 TEMPERATURE = 0.8                # 越高变化越大 / Higher values add variation.
 TOP_K = 20                       # sampling 候选数量 / Sampling candidate count.
-TOP_P = 0.8                      # sampling 核采样阈值 / Nucleus threshold, range (0, 1].
+TOP_P = 0.9 if IS_V25 else 0.8   # sampling 核采样阈值 / Nucleus threshold, range (0, 1].
 REPETITION_PENALTY = 1.2         # sampling 重复惩罚 / Sampling repetition penalty.
 MAX_TOKENS = 1500                # 每段上限；0 使用图容量 / Per-segment limit; 0 uses capacity.
 MAX_TEXT_TOKENS_PER_SEGMENT = 120  # 长文本分段长度 / Long-text segment length.
 
 # CFM Euler 步数在导出时固定，并从包元数据读取。/ CFM Euler steps are fixed at export and read from package metadata.
 CFG_RATE = 0.7                   # <= 0 使用单 CFM 分支 / <= 0 uses one CFM branch.
+DURATION_FACTOR = 1.0            # Used by IndexTTS2.5; ignored by v2.
 DIFFUSION_TEMPERATURE = 1.0      # 声学随机性 / Acoustic variation.
 SEED = 9527                      # 整数可复现 / Set an integer for repeatability.
 INTERVAL_SILENCE_MS = 200        # 文本段间静音 / Silence between text segments.
 
 # 运行时设置 / Runtime settings -------------------------------------------------
-ORT_ACCELERATE_PROVIDERS = []    # e.g. ["CUDAExecutionProvider", "OpenVINOExecutionProvider", "DmlExecutionProvider"].
+ORT_ACCELERATE_PROVIDERS = []  # e.g. ["CUDAExecutionProvider", "OpenVINOExecutionProvider", "DmlExecutionProvider"].
 MAX_THREADS = 0                  # CPU/OpenVINO 线程数 / CPU and OpenVINO thread count.
 DEVICE_ID = 0                    # 加速器设备编号 / Accelerator device index.
 ORT_LOG = False                  # ONNX Runtime 详细日志 / Verbose ONNX Runtime logging.
@@ -212,6 +404,11 @@ def metadata_from(path: Path) -> dict[str, str]:
         "emotion_text_content_prefix",
         "emotion_text_think_end_token_id",
         "emotion_text_kv_dtype",
+        "model_version",
+        "speaker_conditioning_mode",
+        "target_language_embedding",
+        "use_gpt_latent",
+        "max_text_tokens",
         "model_file_name_reference_preprocess",
         "model_file_name_conditioning",
         "model_file_name_synthesis",
@@ -229,7 +426,28 @@ def metadata_from(path: Path) -> dict[str, str]:
             for strategy in DECODE_STRATEGIES
         },
     }
+    missing_metadata = sorted(expected_keys - metadata.keys())
+    if missing_metadata:
+        raise ValueError(
+            f"{path.name} is missing required metadata key(s): {missing_metadata}."
+        )
     return metadata
+
+
+def validate_package_version(metadata: dict[str, str]) -> None:
+    package_version = metadata.get("model_version")
+    if package_version is None:
+        if IS_V25:
+            raise ValueError(
+                "IndexTTS2.5 packages must declare model_version=2.5. "
+                "Re-export the package with the unified exporter."
+            )
+        return
+    if package_version != MODEL_VERSION:
+        raise ValueError(
+            f"MODEL_VERSION={MODEL_VERSION!r} cannot load an IndexTTS2 "
+            f"v{package_version} package."
+        )
 
 
 def meta_str(metadata: dict[str, str], key: str, default: str | None = None) -> str:
@@ -254,6 +472,15 @@ class ModelIO:
         return cls(tuple(session.get_inputs()), tuple(session.get_outputs()))
 
 
+def argument_by_name(arguments: tuple[Any, ...], name: str) -> Any:
+    matches = [argument for argument in arguments if argument.name == name]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one ONNX argument named {name!r}, found {len(matches)}."
+        )
+    return matches[0]
+
+
 def io_dtype(argument: Any) -> np.dtype:
     match = re.fullmatch(r"tensor\(([^)]+)\)", argument.type)
     element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
@@ -273,12 +500,14 @@ def io_shape(
             try:
                 shape.append(next(dimensions))
             except StopIteration as error:
-                pass
+                raise ValueError(
+                    f"Missing dynamic dimension for ONNX value {argument.name!r}."
+                ) from error
     try:
         next(dimensions)
     except StopIteration:
         return tuple(shape)
-    pass
+    raise ValueError(f"Too many dynamic dimensions supplied for ONNX value {argument.name!r}.")
 def repeated_dynamic_dimensions(argument: Any, value: int) -> tuple[int, ...]:
     return tuple(
         value
@@ -427,6 +656,8 @@ def provider_configuration() -> tuple[
     providers = list(ORT_ACCELERATE_PROVIDERS) or ["CPUExecutionProvider"]
     available = set(ort.get_available_providers())
     unavailable = [provider for provider in providers if provider not in available]
+    if unavailable:
+        raise ValueError(f"Unavailable ONNX Runtime provider(s): {unavailable}.")
     provider_options = []
     for provider in providers:
         if provider == "CUDAExecutionProvider":
@@ -438,7 +669,7 @@ def provider_configuration() -> tuple[
         elif provider == "CPUExecutionProvider":
             provider_options.append({})
         else:
-            pass
+            raise ValueError(f"Unsupported ONNX Runtime provider: {provider!r}.")
     primary_provider = providers[0]
     if primary_provider == "CUDAExecutionProvider":
         device_type = "cuda"
@@ -602,6 +833,39 @@ class RuntimeSessions:
         self.synthesis_io = ModelIO.from_session(self.synthesis)
         self.cfm_io = ModelIO.from_session(self.cfm)
         self.decoder_io = ModelIO.from_session(self.decoder)
+        self.target_inputs = {
+            argument.name: argument for argument in self.target_prefill_io.inputs
+        }
+        self.synthesis_inputs = {
+            argument.name: argument for argument in self.synthesis_io.inputs
+        }
+        required_synthesis_inputs = {
+            "speaker_latent",
+            "emotion_vector",
+            "text_ids",
+            "save_ids",
+            "accepted_length",
+            "cfg_rate",
+            "style",
+            "reference_hidden",
+            "null_hidden",
+        }
+        if IS_V25:
+            required_synthesis_inputs.add("duration_factor")
+        missing_synthesis_inputs = sorted(
+            required_synthesis_inputs - set(self.synthesis_inputs)
+        )
+        if missing_synthesis_inputs:
+            raise ValueError(
+                "Selected IndexTTS2 release has an incompatible Synthesis graph: "
+                f"missing {missing_synthesis_inputs}."
+            )
+        if "text_ids" not in self.target_inputs:
+            raise ValueError("TargetPrefill graph has no text_ids input.")
+        if IS_V25 and "language_id" not in self.target_inputs:
+            raise ValueError(
+                "IndexTTS2.5 TargetPrefill graph has no language_id input."
+            )
         self.emotion_text_prefill_io = (
             ModelIO.from_session(self.emotion_text_prefill)
             if self.emotion_text_prefill is not None
@@ -628,11 +892,11 @@ class RuntimeSessions:
         self.cfm_bindings = (self.cfm.io_binding(), self.cfm.io_binding())
         self.decoder_binding = self.decoder.io_binding()
         self.style_buffer = empty_ortvalue_for(
-            self.synthesis_io.inputs[6],
+            self.synthesis_inputs["style"],
             self.device_type,
         )
         self.null_hidden_buffer = empty_ortvalue_for(
-            self.synthesis_io.inputs[8],
+            self.synthesis_inputs["null_hidden"],
             self.device_type,
         )
         self.speaker_latent_buffer = empty_ortvalue_for(
@@ -701,9 +965,12 @@ class RuntimeSessions:
             self.step_index_array,
             self.device_type,
         )
-        self.accepted_length_array = numpy_for(self.synthesis_io.inputs[4], 0)
+        self.accepted_length_array = numpy_for(
+            self.synthesis_inputs["accepted_length"],
+            0,
+        )
         self.accepted_length_value = ortvalue_for(
-            self.synthesis_io.inputs[4],
+            self.synthesis_inputs["accepted_length"],
             self.accepted_length_array,
             self.device_type,
         )
@@ -727,10 +994,11 @@ class RuntimeSessions:
         bind_inputs(
             self.synthesis_binding,
             (
-                *self.synthesis_io.inputs[:2],
-                self.synthesis_io.inputs[4],
-                self.synthesis_io.inputs[6],
-                self.synthesis_io.inputs[8],
+                self.synthesis_inputs["speaker_latent"],
+                self.synthesis_inputs["emotion_vector"],
+                self.synthesis_inputs["accepted_length"],
+                self.synthesis_inputs["style"],
+                self.synthesis_inputs["null_hidden"],
             ),
             (
                 self.speaker_latent_buffer,
@@ -751,7 +1019,11 @@ class RuntimeSessions:
             self.reference_bindings[0],
             self.reference_io.outputs,
             self.device,
-            (None, self.style_buffer, None, self.null_hidden_buffer),
+            (
+                (None, self.style_buffer, None, self.null_hidden_buffer)
+                if self.device_type != "cuda"
+                else None
+            ),
         )
         bind_outputs(
             self.reference_bindings[1],
@@ -762,7 +1034,11 @@ class RuntimeSessions:
             self.conditioning_binding,
             self.conditioning_io.outputs,
             self.device,
-            (self.speaker_latent_buffer, self.emotion_vector_buffer),
+            (
+                (self.speaker_latent_buffer, self.emotion_vector_buffer)
+                if self.device_type != "cuda"
+                else None
+            ),
         )
 
         self.emotion_text_prefill_binding = None
@@ -873,7 +1149,11 @@ class RuntimeSessions:
                     binding,
                     self.cfm_io.outputs,
                     self.device,
-                    (self.cfm_mel_buffers[1 - index],),
+                    (
+                        (self.cfm_mel_buffers[1 - index],)
+                        if self.device_type != "cuda"
+                        else None
+                    ),
                 )
             self.cfm_shape = shape
         pass
@@ -886,6 +1166,10 @@ class RuntimeSessions:
 class Frontend:
     tokenizer: Any
     emotion_tokenizer: Any | None
+    normalizer: Any | None = None
+    japanese_processor: Any | None = None
+    language: str = "common"
+    language_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -910,42 +1194,153 @@ class GenerationControls:
 
 
 def resolve_frontend() -> Frontend:
-    project_path = PROJECT_PATH.expanduser().resolve()
-    model_dir = MODEL_DIR.expanduser().resolve()
-    tokenizer_path = TOKENIZER_PATH.expanduser().resolve()
-    if str(project_path) not in sys.path:
-        sys.path.insert(0, str(project_path))
-
-    from indextts.utils.front import TextNormalizer, TextTokenizer
-
-    normalizer = TextNormalizer(enable_glossary=True)
-    try:
-        normalizer.load()
-        glossary_path = model_dir / "glossary.yaml"
-        if glossary_path.is_file():
-            normalizer.load_glossary_from_yaml(str(glossary_path))
-    except (ImportError, ModuleNotFoundError) as exc:
-        warnings.warn(
-            f"Official text normalization is unavailable ({exc}); using SentencePiece without normalization.",
-            RuntimeWarning,
+    normalizer = LocalTextNormalizer()
+    if IS_V25:
+        tokenizer = LocalMultilingualTokenizer(ONNX_FOLDER / TEXT_TOKENIZER_FILE)
+        language = LANGUAGE.lower()
+        language_id = (
+            _LANGUAGE_CODES.index(language)
+            if language in _LANGUAGE_CODES
+            else _LANGUAGE_CODES.index("common")
         )
-        normalizer = None
-    tokenizer = TextTokenizer(str(tokenizer_path), normalizer)
+    else:
+        tokenizer = LocalSentencePieceTokenizer(
+            ONNX_FOLDER / TEXT_TOKENIZER_FILE,
+            normalizer,
+        )
+        language = "common"
+        language_id = 0
     emotion_tokenizer = None
     if RUN_QWEN_TEXT_EMOTION_VOICE_CLONE:
-        qwen_tokenizer_oath = (
-            QWEN_TOKENIZER_PATH or model_dir / "qwen0.6bemo4-merge"
-        ).expanduser().resolve()
+        qwen_tokenizer_path = ONNX_FOLDER / QWEN_TOKENIZER_FOLDER
+        if not qwen_tokenizer_path.is_dir():
+            raise FileNotFoundError(
+                f"Missing emotion tokenizer folder: {qwen_tokenizer_path}"
+            )
         from transformers import AutoTokenizer
 
         emotion_tokenizer = AutoTokenizer.from_pretrained(
-            qwen_tokenizer_oath,
+            str(qwen_tokenizer_path),
             local_files_only=True,
         )
+    japanese_processor = (
+        None
+    )
     return Frontend(
         tokenizer=tokenizer,
         emotion_tokenizer=emotion_tokenizer,
+        normalizer=normalizer,
+        japanese_processor=japanese_processor,
+        language=language,
+        language_id=language_id,
     )
+
+
+_PRONUNCIATION_ANNOTATION_PATTERN = re.compile(r"<([^|>\n]+)\|([^>\n]+)>")
+
+
+def _is_kana(value: str) -> bool:
+    return bool(
+        re.fullmatch(r"[\u3040-\u309f]+", value)
+        or re.fullmatch(r"[\u30a0-\u30ff]+", value)
+    )
+
+
+def _apply_pronunciation_annotations(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        word = match.group(1)
+        pronunciation = match.group(2).upper()
+        if _is_kana(pronunciation):
+            return f" {pronunciation} "
+        token = (
+            "SPECIAL_TOKEN_2"
+            if re.search(r"[\u4e00-\u9fff]", word)
+            else "SPECIAL_TOKEN_1"
+        )
+        return f"<|{token}|>{pronunciation}<|{token}|>"
+
+    return _PRONUNCIATION_ANNOTATION_PATTERN.sub(replace, text)
+
+
+def prepare_target_text(frontend: Frontend, text: str) -> str:
+    language = frontend.language
+    if frontend.normalizer is not None:
+        text = frontend.normalizer.clean_pattern.sub(
+            lambda match: frontend.normalizer.char_rep_map[match.group()],
+            text,
+        )
+    if TEXT_NORMALIZATION and frontend.normalizer is not None:
+        text = frontend.normalizer.normalize(text)
+    if language in {"ja", "zh", "zhen", "en"}:
+        text = text.lower()
+    if language == "es":
+        text = text.upper()
+    text = _apply_pronunciation_annotations(text)
+    if language == "ja" and frontend.japanese_processor is not None:
+        text = frontend.japanese_processor.process_ja_text(text)
+    return re.sub(r"<\|([^|]+)\|>", lambda match: f"<|{match.group(1).upper()}|>", text)
+
+
+def split_text_by_tokens(
+    frontend: Frontend,
+    text: str,
+    max_tokens: int,
+    language_prefix: str,
+) -> list[str]:
+    tokenizer = frontend.tokenizer
+
+    def token_length(value: str) -> int:
+        return len(tokenizer.encode(value, allowed_special="all"))
+
+    budget = max(1, max_tokens - token_length(language_prefix))
+    if token_length(text) <= budget:
+        return [text]
+
+    protected = re.compile(
+        r"<\|SPECIAL_TOKEN_\d+\|>.*?<\|SPECIAL_TOKEN_\d+\|>"
+    )
+    pieces: list[tuple[str, bool]] = []
+    position = 0
+    for match in protected.finditer(text):
+        if match.start() > position:
+            pieces.append((text[position : match.start()], False))
+        pieces.append((match.group(0), True))
+        position = match.end()
+    if position < len(text):
+        pieces.append((text[position:], False))
+
+    chunks: list[str] = []
+    for piece, atomic in pieces:
+        if atomic:
+            chunks.append(piece)
+            continue
+        for part in re.split(r"(?<=[，。！？、；：,.!?;:\n])", piece):
+            if not part:
+                continue
+            if token_length(part) <= budget:
+                chunks.append(part)
+                continue
+            current = ""
+            for character in part:
+                if current and token_length(current + character) > budget:
+                    chunks.append(current)
+                    current = character
+                else:
+                    current += character
+            if current:
+                chunks.append(current)
+
+    segments: list[str] = []
+    current = ""
+    for chunk in chunks:
+        if current and token_length(current + chunk) > budget:
+            segments.append(current)
+            current = chunk
+        else:
+            current += chunk
+    if current:
+        segments.append(current)
+    return segments or [text]
 
 
 def generation_controls(
@@ -1038,7 +1433,7 @@ def parse_emotion_text_output(content: str, text_input: str) -> dict[str, float]
         try:
             score = float(parsed.get(source, 0.0))
         except (TypeError, ValueError) as error:
-            pass
+            score = 0.0
         detected[target] = min(max(score, 0.0), 1.2)
     if not any(score > 0.0 for score in detected.values()):
         detected["calm"] = 1.0
@@ -1101,15 +1496,20 @@ def run_emotion_text_model(
         sessions.emotion_text_prefill_io.inputs,
         (input_ids_value,),
     )
-    rebind_outputs(
-        sessions.emotion_text_prefill_binding,
-        sessions.emotion_text_prefill_io.outputs,
-        sessions.device,
+    emotion_prefill_output_buffers = (
         (
             *((None,) * sessions.emotion_state_count),
             sessions.emotion_token_buffers[0],
             sessions.emotion_history_buffers[0],
-        ),
+        )
+        if sessions.device_type != "cuda"
+        else None
+    )
+    rebind_outputs(
+        sessions.emotion_text_prefill_binding,
+        sessions.emotion_text_prefill_io.outputs,
+        sessions.device,
+        emotion_prefill_output_buffers,
     )
     outputs = run_binding(
         sessions.emotion_text_prefill,
@@ -1118,8 +1518,16 @@ def run_emotion_text_model(
     )
     state_count = sessions.emotion_state_count
     states = outputs[:state_count]
-    current_token = sessions.emotion_token_buffers[0]
-    history_length = sessions.emotion_history_buffers[0]
+    current_token = (
+        outputs[-2]
+        if sessions.device_type == "cuda"
+        else sessions.emotion_token_buffers[0]
+    )
+    history_length = (
+        outputs[-1]
+        if sessions.device_type == "cuda"
+        else sessions.emotion_history_buffers[0]
+    )
     stop_tokens = {
         int(token)
         for token in meta_str(metadata, "emotion_text_stop_token_ids").split(",")
@@ -1150,11 +1558,6 @@ def run_emotion_text_model(
             binding,
             sessions.emotion_text_decode_io.outputs,
             sessions.device,
-            (
-                *((None,) * state_count),
-                sessions.emotion_token_buffers[1 - binding_index],
-                sessions.emotion_history_buffers[1 - binding_index],
-            ),
         )
         outputs = run_binding(
             sessions.emotion_text_decode,
@@ -1162,8 +1565,8 @@ def run_emotion_text_model(
             sessions.run_options,
         )
         states = outputs[:state_count]
-        current_token = sessions.emotion_token_buffers[1 - binding_index]
-        history_length = sessions.emotion_history_buffers[1 - binding_index]
+        current_token = outputs[state_count]
+        history_length = outputs[state_count + 1]
         decode_calls += 1
 
     think_end_id = meta_int(metadata, "emotion_text_think_end_token_id")
@@ -1225,11 +1628,21 @@ def prepare_reference(
         sessions.reference_io.inputs,
         (speaker_audio_value,),
     )
-    speaker_features, _, reference_hidden, _ = run_binding(
+    if sessions.device_type == "cuda":
+        rebind_outputs(
+            sessions.reference_bindings[0],
+            sessions.reference_io.outputs,
+            sessions.device,
+        )
+    reference_outputs = run_binding(
         sessions.reference,
         sessions.reference_bindings[0],
         sessions.run_options,
     )
+    speaker_features, style, reference_hidden, null_hidden = reference_outputs
+    if sessions.device_type == "cuda":
+        sessions.style_buffer.update_inplace(style)
+        sessions.null_hidden_buffer.update_inplace(null_hidden)
     speaker_length = ortvalue_for(
         sessions.conditioning_io.inputs[1],
         speaker_features.shape()[1],
@@ -1242,7 +1655,7 @@ def prepare_reference(
     )
     bind_inputs(
         sessions.synthesis_binding,
-        (sessions.synthesis_io.inputs[7],),
+        (sessions.synthesis_inputs["reference_hidden"],),
         (reference_hidden,),
     )
     sessions.reference_hidden_value = reference_hidden
@@ -1296,6 +1709,12 @@ def prepare_conditioning(
             sessions.reference_io.inputs,
             (emotion_audio_value,),
         )
+        if sessions.device_type == "cuda":
+            rebind_outputs(
+                sessions.reference_bindings[1],
+                sessions.reference_io.outputs[:1],
+                sessions.device,
+            )
         emotion_features = run_binding(
             sessions.reference,
             sessions.reference_bindings[1],
@@ -1331,18 +1750,41 @@ def prepare_conditioning(
             emotion_weights_value,
         ),
     )
-    run_bound(
-        sessions.conditioning,
-        sessions.conditioning_binding,
-        sessions.run_options,
-    )
+    if sessions.device_type == "cuda":
+        rebind_outputs(
+            sessions.conditioning_binding,
+            sessions.conditioning_io.outputs,
+            sessions.device,
+        )
+        conditioning_outputs = run_binding(
+            sessions.conditioning,
+            sessions.conditioning_binding,
+            sessions.run_options,
+        )
+        sessions.speaker_latent_buffer.update_inplace(conditioning_outputs[0])
+        sessions.emotion_vector_buffer.update_inplace(conditioning_outputs[1])
+    else:
+        run_bound(
+            sessions.conditioning,
+            sessions.conditioning_binding,
+            sessions.run_options,
+        )
 
 
 def bind_generation_controls(
     sessions: RuntimeSessions,
     controls: GenerationControls,
+    language_id: int,
 ) -> None:
-    prefill_arguments = sessions.target_prefill_io.inputs[3:]
+    prefill_control_names = (
+        ("temperature", "top_k", "top_p")
+        if DECODE_STRATEGY == "sampling"
+        else ()
+    )
+    prefill_arguments = tuple(
+        argument_by_name(sessions.target_prefill_io.inputs, name)
+        for name in prefill_control_names
+    )
     if DECODE_STRATEGY == "sampling":
         prefill_data = (controls.temperature, controls.top_k, controls.top_p)
         prefill_values = tuple(
@@ -1373,20 +1815,50 @@ def bind_generation_controls(
         decode_values = ()
 
     cfg_rate_value = ortvalue_for(
-        sessions.synthesis_io.inputs[5],
+        sessions.synthesis_inputs["cfg_rate"],
         CFG_RATE,
         sessions.device_type,
     )
-    sessions.control_values = (*prefill_values, *decode_values, cfg_rate_value)
+    language_id_value = None
+    duration_factor_value = None
+    if IS_V25:
+        language_id_value = ortvalue_for(
+            sessions.target_inputs["language_id"],
+            language_id,
+            sessions.device_type,
+        )
+        duration_factor_value = ortvalue_for(
+            sessions.synthesis_inputs["duration_factor"],
+            DURATION_FACTOR,
+            sessions.device_type,
+        )
+    sessions.control_values = (
+        *((language_id_value,) if language_id_value is not None else ()),
+        *prefill_values,
+        *decode_values,
+        cfg_rate_value,
+        *((duration_factor_value,) if duration_factor_value is not None else ()),
+    )
+    if language_id_value is not None:
+        bind_inputs(
+            sessions.target_prefill_binding,
+            (sessions.target_inputs["language_id"],),
+            (language_id_value,),
+        )
     bind_inputs(
         sessions.target_prefill_binding,
         prefill_arguments,
         prefill_values,
     )
+    synthesis_control_arguments = [sessions.synthesis_inputs["cfg_rate"]]
+    synthesis_control_values = [cfg_rate_value]
+    if duration_factor_value is not None:
+        synthesis_control_arguments.append(sessions.synthesis_inputs["duration_factor"])
+        synthesis_control_values.append(duration_factor_value)
     bind_inputs(
         sessions.synthesis_binding,
-        (sessions.synthesis_io.inputs[5],),
-        (cfg_rate_value,),
+        tuple(synthesis_control_arguments),
+        tuple(synthesis_control_values),
     )
     cfg_scales = (
         sessions.cfg_scales_buffer
@@ -1404,9 +1876,15 @@ def bind_generation_controls(
             sessions.cfm_io.inputs[3:5],
             (cfg_scales, cfg_scale_sum),
         )
-    decode_arguments = sessions.decode_io.inputs[
-        sessions.state_count + 3 :
-    ]
+    decode_control_names = {
+        "greedy": (),
+        "penalty_greedy": ("penalty_value", "penalty_range"),
+        "sampling": ("temperature", "top_k", "top_p", "repetition_penalty"),
+    }[DECODE_STRATEGY]
+    decode_arguments = tuple(
+        argument_by_name(sessions.decode_io.inputs, name)
+        for name in decode_control_names
+    )
     for binding in sessions.decode_bindings:
         bind_inputs(binding, decode_arguments, decode_values)
 
@@ -1418,8 +1896,17 @@ def generate_codes(
 ) -> tuple[ort.OrtValue, int]:
     bind_inputs(
         sessions.target_prefill_binding,
-        (sessions.target_prefill_io.inputs[2],),
+        (sessions.target_inputs["text_ids"],),
         (text_ids,),
+    )
+    prefill_output_buffers = (
+        (
+            *((None,) * sessions.state_count),
+            sessions.token_buffers[0],
+            sessions.history_buffers[0],
+        )
+        if sessions.device_type != "cuda"
+        else None
     )
     rebind_outputs(
         sessions.target_prefill_binding,
@@ -1428,11 +1915,7 @@ def generate_codes(
             *sessions.target_prefill_io.outputs[-2:],
         ),
         sessions.device,
-        (
-            *((None,) * sessions.state_count),
-            sessions.token_buffers[0],
-            sessions.history_buffers[0],
-        ),
+        prefill_output_buffers,
     )
     prefill_outputs = run_binding(
         sessions.target_prefill,
@@ -1441,9 +1924,17 @@ def generate_codes(
     )
 
     states = prefill_outputs[: sessions.state_count]
-    current_token = sessions.token_buffers[0]
+    current_token = (
+        prefill_outputs[-2]
+        if sessions.device_type == "cuda"
+        else sessions.token_buffers[0]
+    )
     save_ids = current_token
-    history_length = sessions.history_buffers[0]
+    history_length = (
+        prefill_outputs[-1]
+        if sessions.device_type == "cuda"
+        else sessions.history_buffers[0]
+    )
     prefill_length = int(history_length.numpy().item())
     max_tokens = MAX_TOKENS if MAX_TOKENS else meta_int(metadata, "max_signal_length")
     max_tokens = min(max_tokens, meta_int(metadata, "max_signal_length") - prefill_length)
@@ -1479,18 +1970,12 @@ def generate_codes(
                 *sessions.decode_io.outputs[-3:],
             ),
             sessions.device,
-            (
-                *((None,) * sessions.state_count),
-                sessions.token_buffers[1 - binding_index],
-                None,
-                sessions.history_buffers[1 - binding_index],
-            ),
         )
         outputs = run_binding(sessions.decode, binding, sessions.run_options)
         states = outputs[: sessions.state_count]
         save_ids = outputs[sessions.state_count + 1]
-        current_token = sessions.token_buffers[1 - binding_index]
-        history_length = sessions.history_buffers[1 - binding_index]
+        current_token = outputs[sessions.state_count]
+        history_length = outputs[sessions.state_count + 2]
         decode_calls += 1
     print_progress(
         f"Semantic generation complete: {accepted_tokens} codes in "
@@ -1538,11 +2023,17 @@ def solve_cfm(
         sessions.step_index_array[0] = index
         sessions.step_index_value.update_inplace(sessions.step_index_array)
         binding_index = index & 1
-        run_bound(
-            sessions.cfm,
-            sessions.cfm_bindings[binding_index],
-            sessions.run_options,
-        )
+        binding = sessions.cfm_bindings[binding_index]
+        if sessions.device_type == "cuda":
+            rebind_outputs(
+                binding,
+                sessions.cfm_io.outputs,
+                sessions.device,
+            )
+            cfm_outputs = run_binding(sessions.cfm, binding, sessions.run_options)
+            mel_buffers[1 - binding_index].update_inplace(cfm_outputs[0])
+        else:
+            run_bound(sessions.cfm, binding, sessions.run_options)
         completed_steps = index + 1
         if completed_steps % progress_interval == 0 or completed_steps == steps:
             print_progress(
@@ -1561,7 +2052,7 @@ def synthesize_segment(
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, int, int]:
     text_ids_value = ortvalue_for(
-        sessions.target_prefill_io.inputs[2],
+        sessions.target_inputs["text_ids"],
         text_ids,
         sessions.device_type,
         (text_ids.shape[1],),
@@ -1572,22 +2063,57 @@ def synthesize_segment(
         text_ids_value,
     )
     print_progress("Preparing acoustic conditioning...")
+    latent_text_ids = text_ids
+    if IS_V25:
+        latent_text_ids = np.concatenate(
+            (
+                text_ids,
+                np.ones((text_ids.shape[0], 1), dtype=text_ids.dtype),
+            ),
+            axis=1,
+        )
+    latent_text_ids_value = ortvalue_for(
+        sessions.synthesis_inputs["text_ids"],
+        latent_text_ids,
+        sessions.device_type,
+        (latent_text_ids.shape[1],),
+    )
+    save_ids_value = ortvalue_for(
+        sessions.synthesis_inputs["save_ids"],
+        save_ids.numpy(),
+        sessions.device_type,
+        (save_ids.shape()[1],),
+    )
+    accepted_length_value = ortvalue_for(
+        sessions.synthesis_inputs["accepted_length"],
+        code_count,
+        sessions.device_type,
+    )
     bind_inputs(
         sessions.synthesis_binding,
-        sessions.synthesis_io.inputs[2:4],
-        (text_ids_value, save_ids),
+        (
+            sessions.synthesis_inputs["text_ids"],
+            sessions.synthesis_inputs["save_ids"],
+            sessions.synthesis_inputs["accepted_length"],
+        ),
+        (latent_text_ids_value, save_ids_value, accepted_length_value),
     )
-    rebind_outputs(
-        sessions.synthesis_binding,
-        sessions.synthesis_io.outputs,
-        sessions.device,
+    synthesis_output_buffers = (
         (
             None,
             sessions.target_length_buffer,
             sessions.cfg_scales_buffer,
             sessions.cfg_scale_sum_buffer,
             None,
-        ),
+        )
+        if sessions.device_type != "cuda"
+        else None
+    )
+    rebind_outputs(
+        sessions.synthesis_binding,
+        sessions.synthesis_io.outputs,
+        sessions.device,
+        synthesis_output_buffers,
     )
     synthesis_outputs = run_binding(
         sessions.synthesis,
@@ -1596,7 +2122,19 @@ def synthesize_segment(
     )
     static_hidden = synthesis_outputs[0]
     target_mask = synthesis_outputs[-1]
-    target_frames = int(sessions.target_length_buffer.numpy().item())
+    target_length_value = (
+        synthesis_outputs[1]
+        if sessions.device_type == "cuda"
+        else sessions.target_length_buffer
+    )
+    target_frames = int(target_length_value.numpy().item())
+    if sessions.device_type == "cuda":
+        for binding in sessions.cfm_bindings:
+            bind_inputs(
+                binding,
+                sessions.cfm_io.inputs[3:5],
+                (synthesis_outputs[2], synthesis_outputs[3]),
+            )
     expected_total_frames = prompt_frames + target_frames
     mel = solve_cfm(
         sessions,
@@ -1610,7 +2148,7 @@ def synthesize_segment(
     bind_inputs(
         sessions.decoder_binding,
         sessions.decoder_io.inputs,
-        (mel, sessions.target_length_buffer),
+        (mel, target_length_value),
     )
     rebind_outputs(
         sessions.decoder_binding,
@@ -1633,18 +2171,42 @@ def tokenize_segments(
     frontend: Frontend,
     text: str,
     argument: Any,
+    max_text_tokens: int | None = None,
 ) -> list[tuple[str, np.ndarray]]:
-    tokens = frontend.tokenizer.tokenize(text)
-    segments = frontend.tokenizer.split_segments(
-        tokens,
-        MAX_TEXT_TOKENS_PER_SEGMENT,
+    if not IS_V25:
+        tokens = frontend.tokenizer.tokenize(text)
+        segments = frontend.tokenizer.split_segments(
+            tokens,
+            MAX_TEXT_TOKENS_PER_SEGMENT,
+        )
+        output = []
+        for segment in segments:
+            ids = frontend.tokenizer.convert_tokens_to_ids(segment)
+            if frontend.tokenizer.unk_token_id in ids:
+                warnings.warn(
+                    "Text segment contains unknown tokenizer IDs.",
+                    RuntimeWarning,
+                )
+            label = "".join(segment).replace("▁", " ").strip()
+            output.append((label, numpy_for(argument, [ids], (len(ids),))))
+        return output
+
+    if max_text_tokens is None:
+        raise ValueError("IndexTTS2.5 requires max_text_tokens metadata.")
+    language_prefix = f"<|{frontend.language}|> "
+    segments = split_text_by_tokens(
+        frontend,
+        text,
+        min(MAX_TEXT_TOKENS_PER_SEGMENT, max_text_tokens - 2),
+        language_prefix,
     )
     output = []
     for segment in segments:
-        ids = frontend.tokenizer.convert_tokens_to_ids(segment)
-        if frontend.tokenizer.unk_token_id in ids:
-            warnings.warn("Text segment contains unknown tokenizer IDs.", RuntimeWarning)
-        label = "".join(segment).replace("▁", " ").strip()
+        ids = frontend.tokenizer.encode(
+            language_prefix + segment,
+            allowed_special="all",
+        )
+        label = segment.strip()
         output.append((label, numpy_for(argument, [ids], (len(ids),))))
     return output
 
@@ -1659,10 +2221,13 @@ def run_demo(
     demo_name: str,
 ) -> Path:
     print_progress(f"Tokenizing and splitting {demo_name} text...")
+    if IS_V25:
+        target_text = prepare_target_text(frontend, target_text)
     segments = tokenize_segments(
         frontend,
         target_text,
-        sessions.target_prefill_io.inputs[2],
+        sessions.target_inputs["text_ids"],
+        meta_int(metadata, "max_text_tokens") if IS_V25 else None,
     )
     print_progress(f"Prepared {len(segments)} {demo_name} text segment(s).")
     rng = np.random.default_rng(SEED)
@@ -1726,7 +2291,7 @@ def run_synthesis(
     print_progress("Loading the text frontend...")
     frontend = resolve_frontend()
     controls = generation_controls(metadata)
-    bind_generation_controls(sessions, controls)
+    bind_generation_controls(sessions, controls, frontend.language_id)
 
     reference_started = time.perf_counter()
     print_progress("Preprocessing shared speaker reference audio...")
@@ -1830,6 +2395,7 @@ def main() -> None:
     metadata_path = ONNX_FOLDER / "IndexTTS2_Metadata.onnx"
     print_progress(f"Reading package metadata: {metadata_path}")
     metadata = metadata_from(metadata_path)
+    validate_package_version(metadata)
     paths = RuntimePaths.from_metadata(ONNX_FOLDER, metadata, DECODE_STRATEGY)
 
     sessions_started = time.perf_counter()

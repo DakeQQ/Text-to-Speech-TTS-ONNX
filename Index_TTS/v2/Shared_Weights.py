@@ -1,4 +1,4 @@
-"""Merge compact IndexTTS2 decode graphs and pack their shared ONNX weights."""
+"""Merge IndexTTS2 v2/v2.5 decode graphs and pack shared ONNX weights."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ _UNSHAREABLE_INIT_TYPES = frozenset(
 )
 _TensorIdentity = tuple[int, tuple[int, ...], int, bytes]
 _SharedTensor = tuple[int, int, str]
+_TensorReference = tuple[str, str]
 
 
 def _num_elements(tensor: TensorProto) -> int:
@@ -51,6 +52,23 @@ def _tensor_bytes(tensor: TensorProto) -> bytes:
     if tensor.raw_data:
         return tensor.raw_data
     return numpy_helper.to_array(tensor).tobytes(order="C")
+
+
+def _external_tensor_bytes(tensor: TensorProto, folder: Path) -> bytes:
+    if tensor.data_location != TensorProto.EXTERNAL:
+        return _tensor_bytes(tensor)
+
+    external = _external_data_map(tensor)
+    location = external.get("location")
+    length = external.get("length")
+    if not location or length is None:
+        raise ValueError(f"External tensor {tensor.name!r} has no complete data range.")
+    with (folder / location).open("rb") as data_file:
+        data_file.seek(int(external.get("offset", "0")))
+        payload = data_file.read(int(length))
+    if len(payload) != int(length):
+        raise ValueError(f"External tensor {tensor.name!r} has a truncated data range.")
+    return payload
 
 
 def _external_ref(
@@ -120,12 +138,53 @@ def _resolve_bundle_targets(folder: Path, model_paths) -> list[Path]:
     return targets
 
 
+def _resolve_data_alias_sources(
+    targets: list[Path],
+    data_aliases: dict[_TensorReference, _TensorReference],
+) -> dict[_TensorReference, tuple[Path, TensorProto]]:
+    if not data_aliases:
+        return {}
+
+    paths_by_name = {path.name: path for path in targets}
+    if len(paths_by_name) != len(targets):
+        raise ValueError("Shared initializer aliases require distinct model file names.")
+
+    sources: dict[_TensorReference, tuple[Path, TensorProto]] = {}
+    for model_name, tensor_name in sorted(set(data_aliases.values())):
+        model_path = paths_by_name.get(model_name)
+        if model_path is None:
+            raise ValueError(
+                f"Shared initializer alias source {model_name!r} is not bundled."
+            )
+        model = onnx.load(str(model_path), load_external_data=False)
+        tensor = next(
+            (item for item in model.graph.initializer if item.name == tensor_name),
+            None,
+        )
+        if tensor is None:
+            raise ValueError(
+                f"Shared initializer alias source {model_name!r}:{tensor_name!r} "
+                "does not exist."
+            )
+        tensor_copy = TensorProto()
+        tensor_copy.CopyFrom(tensor)
+        sources[(model_name, tensor_name)] = (model_path.parent, tensor_copy)
+        del model
+    return sources
+
+
 def _rewrite_model_initializers(
     model: onnx.ModelProto,
     data_file: BinaryIO,
     unique: dict[_TensorIdentity, _SharedTensor],
+    physical_data: dict[object, tuple[int, int]],
+    logical_data_keys: dict[_TensorIdentity, object],
     carrier_initializers: list[TensorProto],
     min_elements: int,
+    *,
+    source_name: str,
+    data_aliases: dict[_TensorReference, _TensorReference],
+    alias_sources: dict[_TensorReference, tuple[Path, TensorProto]],
 ) -> tuple[int, int, int]:
     rewritten: list[TensorProto] = []
     remap: dict[str, str] = {}
@@ -147,17 +206,51 @@ def _rewrite_model_initializers(
             hashlib.sha256(raw).digest(),
         )
         source_bytes += len(raw)
+        tensor_ref = (source_name, tensor.name)
+        alias_source = data_aliases.get(tensor_ref)
+        physical_key: object = (
+            ("alias", *alias_source)
+            if alias_source is not None
+            else ("tensor", identity)
+        )
         shared = unique.get(identity)
-        if shared is None:
-            offset = data_file.tell()
-            data_file.write(raw)
-            canonical_name = f"{_CANONICAL_PREFIX}{len(unique):06d}"
-            shared = (offset, len(raw), canonical_name)
-            unique[identity] = shared
-            carrier_initializers.append(
-                _external_ref(tensor, offset, len(raw), name=canonical_name)
+        if shared is not None and logical_data_keys[identity] != physical_key:
+            raise ValueError(
+                f"Initializer {tensor.name!r} has conflicting shared-data aliases."
             )
-            unique_bytes += len(raw)
+        if shared is None:
+            prior_physical_key = logical_data_keys.get(identity)
+            if prior_physical_key is not None and prior_physical_key != physical_key:
+                raise ValueError(
+                    f"Initializer {tensor.name!r} has conflicting shared-data aliases."
+                )
+            physical = physical_data.get(physical_key)
+            if physical is None:
+                payload = raw
+                if alias_source is not None:
+                    source = alias_sources.get(alias_source)
+                    if source is None:
+                        raise ValueError(
+                            f"Initializer {tensor.name!r} refers to an unresolved alias source."
+                        )
+                    payload = _external_tensor_bytes(source[1], source[0])
+                    if len(payload) != len(raw):
+                        raise ValueError(
+                            f"Initializer {tensor.name!r} and its alias source have different byte lengths."
+                        )
+                offset = data_file.tell()
+                data_file.write(payload)
+                physical = (offset, len(payload))
+                physical_data[physical_key] = physical
+                unique_bytes += len(payload)
+            offset, length = physical
+            canonical_name = f"{_CANONICAL_PREFIX}{len(unique):06d}"
+            shared = (offset, length, canonical_name)
+            unique[identity] = shared
+            logical_data_keys[identity] = physical_key
+            carrier_initializers.append(
+                _external_ref(tensor, offset, length, name=canonical_name)
+            )
 
         offset, length, canonical_name = shared
         remap[tensor.name] = canonical_name
@@ -201,8 +294,13 @@ def bundle_shared_initializers(
     *,
     min_elements: int = MIN_SHARED_INITIALIZER_ELEMENTS,
     metadata: dict[str, str] | None = None,
+    data_aliases: dict[_TensorReference, _TensorReference] | None = None,
 ) -> dict[str, int | str]:
-    """Rewrite an explicit IndexTTS2 graph set to one deduplicated external blob."""
+    """Rewrite an explicit IndexTTS2 graph set to one deduplicated external blob.
+
+    ``data_aliases`` may redirect selected logical initializers to a compatible
+    source range while retaining their own dtype and shape metadata.
+    """
     folder = Path(folder).expanduser().resolve()
     targets = _resolve_bundle_targets(folder, model_paths)
     shared_metadata = {
@@ -212,7 +310,11 @@ def bundle_shared_initializers(
     if metadata:
         shared_metadata.update({str(key): str(value) for key, value in metadata.items()})
 
+    aliases = dict(data_aliases or {})
+    alias_sources = _resolve_data_alias_sources(targets, aliases)
     unique: dict[_TensorIdentity, _SharedTensor] = {}
+    physical_data: dict[object, tuple[int, int]] = {}
+    logical_data_keys: dict[_TensorIdentity, object] = {}
     carrier_initializers: list[TensorProto] = []
     staged_models: list[tuple[Path, Path]] = []
     graph_reference_count = 0
@@ -229,8 +331,13 @@ def bundle_shared_initializers(
                     model,
                     data_file,
                     unique,
+                    physical_data,
+                    logical_data_keys,
                     carrier_initializers,
                     min_elements,
+                    source_name=source.name,
+                    data_aliases=aliases,
+                    alias_sources=alias_sources,
                 )
                 graph_reference_count += references
                 source_bytes += model_source_bytes
@@ -446,6 +553,7 @@ def merge_reference_preprocess_graph(
         reference_outputs[name] for name in final_output_names[1:]
     )
     _copy_metadata(merged, feature, semantic, reference)
+    onnx.save(merged, str(output_path))
     return output_path
 
 
@@ -517,6 +625,7 @@ def merge_target_prefill_graph(
     merged.graph.value_info.append(target_outputs[connector])
     merged.graph.output.extend(prefill.graph.output)
     _copy_metadata(merged, target, prefill)
+    onnx.save(merged, str(output_path))
     return output_path
 
 
@@ -624,6 +733,7 @@ def merge_synthesis_graph(
     merged.graph.value_info.append(latent_outputs["gpt_latent"])
     merged.graph.output.extend(acoustic.graph.output)
     _copy_metadata(merged, latent, acoustic)
+    onnx.save(merged, str(output_path))
     return output_path
 
 
@@ -719,6 +829,7 @@ def build_decoder_postprocess_graph(decoder_path: str | Path) -> Path:
     model.graph.node.extend(preprocess_nodes)
     model.graph.node.extend(original_nodes)
     model.graph.name = "IndexTTS2_DecoderPostprocess"
+    onnx.save(model, str(decoder_path))
     return decoder_path
 
 
@@ -778,6 +889,7 @@ def merge_decode_step_graph(
     merged.graph.value_info.append(embed_outputs[connector])
     merged.graph.output.extend(main.graph.output)
     _copy_metadata(merged, embed, main)
+    onnx.save(merged, str(output_path))
     return output_path
 
 

@@ -16,17 +16,19 @@ import onnx
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
     if (candidate / "Optimize_ONNX_Common.py").is_file():
         if str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
         break
-else:
-    pass
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
+    _retarget_external_location,
     process_model,
+    quantize_weight_only,
     quantize_weight_only_shared,
     read_onnx_metadata,
     replace_onnx_metadata,
@@ -37,6 +39,7 @@ from Shared_Weights import (  # noqa: E402
     bundle_shared_initializers,
 )
 
+# User configuration
 SOURCE_FOLDER = SCRIPT_DIR / "VoxCPM_ONNX"
 OUTPUT_FOLDER = SCRIPT_DIR / "VoxCPM_Optimized"
 METADATA_MODEL = "VoxCPM_Metadata"
@@ -45,7 +48,8 @@ WEIGHT_ONLY_BITS = {"Q2": 2, "Q4": 4, "Q8": 8}
 QUANTIZABLE_PREFIXES = ("main/", "feat_encoder/")
 SENSITIVE_PREFIXES = ("feat_decoder/", "reference_vae/")
 
-MATMUL_ALGORITHM = "k_quant"
+# Quantization and optimization defaults
+MATMUL_ALGORITHM = "AFFINE_REFINE_V2"
 BLOCK_SIZE = 32
 ACCURACY_LEVEL = 4
 MAIN_NUM_HEADS = 16
@@ -78,6 +82,7 @@ def select_main_prefill_nodes(model_path):
     return select_core_nodes(model_path) + select_text_embedding(model_path)
 
 
+# Per-graph quantization and optimization plan
 MODEL_PLANS: dict[str, Plan] = {
     "VoxCPM_ReferencePreprocess": Plan(
         method="Q8",
@@ -259,61 +264,99 @@ def quantize_configured_graphs(
     stats = {"shared_quantization": []}
 
     try:
-        grouped_plans = {}
+        template_plan = resolved_plans[CORE_TEMPLATE]
+        core_plan = replace(
+            template_plan,
+            op_types=("MatMul",),
+            axes=(0,),
+            nodes_to_include=select_core_nodes,
+        )
+        core_names = tuple(
+            name
+            for name in CORE_MODELS
+            if resolved_plans[name].method in WEIGHT_ONLY_BITS
+        )
+        if CORE_TEMPLATE not in core_names:
+            raise ValueError(f"{CORE_TEMPLATE} is not configured for shared weight-only packing.")
+
+        cache_path = output_folder / (
+            f".VoxCPM_core_{core_plan.method}_QuantizedWeights.onnx"
+        )
+        transient_paths.extend((cache_path, Path(str(cache_path) + ".data")))
+        print(
+            f"[Shared quantization] core MatMul: {core_plan.method}, "
+            f"block={core_plan.block_size}, graphs={core_names}."
+        )
+        pass_stats = quantize_weight_only_shared(
+            str(source_folder / f"{CORE_TEMPLATE}.onnx"),
+            [
+                (
+                    str(source_folder / f"{name}.onnx"),
+                    str(output_folder / f"{name}.onnx"),
+                )
+                for name in core_names
+            ],
+            str(cache_path),
+            core_plan,
+            bits=WEIGHT_ONLY_BITS[core_plan.method],
+            external=core_plan.external,
+        )
+        prequantized.update(core_names)
+        stats["shared_quantization"].append(
+            {
+                "group": "core_matmul",
+                "graphs": core_names,
+                "method": core_plan.method,
+                "bits": WEIGHT_ONLY_BITS[core_plan.method],
+                **pass_stats,
+            }
+        )
+
+        main_name = "VoxCPM_MainPrefill"
+        main_path = output_folder / f"{main_name}.onnx"
+        main_temp_path = output_folder / f".{main_name}_Gather.onnx"
+        main_gather_plan = replace(
+            resolved_plans[main_name],
+            op_types=("Gather",),
+            axes=(1,),
+            nodes_to_include=select_text_embedding,
+        )
+        print(
+            "[Shared quantization] MainPrefill core reused; quantizing its "
+            "prefill embedding Gather with portable Q4."
+        )
+        quantize_weight_only(
+            str(main_path),
+            str(main_temp_path),
+            main_gather_plan,
+            4,
+            external=True,
+        )
+        main_temp_data = Path(str(main_temp_path) + ".data")
+        main_data = Path(str(main_path) + ".data")
+        main_path.unlink(missing_ok=True)
+        main_data.unlink(missing_ok=True)
+        main_temp_path.replace(main_path)
+        if main_temp_data.is_file():
+            main_temp_data.replace(main_data)
+            _retarget_external_location(
+                str(main_path),
+                main_temp_data.name,
+                main_data.name,
+            )
+
+    except Exception as error:
+        print(
+            "[Shared quantization] Compact core replay was not applicable; "
+            f"processing configured graphs independently ({error})."
+        )
+        prequantized.clear()
         for name in CORE_MODELS:
-            plan = resolved_plans[name]
-            if plan.method in WEIGHT_ONLY_BITS:
-                grouped_plans.setdefault(_quantization_signature(plan), []).append(name)
-
-        for pass_index, names in enumerate(grouped_plans.values(), start=1):
-            if len(names) < 2 or CORE_TEMPLATE not in names:
-                continue
-            plan = resolved_plans[names[0]]
-            bits = WEIGHT_ONLY_BITS[plan.method]
-            cache_path = output_folder / (
-                f".VoxCPM_core_{plan.method}_{pass_index}_QuantizedWeights.onnx"
-            )
-            transient_paths.extend((cache_path, Path(str(cache_path) + ".data")))
-            print(
-                f"[Shared quantization] core: {plan.method}, "
-                f"block={plan.block_size}, graphs={names}."
-            )
-            try:
-                pass_stats = quantize_weight_only_shared(
-                    str(source_folder / f"{CORE_TEMPLATE}.onnx"),
-                    [
-                        (
-                            str(source_folder / f"{name}.onnx"),
-                            str(output_folder / f"{name}.onnx"),
-                        )
-                        for name in names
-                    ],
-                    str(cache_path),
-                    plan,
-                    bits=bits,
-                    external=plan.external,
-                )
-            except Exception as error:
-                print(
-                    "[Shared quantization] Shared packing was not applicable; "
-                    f"processing {names} independently ({error})."
-                )
-                continue
-            prequantized.update(names)
-            stats["shared_quantization"].append(
-                {
-                    "group": "core",
-                    "graphs": names,
-                    "method": plan.method,
-                    "bits": bits,
-                    **pass_stats,
-                }
-            )
-
-    except Exception:
+            output_path = output_folder / f"{name}.onnx"
+            output_path.unlink(missing_ok=True)
+            output_path.with_name(output_path.name + ".data").unlink(missing_ok=True)
         for path in transient_paths:
             path.unlink(missing_ok=True)
-        pass
     return {
         "stats": stats,
         "prequantized": prequantized,

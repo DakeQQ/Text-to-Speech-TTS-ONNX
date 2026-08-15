@@ -2,6 +2,7 @@ import gc
 import math
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -2031,3 +2032,9 @@ def export_compact_voxcpm():
     print("\nStart compact inference via Inference_VoxCPM_ONNX.py ...")
 if __name__ == "__main__":
     export_compact_voxcpm()
+    raise SystemExit(subprocess.call([
+        sys.executable,
+        str(script_dir / "Inference_VoxCPM_ONNX.py"),
+        "--onnx-folder",
+        str(onnx_folder),
+    ]))

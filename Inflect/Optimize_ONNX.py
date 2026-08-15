@@ -50,6 +50,8 @@ FUNCTIONAL_MODELS = ("Inflect_Duration", "Inflect_Decode")
 SUPPORTED_PRECISIONS = {"F16", "F32"}
 
 
+# ============================== MODEL PLANS ==============================
+
 def model_plans(precision: str) -> dict[str, Plan]:
 	return {
 		name: Plan(
@@ -63,6 +65,8 @@ def model_plans(precision: str) -> dict[str, Plan]:
 		for name in FUNCTIONAL_MODELS
 	}
 
+
+# ============================== PIPELINE ================================
 
 def optimizer_config(plans: dict[str, Plan]) -> OptimizerConfig:
 	return OptimizerConfig(
@@ -124,7 +128,7 @@ def process_graphs(config: OptimizerConfig, resolved: dict) -> None:
 
 
 def main() -> None:
-	args = parse_args()
+	parse_args()
 	precision = MODEL_PRECISION.upper()
 	plans = model_plans(precision)
 	config = optimizer_config(plans)

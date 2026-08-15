@@ -1,10 +1,31 @@
 import gc
+import importlib
 import math
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+
+def _patch_onelogger_override_compatibility():
+    overrides_module = importlib.import_module("overrides.overrides")
+    if getattr(overrides_module, "_kani_tts_export_compatibility", False):
+        return
+    validate_method = overrides_module._validate_method
+
+    def validate_export_telemetry_method(method, super_class, check_signature):
+        if method.__qualname__ == "OneLoggerPTLTrainer.save_checkpoint":
+            return
+        return validate_method(method, super_class, check_signature)
+
+    overrides_module._validate_method = validate_export_telemetry_method
+    overrides_module._kani_tts_export_compatibility = True
+
+
+_patch_onelogger_override_compatibility()
 
 import torch
 import lightning.pytorch.loggers as lightning_loggers
@@ -33,6 +54,9 @@ from nemo.utils import logging, model_utils
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from Shared_Weights import SHARED_DATA_NAME, SHARED_MODEL_NAME, bundle_shared_initializers
+
+
+_AUDIO_CODEC_MODEL_CLASS = getattr(AudioCodecModel, "__wrapped__", AudioCodecModel)
 
 script_dir = Path(__file__).resolve().parent
 onnx_folder = script_dir / "KaniTTS_ONNX"
@@ -119,7 +143,7 @@ def _audio_codec_model_init(self, cfg, trainer=None):
     if trainer is not None:
         self.world_size = trainer.num_nodes * trainer.num_devices
 
-    super(AudioCodecModel, self).__init__(cfg=cfg, trainer=trainer)
+    super(_AUDIO_CODEC_MODEL_CLASS, self).__init__(cfg=cfg, trainer=trainer)
 
     self.sample_rate = cfg.sample_rate
     self.samples_per_frame = cfg.samples_per_frame
@@ -215,7 +239,7 @@ def _audio_codec_load_state_dict(self, state_dict, strict=True):
         if "discriminator" in key and ".slm_model.ssl_model." in key:
             del state_dict[key]
 
-    super(AudioCodecModel, self).load_state_dict(state_dict, strict=False)
+    super(_AUDIO_CODEC_MODEL_CLASS, self).load_state_dict(state_dict, strict=False)
 
 
 AudioCodecModel.from_pretrained = classmethod(_restore_local_nemo_model)
@@ -910,14 +934,14 @@ class NEMO_CODEC(torch.nn.Module):
         hidden_states = module.conv(inputs)
         if padding:
             hidden_states = hidden_states[..., :-padding]
-        return module.activation(hidden_states)
+        return hidden_states
 
     @staticmethod
     def _causal_conv_transpose(module, inputs):
         hidden_states = module.conv(inputs)
         end = -module.padding_right if module.padding_right else None
         hidden_states = hidden_states[..., module.padding_left:end]
-        return module.activation(hidden_states)
+        return hidden_states
 
     def _residual_block(self, block, inputs):
         hidden_states = block.input_activation(inputs)
@@ -1268,3 +1292,10 @@ def run_compact_strategy_export():
 
 if __name__ == "__main__":
     run_compact_strategy_export()
+    print("\nStart running the KaniTTS demo via Inference_Kani_TTS_ONNX.py ...")
+    raise SystemExit(subprocess.call([
+        sys.executable,
+        str(script_dir / "Inference_Kani_TTS_ONNX.py"),
+        "--onnx-folder",
+        str(onnx_folder),
+    ]))

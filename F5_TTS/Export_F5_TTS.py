@@ -3,6 +3,8 @@ from __future__ import annotations
 import gc
 import shutil
 import math
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 import f5_tts
@@ -33,8 +35,8 @@ F5_MODEL_PROFILES = {
     "v0": downloads_folder / "F5TTS_v0_Base" / "model_1200000.safetensors",
     "v1": downloads_folder / "F5TTS_v1_Base" / "model_1250000.safetensors",
 }
-F5_checkpoint_path    = F5_MODEL_PROFILES[F5_MODEL_SERIES].expanduser().resolve()
-vocos_model_path     = str(downloads_folder / "vocos-mel-24khz")                                             # The Vocos model download path.            URL: https://huggingface.co/charactr/vocos-mel-24khz/tree/main
+F5_checkpoint_path     = F5_MODEL_PROFILES[F5_MODEL_SERIES].expanduser().resolve()
+vocos_model_path       = str(downloads_folder / "vocos-mel-24khz")                                           # The Vocos model download path.            URL: https://huggingface.co/charactr/vocos-mel-24khz/tree/main
 onnx_model_Preprocess  = str(onnx_folder / "F5_Preprocess.onnx")                                             # The exported onnx model path.
 onnx_model_Transformer = str(onnx_folder / "F5_Transformer.onnx")                                            # The exported onnx model path.
 onnx_model_Transformer_Raw = str(onnx_raw_folder / "F5_Transformer.onnx")                                    # Immutable source-optimized export before targeted Mish rewriting.
@@ -1245,3 +1247,10 @@ print(
 print(f"[Cleanup] Removed temporary export folder: {onnx_raw_folder}")
 
 print("\nExport done!")
+print("\nStart running the F5-TTS demo via Inference_F5_TTS_ONNX.py ...")
+raise SystemExit(subprocess.call([
+    sys.executable,
+    str(script_dir / "Inference_F5_TTS_ONNX.py"),
+    "--onnx-folder",
+    str(onnx_folder),
+]))

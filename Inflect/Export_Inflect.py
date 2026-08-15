@@ -16,6 +16,7 @@ import json
 import math
 import runpy
 import shutil
+import subprocess
 import sys
 import tempfile
 import warnings
@@ -854,3 +855,10 @@ def main() -> None:
 
 if __name__ == "__main__":
 	main()
+	print("\nStart running the Inflect demo via Inference_Inflect_ONNX.py ...")
+	raise SystemExit(subprocess.call([
+		sys.executable,
+		str(SCRIPT_DIR / "Inference_Inflect_ONNX.py"),
+		"--onnx-folder",
+		str(DEFAULT_OUTPUT_DIR),
+	]))

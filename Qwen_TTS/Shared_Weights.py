@@ -387,6 +387,7 @@ def merge_decode_step_graph(
             seen_outputs.add(value.name)
 
     _copy_metadata(merged, predictor, main)
+    onnx.save(merged, str(output_path))
     return output_path
 
 

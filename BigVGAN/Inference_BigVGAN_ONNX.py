@@ -79,6 +79,11 @@ def main() -> None:
         "out_sample_rate",
         "model_file_name_vocoder",
     }
+    missing_metadata = sorted(expected_keys - metadata.keys())
+    if missing_metadata:
+        raise ValueError(
+            f"{metadata_path.name} is missing required metadata key(s): {missing_metadata}."
+        )
     vocoder_path = folder / metadata["model_file_name_vocoder"]
     options = ort.SessionOptions()
     options.inter_op_num_threads = MAX_THREADS

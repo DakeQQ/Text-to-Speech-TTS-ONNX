@@ -36,7 +36,7 @@ PENALTY_RANGE = 10                                     # Recent-token penalty wi
 TEMPERATURE = 0.8                                      # Sampling temperature.
 TOP_K = 20                                             # Sampling candidate count.
 TOP_P = 0.95                                           # Sampling nucleus probability.
-REPETITION_PENALTY = 1.1                               # Sampling repetition penalty.
+REPETITION_PENALTY = 1.05                              # Sampling repetition penalty.
 MAX_TOKENS = 0                                         # 0 uses the exported sequence capacity.
 
 ORT_ACCELERATE_PROVIDERS = []                          # [] uses CPU; e.g. ['CUDAExecutionProvider'].
@@ -90,7 +90,7 @@ def require_metadata(metadata: dict[str, str], key: str) -> str:
     try:
         return metadata[key]
     except KeyError as exc:
-        pass
+        raise ValueError(f"Missing required KaniTTS metadata key: {key!r}.") from exc
 def meta_int(metadata: dict[str, str], key: str) -> int:
     return int(require_metadata(metadata, key))
 
@@ -108,7 +108,7 @@ def io_dtype(argument):
     try:
         return ORT_TYPE_TO_DTYPE[argument.type]
     except KeyError as exc:
-        pass
+        raise ValueError(f"Unsupported ONNX tensor type: {argument.type!r}.") from exc
 def io_shape(argument):
     return tuple(argument.shape)
 
@@ -282,6 +282,11 @@ def main():
             for strategy in DECODE_STRATEGIES
         },
     }
+    missing_metadata = sorted(expected_metadata_keys - metadata.keys())
+    if missing_metadata:
+        raise ValueError(
+            f"{metadata_path.name} is missing required metadata key(s): {missing_metadata}."
+        )
     top_k = TOP_K
     preserve_fp16_attention = (
         meta_bool(metadata, "use_float16_kv") and not meta_bool(metadata, "compute_in_f32")
@@ -304,18 +309,25 @@ def main():
     shared_data_path = onnx_folder / require_metadata(metadata, "shared_initializer_data_file")
     # Shared mmap arrays and OrtValues must live as long as the graph sessions.
     shared_started = time.perf_counter()
-    print_progress("Attaching shared ONNX initializers...")
-    shared_refs = attach_shared_initializers(session_options, shared_model_path)
-    print_progress(
-        f"Shared ONNX initializers ready in "
-        f"{time.perf_counter() - shared_started:.2f}s."
-    )
+    if device_type == "cpu":
+        print_progress("Attaching shared ONNX initializers...")
+        shared_refs = attach_shared_initializers(session_options, shared_model_path)
+        print_progress(
+            f"Shared ONNX initializers ready in "
+            f"{time.perf_counter() - shared_started:.2f}s."
+        )
+    else:
+        shared_refs = ()
+        print_progress(
+            "Using native ONNX external shared initializers in "
+            f"{time.perf_counter() - shared_started:.2f}s."
+        )
 
     def create_session(path):
         return onnxruntime.InferenceSession(
             str(path),
             sess_options=session_options,
-            providers=ORT_ACCELERATE_PROVIDERS,
+            providers=ORT_ACCELERATE_PROVIDERS or ["CPUExecutionProvider"],
             provider_options=provider_options,
             disabled_optimizers=disabled_optimizers,
         )
@@ -369,25 +381,31 @@ def main():
     dynamic_state_indexes = tuple(
         index for index in range(state_count) if index not in static_state_indexes
     )
-    state_buffers = tuple(
-        {
-            index: empty_ortvalue_for(
-                decode_state_outputs[index],
-                device_type,
-                decode_state_inputs[index],
-            )
-            for index in static_state_indexes
-        }
-        for _ in range(2)
-    )
-    token_buffers = tuple(
-        empty_ortvalue_for(decode_token_output, device_type, decode_token_input)
-        for _ in range(2)
-    )
-    length_buffers = tuple(
-        empty_ortvalue_for(decode_length_output, device_type, decode_length_input)
-        for _ in range(2)
-    )
+    use_reusable_output_buffers = device_type == "cpu"
+    if use_reusable_output_buffers:
+        state_buffers = tuple(
+            {
+                index: empty_ortvalue_for(
+                    decode_state_outputs[index],
+                    device_type,
+                    decode_state_inputs[index],
+                )
+                for index in static_state_indexes
+            }
+            for _ in range(2)
+        )
+        token_buffers = tuple(
+            empty_ortvalue_for(decode_token_output, device_type, decode_token_input)
+            for _ in range(2)
+        )
+        length_buffers = tuple(
+            empty_ortvalue_for(decode_length_output, device_type, decode_length_input)
+            for _ in range(2)
+        )
+    else:
+        state_buffers = ()
+        token_buffers = ()
+        length_buffers = ()
 
     num_decode_array = np.zeros(
         io_shape(codec_count_input),
@@ -404,43 +422,50 @@ def main():
         prefill_inputs[1:],
         (control_values[argument.name] for argument in prefill_inputs[1:]),
     )
-    prefill_output_buffers = {
-        **{index: state_buffers[0][index] for index in static_state_indexes},
-        state_count: token_buffers[0],
-        state_count + 1: length_buffers[0],
-    }
+    prefill_output_buffers = (
+        {
+            **{index: state_buffers[0][index] for index in static_state_indexes},
+            state_count: token_buffers[0],
+            state_count + 1: length_buffers[0],
+        }
+        if use_reusable_output_buffers
+        else {}
+    )
     decode_output_buffers = []
     for binding_index, binding in enumerate(decode_bindings):
-        for state_index in static_state_indexes:
+        if use_reusable_output_buffers:
+            for state_index in static_state_indexes:
+                binding.bind_ortvalue_input(
+                    decode_state_inputs[state_index].name,
+                    state_buffers[binding_index][state_index],
+                )
             binding.bind_ortvalue_input(
-                decode_state_inputs[state_index].name,
-                state_buffers[binding_index][state_index],
+                decode_token_input.name,
+                token_buffers[binding_index],
             )
-        binding.bind_ortvalue_input(
-            decode_token_input.name,
-            token_buffers[binding_index],
-        )
-        binding.bind_ortvalue_input(
-            decode_length_input.name,
-            length_buffers[binding_index],
-        )
+            binding.bind_ortvalue_input(
+                decode_length_input.name,
+                length_buffers[binding_index],
+            )
         bind_inputs(
             binding,
             decode_control_inputs,
             (control_values[argument.name] for argument in decode_control_inputs),
         )
-        output_index = 1 - binding_index
-        decode_output_buffers.append(
-            {
-                **{
-                    index: state_buffers[output_index][index]
-                    for index in static_state_indexes
-                },
-                state_count: token_buffers[output_index],
-                state_count + 2: length_buffers[output_index],
-            }
-        )
-    codec_binding.bind_ortvalue_input(codec_count_input.name, num_decode_value)
+        if use_reusable_output_buffers:
+            output_index = 1 - binding_index
+            decode_output_buffers.append(
+                {
+                    **{
+                        index: state_buffers[output_index][index]
+                        for index in static_state_indexes
+                    },
+                    state_count: token_buffers[output_index],
+                    state_count + 2: length_buffers[output_index],
+                }
+            )
+        else:
+            decode_output_buffers.append({})
 
     print_progress("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_PATH.expanduser().resolve())
@@ -492,9 +517,16 @@ def main():
         prefill_values = run_binding(prefill_session, prefill_binding, run_options)
 
         states = list(prefill_values[:state_count])
-        save_ids = token_buffers[0]
         active_buffer = 0
-        prefill_kv_seq_len = int(length_buffers[0].numpy().flat[0])
+        if use_reusable_output_buffers:
+            current_token = token_buffers[0]
+            save_ids = current_token
+            history_len = length_buffers[0]
+        else:
+            current_token = prefill_values[state_count]
+            save_ids = current_token
+            history_len = prefill_values[state_count + 1]
+        prefill_kv_seq_len = int(history_len.numpy().flat[0])
 
         generation_capacity = max_seq_len - prefill_kv_seq_len
         if MAX_TOKENS:
@@ -504,7 +536,7 @@ def main():
             continue
         print_progress(f"Generating semantic codes (limit {generation_capacity})...")
 
-        selected_token_id = int(token_buffers[active_buffer].numpy().flat[0])
+        selected_token_id = int(current_token.numpy().flat[0])
         accepted_tokens = 0
         decode_calls = 0
         while accepted_tokens < generation_capacity:
@@ -519,10 +551,21 @@ def main():
                 break
 
             binding = decode_bindings[active_buffer]
-            for state_index in dynamic_state_indexes:
+            if use_reusable_output_buffers:
+                for state_index in dynamic_state_indexes:
+                    binding.bind_ortvalue_input(
+                        decode_state_inputs[state_index].name,
+                        states[state_index],
+                    )
+            else:
+                bind_inputs(binding, decode_state_inputs, states)
                 binding.bind_ortvalue_input(
-                    decode_state_inputs[state_index].name,
-                    states[state_index],
+                    decode_token_input.name,
+                    current_token,
+                )
+                binding.bind_ortvalue_input(
+                    decode_length_input.name,
+                    history_len,
                 )
             binding.bind_ortvalue_input(
                 decode_save_input.name,
@@ -538,8 +581,14 @@ def main():
             states = list(decode_values[:state_count])
             save_ids = decode_values[state_count + 1]
             active_buffer = 1 - active_buffer
+            if use_reusable_output_buffers:
+                current_token = token_buffers[active_buffer]
+                history_len = length_buffers[active_buffer]
+            else:
+                current_token = decode_values[state_count]
+                history_len = decode_values[state_count + 2]
             decode_calls += 1
-            selected_token_id = int(token_buffers[active_buffer].numpy().flat[0])
+            selected_token_id = int(current_token.numpy().flat[0])
 
         elapsed = time.perf_counter() - generation_start
         if accepted_tokens <= codec_prefix:
@@ -554,6 +603,7 @@ def main():
         num_decode_array.fill(accepted_tokens)
         num_decode_value.update_inplace(num_decode_array)
         codec_binding.bind_ortvalue_input(codec_decode_input.name, save_ids)
+        codec_binding.bind_ortvalue_input(codec_count_input.name, num_decode_value)
         rebind_outputs(codec_binding, (codec_audio_output,), ort_device)
         print_progress("Decoding waveform...")
         codec_values = run_binding(codec_session, codec_binding, run_options)

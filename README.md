@@ -18,7 +18,7 @@
 
 **Text-to-speech, voice cloning, voice design, and vocoding with ONNX Runtime.**
 
-Export and run TTS models using text and optional prompt audio. The repository contains nine export targets across seven model families, each with `Export`, `Inference`, and `Optimize` scripts.
+Export and run TTS models using text and optional prompt audio. The repository contains export targets across the model families below, each with `Export`, `Inference`, and `Optimize` scripts.
 
 The [shared model table](#models) lists public ONNX audio rates. Exporters handle native-rate conversion, while mode-dependent inputs are configured in the inference script.
 
@@ -39,7 +39,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 
 **基于 ONNX Runtime 的语音合成、声音克隆、声音设计与神经声码器。**
 
-输入文本及可选提示音频即可导出并运行 TTS 模型。本项目包含七个模型家族、九个导出目标，每个目标均提供 `Export`、`Inference` 与 `Optimize` 脚本。
+输入文本及可选提示音频即可导出并运行 TTS 模型。本项目包含下表所列模型家族的导出目标，每个目标均提供 `Export`、`Inference` 与 `Optimize` 脚本。
 
 [共用模型表](#models)列出公开 ONNX 音频采样率。导出脚本负责原生采样率转换，模式相关输入则在推理脚本中配置。
 
@@ -63,6 +63,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 | Voice cloning<br>声音克隆 | F5-TTS | 24 → 24 kHz | Required<br>必需 | [`F5_TTS`](./F5_TTS) | [GitHub](https://github.com/SWivid/F5-TTS) |
 | Voice cloning<br>声音克隆 | IndexTTS 1.5 | 24 → 24 kHz | Supported<br>支持 | [`Index_TTS/v1.5`](./Index_TTS/v1.5) | [GitHub](https://github.com/index-tts/index-tts) |
 | Voice cloning · emotion control<br>声音克隆 · 情感控制 | IndexTTS 2 | 22.05 → 22.05 kHz | Supported<br>支持 | [`Index_TTS/v2`](./Index_TTS/v2) | [GitHub](https://github.com/index-tts/index-tts) |
+| Voice cloning · emotion control<br>声音克隆 · 情感控制 | IndexTTS 2.5 | 22.05 → 22.05 kHz | Supported<br>支持 | [`Index_TTS/v2`](./Index_TTS/v2) | [GitHub](https://github.com/index-tts/index-tts) |
 | Text-to-speech<br>语音合成 | KaniTTS | Text → 22.05 kHz | No<br>否 | [`Kani_TTS`](./Kani_TTS) | [GitHub](https://github.com/nineninesix-ai/kani-tts) |
 | Voice cloning · continuation<br>声音克隆 · 续写 | MOSS-TTS Nano | 48 → 48 kHz | Mode-dependent<br>取决于模式 | [`MOSS_TTS`](./MOSS_TTS) | [GitHub](https://github.com/OpenMOSS/MOSS-TTS) |
 | Clone · custom voice · voice design<br>克隆 · 定制音色 · 声音设计 | Qwen3-TTS | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`Qwen_TTS`](./Qwen_TTS) | [GitHub](https://github.com/QwenLM/Qwen3-TTS) |
@@ -70,6 +71,10 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 | Clone · continuation · voice design<br>克隆 · 续写 · 声音设计 | VoxCPM 2 | 16 → 48 kHz | Mode-dependent<br>取决于模式 | [`VoxCPM/v2`](./VoxCPM/v2) | [ModelScope](https://www.modelscope.cn/models/OpenBMB/VoxCPM2) |
 | Neural vocoder<br>神经声码器 | BigVGAN V2 | Mel → 24 kHz | No<br>否 | [`BigVGAN`](./BigVGAN) | [GitHub](https://github.com/NVIDIA/BigVGAN) |
 | Text-to-speech<br>语音合成 | Inflect | Text → 24 kHz | No<br>否 | [`Inflect`](./Inflect) | [GitHub](https://github.com/owenawsong/Inflect) |
+
+IndexTTS 2 and 2.5 share the [`Index_TTS/v2`](./Index_TTS/v2) scripts. Set their `MODEL_VERSION` configuration to `"2"` or `"2.5"` in the exporter, optimizer, and inference runtime; v2.5 is the default.
+
+IndexTTS 2 与 2.5 共用 [`Index_TTS/v2`](./Index_TTS/v2) 脚本。在导出、优化和推理脚本中将 `MODEL_VERSION` 设置为 `"2"` 或 `"2.5"`；默认值为 v2.5。
 
 
 ---

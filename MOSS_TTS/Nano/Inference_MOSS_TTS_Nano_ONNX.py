@@ -44,7 +44,7 @@ MIN_FRAMES = 0                    # Minimum frames before accepting a stop decis
 # MOSS keeps text and audio sampling controls separate.
 TEXT_TEMPERATURE = 0.8
 TEXT_TOP_P = 0.9
-TEXT_TOP_K = 10
+TEXT_TOP_K = 20
 AUDIO_TEMPERATURE = 0.8
 AUDIO_TOP_P = 0.9
 AUDIO_TOP_K = 10
@@ -130,16 +130,18 @@ EXPECTED_METADATA_KEYS = {
         for strategy in DECODE_STRATEGIES
     },
 }
+missing_metadata = sorted(EXPECTED_METADATA_KEYS - METADATA.keys())
+if missing_metadata:
+    raise ValueError(
+        f"{METADATA_PATH.name} is missing required metadata key(s): {missing_metadata}."
+    )
 def meta_str(key):
     try:
         return METADATA[key]
     except KeyError as exc:
-        pass
+        raise ValueError(f"Missing required MOSS TTS metadata key: {key!r}.") from exc
 def meta_int(key):
-    try:
-        return int(meta_str(key))
-    except KeyError as exc:
-        pass
+    return int(meta_str(key))
 def meta_int_list(key):
     return [int(value) for value in meta_str(key).split(",") if value]
 
@@ -599,16 +601,21 @@ bind_values(prefill_binding, prefill_control_specs, prefill_constants)
 for binding in decode_bindings:
     bind_values(binding, decode_control_specs, decode_constants)
 
+use_fixed_output_buffers = device_type != "cuda"
 prefill_static_buffers = []
-prefill_static_specs = {
-    prefill_length_output: prefill_length_output,
-    prefill_decision_output: decode_decision_output,
-}
-for (_, prefill_spec), (_, decode_spec) in zip(prefill_state_outputs, decode_state_outputs):
-    if decode_spec.is_static:
-        prefill_static_specs[prefill_spec] = decode_spec
-prefill_dynamic_output_specs = tuple(
-    spec for spec in prefill_io.outputs if spec not in prefill_static_specs
+prefill_static_specs = {}
+if use_fixed_output_buffers:
+    prefill_static_specs = {
+        prefill_length_output: prefill_length_output,
+        prefill_decision_output: decode_decision_output,
+    }
+    for (_, prefill_spec), (_, decode_spec) in zip(prefill_state_outputs, decode_state_outputs):
+        if decode_spec.is_static:
+            prefill_static_specs[prefill_spec] = decode_spec
+prefill_rebind_output_specs = tuple(
+    spec
+    for spec in prefill_io.outputs
+    if not use_fixed_output_buffers or spec not in prefill_static_specs
 )
 for output_spec in prefill_io.outputs:
     if output_spec in prefill_static_specs:
@@ -621,11 +628,15 @@ for output_spec in prefill_io.outputs:
         prefill_binding._iobinding.bind_output(output_spec.name, target)
 
 decode_static_banks = []
-decode_dynamic_output_specs = tuple(spec for spec in decode_io.outputs if not spec.is_static)
+decode_rebind_output_specs = tuple(
+    spec
+    for spec in decode_io.outputs
+    if not use_fixed_output_buffers or not spec.is_static
+)
 for binding in decode_bindings:
     bank = []
     for spec in decode_io.outputs:
-        if spec.is_static:
+        if use_fixed_output_buffers and spec.is_static:
             output_device = KV_DEVICE_TYPE if spec.rank == 4 else device_type
             value = spec.zeros(output_device, DEVICE_ID)
             binding.bind_ortvalue_output(spec.name, value)
@@ -730,9 +741,13 @@ if encoder_session:
     audio = load_prompt_audio(PROMPT_AUDIO_PATH, IN_SAMPLE_RATE, encoder_input_spec)
     encoder_input = encoder_input_spec.ort_value(audio, device_type, DEVICE_ID)
     encoder_binding.bind_ortvalue_input(encoder_input_spec.name, encoder_input)
-    encoder_length_buffer = encoder_length_spec.zeros(device_type, DEVICE_ID)
+    encoder_length_buffer = (
+        encoder_length_spec.zeros(device_type, DEVICE_ID)
+        if use_fixed_output_buffers
+        else None
+    )
     for spec in encoder_io.outputs:
-        if spec == encoder_length_spec:
+        if spec == encoder_length_spec and encoder_length_buffer is not None:
             encoder_binding.bind_ortvalue_output(spec.name, encoder_length_buffer)
         else:
             encoder_binding._iobinding.bind_output(spec.name, ORT_DEVICE)
@@ -821,7 +836,7 @@ for target_index, target in enumerate(TARGET_TTS, start=1):
     print_progress(f"Generating codec frames (limit {generation_limit})...")
     prompt_value = prompt_input_spec.ort_value(prompt_ids, device_type, DEVICE_ID)
     prefill_binding.bind_ortvalue_input(prompt_input_spec.name, prompt_value)
-    bind_dynamic_outputs(prefill_binding, prefill_dynamic_output_specs)
+    bind_dynamic_outputs(prefill_binding, prefill_rebind_output_specs)
     generation_start = time.perf_counter()
     prefill_result = run_binding(prefill_session, prefill_binding, run_options)
     total_prefill_calls += 1
@@ -842,7 +857,7 @@ for target_index, target in enumerate(TARGET_TTS, start=1):
         bind_values(binding, decode_state_input_specs, recurrent_state)
         binding.bind_ortvalue_input(decode_length_input_spec.name, kv_seq_len)
         binding.bind_ortvalue_input(decode_generated_input_spec.name, generated_codec)
-        bind_dynamic_outputs(binding, decode_dynamic_output_specs)
+        bind_dynamic_outputs(binding, decode_rebind_output_specs)
 
         decode_result = run_binding(decode_session, binding, run_options)
         total_decode_calls += 1

@@ -23,8 +23,6 @@ for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
         if str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
         break
-else:
-    pass
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
@@ -39,6 +37,7 @@ from Optimize_ONNX_Common import (  # noqa: E402
 from Shared_Weights import bundle_shared_initializers  # noqa: E402
 
 
+# User configuration
 STRATEGIES = ("greedy", "penalty_greedy", "sampling")
 SOURCE_FOLDER = SCRIPT_DIR / "IndexTTS_ONNX"
 OUTPUT_FOLDER = SCRIPT_DIR / "IndexTTS_Optimized"
@@ -46,9 +45,10 @@ QUANTIZATION_TEMPLATE = "IndexTTS_DecodeStep_greedy"
 QUANTIZATION_CACHE_NAME = ".IndexTTS_QuantizedWeights.onnx"
 WEIGHT_ONLY_BITS = {"Q2": 2, "Q4": 4, "Q8": 8}
 
+# Quantization and optimization defaults
 DYNAMIC_WEIGHT_TYPE = "QInt8"  # QInt8 | QUInt8
 DYNAMIC_PER_CHANNEL = False
-MATMUL_ALGORITHM = "DEFAULT"
+MATMUL_ALGORITHM = "AFFINE_REFINE_V2"
 BLOCK_SIZE = 32
 ACCURACY_LEVEL = 4
 MAIN_NUM_HEADS = 8
@@ -72,11 +72,12 @@ def exclude_non_matrix_weights(model_path):
     return excluded
 
 
+# Per-graph quantization and optimization plan
 MODEL_PLANS: dict[str, Plan] = {
     "IndexTTS_ReferencePreprocess": Plan(
         method="F32",
         optimize=True,
-        transformer=True,
+        transformer=False,
         opt_level=2,
         external=True,
         first_slim_no_shape_infer=False,
@@ -178,7 +179,7 @@ MODEL_PLANS: dict[str, Plan] = {
     "IndexTTS_Decoder": Plan(
         method="F32",
         optimize=True,
-        transformer=True,
+        transformer=False,
         opt_level=2,
         external=True,
         first_slim_no_shape_infer=True,

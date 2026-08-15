@@ -16,13 +16,13 @@ import onnx
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
     if (candidate / "Optimize_ONNX_Common.py").is_file():
         if str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
         break
-else:
-    pass
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
@@ -37,6 +37,7 @@ from Optimize_ONNX_Common import (  # noqa: E402
 from Shared_Weights import bundle_shared_initializers  # noqa: E402
 
 
+# User configuration
 STRATEGIES = ("greedy", "penalty_greedy", "sampling")
 SOURCE_FOLDER = SCRIPT_DIR / "MOSS_TTS_Nano_ONNX"
 OUTPUT_FOLDER = SCRIPT_DIR / "MOSS_TTS_Nano_Optimized"
@@ -44,7 +45,8 @@ QUANTIZATION_TEMPLATE = "MossTTSNano_DecodeStep_greedy"
 QUANTIZATION_CACHE_NAME = ".MossTTSNano_QuantizedWeights.onnx"
 WEIGHT_ONLY_BITS = {"Q2": 2, "Q4": 4, "Q8": 8}
 
-MATMUL_ALGORITHM = "DEFAULT"
+# Quantization and optimization defaults
+MATMUL_ALGORITHM = "AFFINE_REFINE_V2"
 BLOCK_SIZE = 32
 ACCURACY_LEVEL = 4
 DYNAMIC_WEIGHT_TYPE = "QInt8"  # QInt8 | QUInt8
@@ -54,6 +56,7 @@ MAIN_HIDDEN_SIZE = 768
 CODEC_NUM_HEADS = 4
 CODEC_HIDDEN_SIZE = 256
 
+# Per-graph quantization and optimization plan
 MODEL_PLANS: dict[str, Plan] = {
     "MossTTSNano_MainPrefill_greedy": Plan(
         method="Q8",

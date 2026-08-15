@@ -266,6 +266,8 @@ def compose_graphs(
         value = all_outputs.get(name)
         merged.graph.output.append(value)
 
+    onnx.save(merged, str(output_path))
+
     if delete_components:
         for component in components:
             component.path.unlink()

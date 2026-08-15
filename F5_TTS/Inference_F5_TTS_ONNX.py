@@ -155,7 +155,7 @@ def numpy_dtype(argument):
     try:
         return ORT_TYPE_TO_DTYPE[argument.type]
     except KeyError as exc:
-        pass
+        raise ValueError(f"Unsupported ONNX tensor type: {argument.type!r}.") from exc
 def resolve_shape(argument, symbols=None, dynamic_sizes=()):
     symbols = {} if symbols is None else symbols
     sizes = iter(dynamic_sizes)
@@ -169,7 +169,9 @@ def resolve_shape(argument, symbols=None, dynamic_sizes=()):
             try:
                 size = next(sizes)
             except StopIteration as exc:
-                pass
+                raise ValueError(
+                    f"Missing dynamic dimension for ONNX value {argument.name!r}."
+                ) from exc
             if dimension is not None:
                 symbols[dimension] = size
         shape.append(int(size))
@@ -346,7 +348,7 @@ _ort_host_device_type = (
 
 packed_settings = {
     "_session_opts":        session_opts,
-    "_providers":           ORT_Accelerate_Providers,
+    "_providers":           ORT_Accelerate_Providers or ['CPUExecutionProvider'],
     "_provider_options":    provider_options,
     "_disabled_optimizers": disabled_optimizers
 }
@@ -373,6 +375,11 @@ expected_metadata_keys = {
     "model_file_name_transformer",
     "model_file_name_decode",
 }
+missing_metadata = sorted(expected_metadata_keys - model_meta.keys())
+if missing_metadata:
+    raise ValueError(
+        f"{Path(onnx_model_Metadata).name} is missing required metadata key(s): {missing_metadata}."
+    )
 INV_INT16 = float(1.0 / 32768.0)
 MODEL_SAMPLE_RATE = int(model_meta["sample_rate"])
 IN_SAMPLE_RATE    = int(model_meta["in_sample_rate"])
@@ -521,21 +528,25 @@ transformer_bindings = tuple(
     ort_session_Transformer.io_binding()
     for _ in range(2)
 )
-for index, binding in enumerate(transformer_bindings):
-    input_values = dict(constant_values)
-    input_values[state_input.name] = state_buffers[index]
-    bind_inputs(binding, constant_inputs + (state_input,), input_values)
-    bind_outputs(
-        binding,
-        transformer_outputs,
-        {transformer_output.name: state_buffers[1 - index]},
-    )
+if device_type == 'cuda':
+    for binding in transformer_bindings:
+        bind_inputs(binding, constant_inputs, constant_values)
+else:
+    for index, binding in enumerate(transformer_bindings):
+        input_values = dict(constant_values)
+        input_values[state_input.name] = state_buffers[index]
+        bind_inputs(binding, constant_inputs + (state_input,), input_values)
+        bind_outputs(
+            binding,
+            transformer_outputs,
+            {transformer_output.name: state_buffers[1 - index]},
+        )
 
 binding_Preprocess = ort_session_Preprocess.io_binding()
 bind_inputs(binding_Preprocess, preprocess_inputs, preprocess_input_values)
 bind_outputs(binding_Preprocess, preprocess_outputs, preprocess_output_values)
 
-noise_final = state_buffers[NFE_STEP & 1]
+noise_final = state_buffers[NFE_STEP & 1] if device_type != 'cuda' else state_buffer
 decode_state_input, = (
     argument for argument in decode_inputs
     if argument.name not in preprocess_output_values
@@ -563,16 +574,24 @@ for destination, source in device_transfers:
     destination.update_inplace(source)
 print_progress(f"Running flow matching ({NFE_STEP} steps)...")
 progress_interval = max(1, NFE_STEP // 5)
+transformer_state = state_buffer
 for step in range(NFE_STEP):
     binding = transformer_bindings[step & 1]
     binding.bind_ortvalue_input(step_input.name, step_buffers[step])
+    if device_type == 'cuda':
+        binding.bind_ortvalue_input(state_input.name, transformer_state)
+        binding._iobinding.bind_output(transformer_output.name, _ort_device_type)
     run(ort_session_Transformer, binding)
+    if device_type == 'cuda':
+        transformer_state, = binding.get_outputs()
     completed_steps = step + 1
     if completed_steps % progress_interval == 0 or completed_steps == NFE_STEP:
         print_progress(
             f"Flow matching: {completed_steps}/{NFE_STEP} steps "
             f"({time.perf_counter() - inference_started:.2f}s elapsed)"
         )
+if device_type == 'cuda':
+    noise_final = transformer_state
 if device_type != 'cpu':
     decode_state_buffer.update_inplace(noise_final)
 binding_Decode = ort_session_Decode.io_binding()

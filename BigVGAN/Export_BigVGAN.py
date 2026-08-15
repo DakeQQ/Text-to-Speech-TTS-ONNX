@@ -1,4 +1,5 @@
 import gc
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,10 +28,9 @@ USE_TANH = True                         # Option to apply tanh(x) at the final o
 MAX_SIGNAL_LENGTH = 512                 # Max frames for audio length after STFT processed. For static axis setting.
 DYNAMIC_TRACE_LENGTH = 4                # Trace exemplar only; the exported time dimension remains dynamic.
 OUT_SAMPLE_RATE = 24000                 # Public generated-waveform ONNX output rate.
-OUT_AUDIO_DTYPE = "INT16"              # "F16" | "F32" | "INT16".
+OUT_AUDIO_DTYPE = "F32"                 # "F16" | "F32" | "INT16".
 MODEL_SAMPLE_RATE = 24000               # Native checkpoint sample rate; do not edit.
 
-_OUTPUT_AUDIO_DTYPES = {"F16", "F32", "INT16"}
 PATCHED_BIGVGAN_SOURCES = {
     "bigvgan.py": r'''# Copyright (c) 2024 NVIDIA CORPORATION.
 #   Licensed under the MIT license.
@@ -913,3 +913,10 @@ if model_path in sys.path:
     sys.path.remove(model_path)
 
 print("\nExport done!")
+print("\nStart running the BigVGAN demo via Inference_BigVGAN_ONNX.py ...")
+raise SystemExit(subprocess.call([
+    sys.executable,
+    str(script_dir / "Inference_BigVGAN_ONNX.py"),
+    "--onnx-folder",
+    str(onnx_folder),
+]))

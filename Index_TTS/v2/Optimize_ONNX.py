@@ -1,4 +1,4 @@
-"""Quantize and optimize every IndexTTS2 compute graph, then rebuild its package.
+"""Quantize and optimize IndexTTS2 v2 or v2.5 graphs, then rebuild its package.
 
 Each graph has an independent top-level plan. Compatible TTS autoregressive
 graphs and emotion Qwen graphs may share weight-packing passes as an optional
@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import onnx
 
 
@@ -41,18 +42,91 @@ from Optimize_ONNX_Common import (  # noqa: E402
 )
 
 
+STRATEGIES = ("greedy", "penalty_greedy", "sampling")
+# User configuration
+#
+# This one optimizer supports the package exported by the matching selector in
+# Export_IndexTTS2.py. The retained v2.5 package is selected by default; set
+# this to ``"2"`` for IndexTTS2 v2. v2.5 additionally enables its verified
+# tied-Q4 Qwen embedding/LM-head storage alias; v2 never enters that path.
+MODEL_VERSION = "2.5"  # "2" | "2.5"
+_SOURCE_FOLDER_NAMES = {
+    "2": "IndexTTS2_ONNX",
+    "2.5": "IndexTTS2_5_ONNX",
+}
+_OUTPUT_FOLDER_NAMES = {
+    "2": "IndexTTS2_Optimized",
+    "2.5": "IndexTTS2_5_Optimized",
+}
+_TEXT_TOKENIZER_FILES = {
+    "2": "bpe.model",
+    "2.5": "multilingual_zh_ja_yue_char_del.tiktoken",
+}
+if MODEL_VERSION not in _SOURCE_FOLDER_NAMES:
+    raise ValueError(f"Unsupported MODEL_VERSION: {MODEL_VERSION!r}")
+IS_V25 = MODEL_VERSION == "2.5"
+SOURCE_FOLDER = SCRIPT_DIR / _SOURCE_FOLDER_NAMES[MODEL_VERSION]
+OUTPUT_FOLDER = SCRIPT_DIR / _OUTPUT_FOLDER_NAMES[MODEL_VERSION]
+TEXT_TOKENIZER_FILE = _TEXT_TOKENIZER_FILES[MODEL_VERSION]
+QWEN_TOKENIZER_FOLDER = "qwen0.6bemo4-merge"
+QWEN_TOKENIZER_FILES = (
+    "added_tokens.json",
+    "chat_template.jinja",
+    "config.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+QUANTIZATION_TEMPLATE = "IndexTTS2_TargetPrefill_greedy"
+QUANTIZATION_CACHE_NAME = ".IndexTTS2_QuantizedWeights.onnx"
+QUANTIZATION_COVER_NAME = ".IndexTTS2_QuantizationCover.onnx"
+EMOTION_QUANTIZATION_TEMPLATE = "IndexTTS2_EmotionTextPrefill"
+EMOTION_QUANTIZATION_CACHE_NAME = ".IndexTTS2_EmotionQuantizedWeights.onnx"
+EMOTION_QUANTIZATION_COVER_NAME = ".IndexTTS2_EmotionQuantizationCover.onnx"
+WEIGHT_ONLY_BITS = {"Q2": 2, "Q4": 4, "Q8": 8}
+
+# Quantization and optimization defaults
+MATMUL_ALGORITHM    = "AFFINE_REFINE_V2"
+BLOCK_SIZE          = 32
+ACCURACY_LEVEL      = 4
+MAIN_NUM_HEADS      = 20
+MAIN_HIDDEN_SIZE    = 1280
+EMOTION_NUM_HEADS   = 16
+EMOTION_HIDDEN_SIZE = 1024
+DYNAMIC_WEIGHT_TYPE = "QInt8"
+DYNAMIC_PER_CHANNEL = False
+
+
 def exclude_non_matrix_weights(model_path: str) -> list[str]:
     model = onnx.load(str(model_path), load_external_data=False)
     initializers = {tensor.name: tensor for tensor in model.graph.initializer}
+    constants = {
+        node.output[0]: attribute.t
+        for node in model.graph.node
+        if node.op_type == "Constant" and len(node.output) == 1
+        for attribute in node.attribute
+        if attribute.HasField("t")
+    }
     excluded = []
     for node in model.graph.node:
         if node.op_type == "MatMul" and len(node.input) == 2:
-            weight = initializers.get(node.input[1])
+            weight = initializers.get(node.input[1], constants.get(node.input[1]))
         elif node.op_type == "Gather" and node.input:
-            weight = initializers.get(node.input[0])
+            weight = initializers.get(node.input[0], constants.get(node.input[0]))
         else:
             continue
-        if weight is not None and len(weight.dims) != 2:
+        if weight is not None and (
+            len(weight.dims) != 2
+            or (
+                node.op_type == "Gather"
+                and (
+                    int(weight.dims[1]) < BLOCK_SIZE
+                    or int(weight.dims[1]) % BLOCK_SIZE
+                )
+            )
+        ):
             excluded.append(node.name)
     del model
     gc.collect()
@@ -84,33 +158,29 @@ def convolution_nodes(model_path: str) -> list[str]:
     return selected
 
 
-STRATEGIES = ("greedy", "penalty_greedy", "sampling")
-SOURCE_FOLDER = SCRIPT_DIR / "IndexTTS2_ONNX"
-OUTPUT_FOLDER = SCRIPT_DIR / "IndexTTS2_Optimized"
-QUANTIZATION_TEMPLATE = "IndexTTS2_TargetPrefill_greedy"
-QUANTIZATION_CACHE_NAME = ".IndexTTS2_QuantizedWeights.onnx"
-QUANTIZATION_COVER_NAME = ".IndexTTS2_QuantizationCover.onnx"
-EMOTION_QUANTIZATION_TEMPLATE = "IndexTTS2_EmotionTextPrefill"
-EMOTION_QUANTIZATION_CACHE_NAME = ".IndexTTS2_EmotionQuantizedWeights.onnx"
-EMOTION_QUANTIZATION_COVER_NAME = ".IndexTTS2_EmotionQuantizationCover.onnx"
-WEIGHT_ONLY_BITS = {"Q2": 2, "Q4": 4, "Q8": 8}
+def copy_tokenizer_assets(destination: Path) -> None:
+    text_tokenizer = SOURCE_FOLDER / TEXT_TOKENIZER_FILE
+    if not text_tokenizer.is_file():
+        raise FileNotFoundError(f"Missing exported text tokenizer: {text_tokenizer}")
+    shutil.copy2(text_tokenizer, destination / TEXT_TOKENIZER_FILE)
 
-MATMUL_ALGORITHM    = "k_quant"
-BLOCK_SIZE          = 32
-ACCURACY_LEVEL      = 4
-MAIN_NUM_HEADS      = 20
-MAIN_HIDDEN_SIZE    = 1280
-EMOTION_NUM_HEADS   = 16
-EMOTION_HIDDEN_SIZE = 1024
-DYNAMIC_WEIGHT_TYPE = "QInt8"
-DYNAMIC_PER_CHANNEL = False
+    source_folder = SOURCE_FOLDER / QWEN_TOKENIZER_FOLDER
+    target_folder = destination / QWEN_TOKENIZER_FOLDER
+    target_folder.mkdir(parents=True, exist_ok=True)
+    for name in QWEN_TOKENIZER_FILES:
+        source = source_folder / name
+        if source.is_file():
+            shutil.copy2(source, target_folder / name)
+    if not (target_folder / "tokenizer.json").is_file():
+        raise FileNotFoundError(f"Missing exported Qwen tokenizer: {source_folder}")
 
 
+# Per-graph quantization and optimization plan
 MODEL_PLANS: dict[str, Plan] = {
     "IndexTTS2_ReferencePreprocess": Plan(
         method="F32",
         optimize=True,
-        transformer=True,
+        transformer=False,
         external=True,
     ),
     "IndexTTS2_Conditioning": Plan(
@@ -273,7 +343,7 @@ MODEL_PLANS: dict[str, Plan] = {
     "IndexTTS2_Decoder": Plan(
         method="F32",
         optimize=True,
-        transformer=True,
+        transformer=not IS_V25,
         external=True,
     ),
     # This manifest carrier has no weights or quantizable operators.
@@ -314,6 +384,17 @@ def parse_args() -> argparse.Namespace:
 
 def configure_attention_precision() -> dict[str, str]:
     metadata = read_onnx_metadata(str(SOURCE_FOLDER / "IndexTTS2_Metadata.onnx"))
+    package_version = metadata.get("model_version")
+    if package_version is not None and package_version != MODEL_VERSION:
+        raise ValueError(
+            f"MODEL_VERSION={MODEL_VERSION!r} cannot optimize an IndexTTS2 "
+            f"v{package_version} package."
+        )
+    if IS_V25 and package_version != "2.5":
+        raise ValueError(
+            "IndexTTS2.5 packages must declare model_version=2.5. "
+            "Re-export the package with the unified exporter."
+        )
     flags = {key: metadata.get(key) for key in ("use_f16_kv", "compute_in_f32")}
     invalid = {key: value for key, value in flags.items() if value not in {"0", "1"}}
     if flags["use_f16_kv"] == "1" and flags["compute_in_f32"] == "0":
@@ -322,6 +403,243 @@ def configure_attention_precision() -> dict[str, str]:
             "unrestricted; validate any precision changes introduced by ORT."
         )
     return metadata
+
+
+def _single_node(
+    model: onnx.ModelProto,
+    op_type: str,
+    name_fragment: str,
+) -> onnx.NodeProto:
+    matches = [
+        node
+        for node in model.graph.node
+        if node.op_type == op_type and name_fragment in node.name
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one {op_type} node containing {name_fragment!r}, found {len(matches)}."
+        )
+    return matches[0]
+
+
+def _tensor_external_data(tensor: onnx.TensorProto) -> dict[str, str]:
+    if tensor.data_location != onnx.TensorProto.EXTERNAL:
+        raise ValueError(f"Tensor {tensor.name!r} is not external data.")
+    entries = {entry.key: entry.value for entry in tensor.external_data}
+    if "location" not in entries or "length" not in entries:
+        raise ValueError(f"Tensor {tensor.name!r} has no complete external range.")
+    return entries
+
+
+def _tensor_byte_length(tensor: onnx.TensorProto) -> int:
+    if tensor.data_location == onnx.TensorProto.EXTERNAL:
+        return int(_tensor_external_data(tensor)["length"])
+    if tensor.raw_data:
+        return len(tensor.raw_data)
+    return len(onnx.numpy_helper.to_array(tensor).tobytes(order="C"))
+
+
+def _tensor_storage_signature(tensor: onnx.TensorProto) -> tuple[Any, ...]:
+    external = _tensor_external_data(tensor)
+    return (
+        tensor.data_type,
+        tuple(int(dim) for dim in tensor.dims),
+        external["location"],
+        external.get("offset", "0"),
+        external["length"],
+    )
+
+
+def _external_tensor_bytes_match(
+    left: onnx.TensorProto,
+    left_path: Path,
+    right: onnx.TensorProto,
+    right_path: Path,
+) -> bool:
+    left_data = _tensor_external_data(left)
+    right_data = _tensor_external_data(right)
+    length = int(left_data["length"])
+    if length != int(right_data["length"]):
+        return False
+    with (left_path.parent / left_data["location"]).open("rb") as left_file, (
+        right_path.parent / right_data["location"]
+    ).open("rb") as right_file:
+        left_file.seek(int(left_data.get("offset", "0")))
+        right_file.seek(int(right_data.get("offset", "0")))
+        remaining = length
+        while remaining:
+            size = min(remaining, 8 * 1024 * 1024)
+            if left_file.read(size) != right_file.read(size):
+                return False
+            remaining -= size
+    return True
+
+
+def _exact_external_transpose(
+    embedding: onnx.TensorProto,
+    lm_head: onnx.TensorProto,
+    model_path: Path,
+) -> bool:
+    embedding_shape = tuple(int(dim) for dim in embedding.dims)
+    head_shape = tuple(int(dim) for dim in lm_head.dims)
+    if (
+        embedding.data_type != lm_head.data_type
+        or len(embedding_shape) != 2
+        or embedding_shape != tuple(reversed(head_shape))
+    ):
+        return False
+
+    embedding_data = _tensor_external_data(embedding)
+    head_data = _tensor_external_data(lm_head)
+    dtype = np.dtype(onnx.helper.tensor_dtype_to_np_dtype(embedding.data_type))
+    expected_bytes = int(np.prod(embedding_shape)) * dtype.itemsize
+    if (
+        int(embedding_data["length"]) != expected_bytes
+        or int(head_data["length"]) != expected_bytes
+    ):
+        return False
+
+    embedding_view = np.memmap(
+        model_path.parent / embedding_data["location"],
+        mode="r",
+        dtype=dtype,
+        offset=int(embedding_data.get("offset", "0")),
+        shape=embedding_shape,
+    )
+    head_view = np.memmap(
+        model_path.parent / head_data["location"],
+        mode="r",
+        dtype=dtype,
+        offset=int(head_data.get("offset", "0")),
+        shape=head_shape,
+    )
+    rows_per_chunk = max(1, (8 * 1024 * 1024) // (embedding_shape[1] * dtype.itemsize))
+    try:
+        for start in range(0, embedding_shape[0], rows_per_chunk):
+            end = min(start + rows_per_chunk, embedding_shape[0])
+            if not np.array_equal(embedding_view[start:end], head_view[:, start:end].T):
+                return False
+    finally:
+        del embedding_view, head_view
+    return True
+
+
+def _tied_q4_components(
+    model_path: Path,
+) -> tuple[tuple[onnx.TensorProto, ...], tuple[onnx.TensorProto, ...]]:
+    model = onnx.load(str(model_path), load_external_data=False)
+    initializers = {tensor.name: tensor for tensor in model.graph.initializer}
+    embed_node = _single_node(
+        model,
+        "GatherBlockQuantized",
+        "/core/embed_tokens/",
+    )
+    head_node = _single_node(model, "MatMulNBits", "/core/lm_head/")
+    if len(embed_node.input) != 4 or len(head_node.input) != 4:
+        raise ValueError("Unexpected Q4 embedding or LM-head input count.")
+
+    embed = tuple(initializers[name] for name in (embed_node.input[0], embed_node.input[2], embed_node.input[3]))
+    head = tuple(initializers[name] for name in head_node.input[1:])
+    gather_attrs = {
+        attribute.name: onnx.helper.get_attribute_value(attribute)
+        for attribute in embed_node.attribute
+    }
+    head_attrs = {
+        attribute.name: onnx.helper.get_attribute_value(attribute)
+        for attribute in head_node.attribute
+    }
+    vocab_size, hidden_size = (int(dim) for dim in embed[0].dims)
+    if (
+        tuple(embed[0].dims) != (vocab_size, hidden_size)
+        or embed[0].data_type != onnx.TensorProto.UINT4
+        or embed[1].data_type != onnx.TensorProto.FLOAT
+        or embed[2].data_type != onnx.TensorProto.UINT4
+        or gather_attrs.get("block_size") != BLOCK_SIZE
+        or gather_attrs.get("gather_axis") != 0
+        or gather_attrs.get("quantize_axis") != 1
+        or head[0].data_type != onnx.TensorProto.UINT8
+        or head[1].data_type != onnx.TensorProto.FLOAT
+        or head[2].data_type != onnx.TensorProto.UINT8
+        or head_attrs.get("bits") != 4
+        or head_attrs.get("block_size") != BLOCK_SIZE
+        or head_attrs.get("K") != hidden_size
+        or head_attrs.get("N") != vocab_size
+        or hidden_size % BLOCK_SIZE
+        or tuple(head[0].dims) != (vocab_size, hidden_size // BLOCK_SIZE, BLOCK_SIZE // 2)
+        or tuple(embed[1].dims) != (vocab_size, hidden_size // BLOCK_SIZE)
+        or tuple(head[1].dims) != tuple(embed[1].dims)
+        or tuple(embed[2].dims) != (vocab_size, hidden_size // BLOCK_SIZE)
+        or tuple(head[2].dims) != (vocab_size, hidden_size // (2 * BLOCK_SIZE))
+        or any(_tensor_byte_length(left) != _tensor_byte_length(right) for left, right in zip(embed, head))
+    ):
+        raise ValueError("The Q4 embedding/head layouts cannot share AFFINE_REFINE_V2 storage.")
+    return embed, head
+
+
+def tied_emotion_q4_data_aliases() -> dict[tuple[str, str], tuple[str, str]]:
+    """Expose the tied Qwen LM head as a MatMulNBits view of embed_tokens."""
+    source_prefill_path = SOURCE_FOLDER / "IndexTTS2_EmotionTextPrefill.onnx"
+    source_decode_path = SOURCE_FOLDER / "IndexTTS2_EmotionTextDecode.onnx"
+    output_paths = tuple(
+        OUTPUT_FOLDER / f"{name}.onnx"
+        for name in EMOTION_SHARED_WEIGHT_GRAPH_NAMES
+    )
+    try:
+        source_prefill = onnx.load(str(source_prefill_path), load_external_data=False)
+        source_decode = onnx.load(str(source_decode_path), load_external_data=False)
+        raw_prefill = {tensor.name: tensor for tensor in source_prefill.graph.initializer}
+        raw_decode = {tensor.name: tensor for tensor in source_decode.graph.initializer}
+        raw_embed_node = _single_node(source_prefill, "Gather", "/core/embed_tokens/")
+        raw_head_node = _single_node(source_prefill, "MatMul", "/core/lm_head/")
+        raw_decode_embed_node = _single_node(source_decode, "Gather", "/core/embed_tokens/")
+        raw_decode_head_node = _single_node(source_decode, "MatMul", "/core/lm_head/")
+        raw_embed = raw_prefill[raw_embed_node.input[0]]
+        raw_head = raw_prefill[raw_head_node.input[1]]
+        if (
+            not _exact_external_transpose(raw_embed, raw_head, source_prefill_path)
+            or _tensor_storage_signature(raw_embed)
+            != _tensor_storage_signature(raw_decode[raw_decode_embed_node.input[0]])
+            or _tensor_storage_signature(raw_head)
+            != _tensor_storage_signature(raw_decode[raw_decode_head_node.input[1]])
+        ):
+            raise ValueError("The source Qwen embedding and lm_head are not one tied table.")
+
+        components = {
+            path.name: _tied_q4_components(path)
+            for path in output_paths
+        }
+        leader_path = output_paths[0]
+        leader_embed, leader_head = components[leader_path.name]
+        for path in output_paths[1:]:
+            embed, head = components[path.name]
+            for label, leader, current in (
+                ("embedding", leader_embed, embed),
+                ("lm_head", leader_head, head),
+            ):
+                if not all(
+                    _external_tensor_bytes_match(left, leader_path, right, path)
+                    for left, right in zip(leader, current)
+                ):
+                    raise ValueError(
+                        f"Emotion prefill and decode use different {label} Q4 packs."
+                    )
+
+        aliases: dict[tuple[str, str], tuple[str, str]] = {}
+        for path in output_paths:
+            embed, head = components[path.name]
+            for embed_tensor, head_tensor, leader_tensor in zip(embed, head, leader_embed):
+                leader = (leader_path.name, leader_tensor.name)
+                aliases[(path.name, embed_tensor.name)] = leader
+                aliases[(path.name, head_tensor.name)] = leader
+        saved_bytes = sum(_tensor_byte_length(tensor) for tensor in leader_embed)
+        print(
+            "[Tied Q4] Emotion Qwen lm_head shares the embed_tokens AFFINE_REFINE_V2 Q4 "
+            f"payload; recovering {saved_bytes / (1024 * 1024):.2f} MiB."
+        )
+        return aliases
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        print(f"[Tied Q4] Emotion Qwen storage alias skipped: {error}")
+        return {}
 
 
 def resolve_initializer_alias(name: str, aliases: dict[str, str]) -> str:
@@ -632,12 +950,14 @@ def process_graphs(
 def rebuild_shared_bundle(
     metadata: dict[str, str],
     cache_path: Path,
+    data_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     model_paths = [OUTPUT_FOLDER / f"{name}.onnx" for name in MODEL_PLANS]
     stats = bundle_shared_initializers(
         OUTPUT_FOLDER,
         model_paths=model_paths,
         metadata=metadata,
+        data_aliases=data_aliases,
     )
     cache_path.unlink(missing_ok=True)
     Path(str(cache_path) + ".data").unlink(missing_ok=True)
@@ -669,6 +989,7 @@ def main() -> None:
     if OUTPUT_FOLDER.exists():
         shutil.rmtree(OUTPUT_FOLDER)
     OUTPUT_FOLDER.mkdir(parents=True)
+    copy_tokenizer_assets(OUTPUT_FOLDER)
     cache_path = OUTPUT_FOLDER / QUANTIZATION_CACHE_NAME
     cover_path = SOURCE_FOLDER / QUANTIZATION_COVER_NAME
     emotion_cache_path = OUTPUT_FOLDER / EMOTION_QUANTIZATION_CACHE_NAME
@@ -691,7 +1012,11 @@ def main() -> None:
             )
         )
         process_graphs(resolved_plans, prequantized_graphs)
-        rebuild_shared_bundle(metadata, cache_path)
+        rebuild_shared_bundle(
+            metadata,
+            cache_path,
+            tied_emotion_q4_data_aliases() if IS_V25 else None,
+        )
     finally:
         for temporary_path in (
             cache_path,

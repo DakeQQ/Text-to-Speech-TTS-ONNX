@@ -1,6 +1,8 @@
 import gc
 import math
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import torch
@@ -28,9 +30,9 @@ OUT_AUDIO_DTYPE = "F32"     # "F16" | "F32" | "INT16".
 
 # Export
 DO_EXPORT = True
-USE_F16_KV = True      # Saves memory but can change codes after repeated decode steps
-COMPUTE_IN_F32 = False  # With f16 KV, use f32 attention for accuracy instead of f16 speed
-OPSET = 20             # ONNX opset
+USE_F16_KV = True           # Saves memory but can change codes after repeated decode steps
+COMPUTE_IN_F32 = False      # With f16 KV, use f32 attention for accuracy instead of f16 speed
+OPSET = 20                  # ONNX opset
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
 script_dir = Path(__file__).resolve().parent
@@ -1548,3 +1550,10 @@ def run_compact_strategy_export():
     print('\nCompact strategy export done!')
 
 run_compact_strategy_export()
+print('\nStart running the MOSS-TTS Nano demo via Inference_MOSS_TTS_Nano_ONNX.py ...')
+raise SystemExit(subprocess.call([
+    sys.executable,
+    str(script_dir / "Inference_MOSS_TTS_Nano_ONNX.py"),
+    "--onnx-folder",
+    str(onnx_folder),
+]))

@@ -101,6 +101,11 @@ def _load_compact_metadata():
         "use_f16_kv",
         "compute_in_f32",
     }
+    missing_metadata = sorted(expected_keys - metadata.keys())
+    if missing_metadata:
+        raise ValueError(
+            f"{metadata_path.name} is missing required metadata key(s): {missing_metadata}."
+        )
     return metadata
 
 
@@ -279,7 +284,7 @@ class TensorInfo:
         try:
             dtype = _ONNX_TO_NUMPY[value.type]
         except KeyError as error:
-            pass
+            raise ValueError(f"Unsupported ONNX tensor type: {value.type!r}.") from error
         return cls(value.name, dtype, tuple(value.shape))
 
     @property
@@ -343,6 +348,8 @@ def _bind_inputs(binding, infos, values):
 
 def _bind_static_outputs(binding, infos):
     static_buffers = []
+    if device_type == 'cuda':
+        return tuple(static_buffers)
     for info in infos:
         if info.is_static:
             value = _ort_empty(info)
@@ -352,10 +359,17 @@ def _bind_static_outputs(binding, infos):
 
 
 def _run_binding(session, binding, output_infos):
-    dynamic_infos = tuple(info for info in output_infos if not info.is_static)
-    for info in dynamic_infos:
+    auto_bound_infos = (
+        tuple(output_infos)
+        if device_type == 'cuda'
+        else tuple(info for info in output_infos if not info.is_static)
+    )
+    for info in auto_bound_infos:
         binding._iobinding.bind_output(info.name, _ort_device_type)
     session.run_with_iobinding(binding, run_options=run_options)
+    if device_type == 'cuda':
+        return tuple(binding.get_outputs())
+    dynamic_infos = tuple(info for info in output_infos if not info.is_static)
     bound_infos = (*filter(lambda info: info.is_static, output_infos), *dynamic_infos)
     outputs_by_name = dict(
         zip((info.name for info in bound_infos), binding.get_outputs(), strict=True)
@@ -466,7 +480,7 @@ def create_session(model_path):
     return onnxruntime.InferenceSession(
         str(model_path),
         sess_options=session_opts,
-        providers=ORT_Accelerate_Providers,
+        providers=ORT_Accelerate_Providers or ['CPUExecutionProvider'],
         provider_options=provider_options,
         disabled_optimizers=disabled_optimizers,
     )

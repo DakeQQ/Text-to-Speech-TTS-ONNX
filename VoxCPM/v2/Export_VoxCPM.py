@@ -3,6 +3,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -2708,3 +2709,13 @@ if __name__ == "__main__" and "--expanded" in sys.argv:
     shutil.rmtree(raw_onnx_folder)
     print(f"[Cleanup] Removed temporary export folder: {raw_onnx_folder}")
     print('\nExport done!')
+
+
+if __name__ == "__main__":
+    print("\nStart running the VoxCPM demo via Inference_VoxCPM_ONNX.py ...")
+    raise SystemExit(subprocess.call([
+        sys.executable,
+        str(script_dir / "Inference_VoxCPM_ONNX.py"),
+        "--onnx-folder",
+        str(onnx_folder),
+    ]))

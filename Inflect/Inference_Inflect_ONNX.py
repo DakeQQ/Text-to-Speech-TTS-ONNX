@@ -355,7 +355,7 @@ def require_metadata(metadata: dict[str, str], key: str) -> str:
 	try:
 		return metadata[key]
 	except KeyError as exc:
-		pass
+		raise ValueError(f"Missing required Inflect metadata key: {key!r}.") from exc
 def io_dtype(argument: object) -> np.dtype:
 	match = re.fullmatch(r"tensor\(([^)]+)\)", argument.type)
 	element_type = onnx.TensorProto.DataType.Value(match.group(1).upper())
@@ -366,7 +366,9 @@ def static_io_dimension(argument: object, axis: int) -> int:
 	try:
 		dimension = argument.shape[axis]
 	except IndexError as exc:
-		pass
+		raise ValueError(
+			f"ONNX value {argument.name!r} has no dimension at axis {axis}."
+		) from exc
 	return dimension
 
 
@@ -587,7 +589,7 @@ class InflectONNX:
 		try:
 			phoneme_ids = [self.symbol_to_id[symbol] for symbol in phonemes]
 		except KeyError as exc:
-			pass
+			raise ValueError(f"Unsupported frontend phoneme: {exc.args[0]!r}.") from exc
 		token_count = len(phoneme_ids) * 2 + 1 if self.add_blank else len(phoneme_ids)
 		buffers = self._duration_buffers(token_count)
 		if self.add_blank:
@@ -621,7 +623,14 @@ class InflectONNX:
 		binding = self.duration_session.io_binding()
 		binding.bind_ortvalue_input(self.duration_token_input_name, token_value)
 		binding.bind_ortvalue_input(self.duration_speed_input_name, self._speed_value)
-		binding.bind_ortvalue_output(self.duration_priors_output_name, priors)
+		if self.device_type == "cuda":
+			binding.bind_output(
+				self.duration_priors_output_name,
+				self.device_type,
+				self.device_id,
+			)
+		else:
+			binding.bind_ortvalue_output(self.duration_priors_output_name, priors)
 		binding.bind_ortvalue_output(self.duration_values_output_name, durations)
 		buffers = DurationBuffers(
 			token_array,
@@ -682,10 +691,20 @@ class InflectONNX:
 		duration_buffers: DurationBuffers,
 	) -> np.ndarray:
 		token_count = int(duration_buffers.token_array.size)
+		if self.device_type == "cuda":
+			duration_buffers.binding.bind_output(
+				self.duration_priors_output_name,
+				self.device_type,
+				self.device_id,
+			)
 		self.duration_session.run_with_iobinding(
 			duration_buffers.binding,
 			run_options=self.run_options,
 		)
+		if self.device_type == "cuda":
+			duration_buffers.priors.update_inplace(
+				duration_buffers.binding.get_outputs()[0]
+			)
 		durations = duration_buffers.durations_array
 		np.cumsum(
 			durations,

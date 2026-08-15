@@ -2,6 +2,7 @@ import gc
 import importlib
 import math
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -70,13 +71,6 @@ WINDOW_TYPE = "hann"
 OPSET = 20
 
 _AUDIO_DTYPES = {"F16": torch.float16, "F32": torch.float32, "INT16": torch.int16}
-# Representative dynamic-control inputs used while tracing the strategy graphs.
-PENALTY_VALUE = 0.8
-PENALTY_RANGE = 10
-SAMPLING_TEMPERATURE = 0.8
-SAMPLING_TOP_K = 50
-SAMPLING_TOP_P = 0.95
-SAMPLING_REPETITION_PENALTY = 1.1
 
 
 if project_path not in sys.path:
@@ -1285,8 +1279,6 @@ with torch.inference_mode():
     gc.collect()
     print("\nExport TargetPreprocess Done.\n\nExport strategy graphs Start...")
 
-    sampling_top_k = min(SAMPLING_TOP_K, MEL_CODE_SIZE)
-
     main_core = IndexTTS_Main(indexTTS, NUM_LAYERS, MAX_SIGNAL_LENGTH)
     hidden_states = torch.ones((1, 10, HIDDEN_SIZE), dtype=torch.float32)
     hidden_step = torch.ones((1, 1, HIDDEN_SIZE), dtype=torch.float32)
@@ -1311,12 +1303,12 @@ with torch.inference_mode():
         state_axes[f'out_value_{i}'] = {2: 'kv_seq_len'}
 
     control_tensors = {
-        'penalty_value': torch.tensor([PENALTY_VALUE], dtype=torch.float32),
-        'penalty_range': torch.tensor([PENALTY_RANGE], dtype=torch.int64),
-        'temperature': torch.tensor([SAMPLING_TEMPERATURE], dtype=torch.float32),
-        'top_k': torch.tensor([sampling_top_k], dtype=torch.int64),
-        'top_p': torch.tensor([SAMPLING_TOP_P], dtype=torch.float32),
-        'repetition_penalty': torch.tensor([SAMPLING_REPETITION_PENALTY], dtype=torch.float32),
+        'penalty_value': torch.ones(1, dtype=torch.float32),
+        'penalty_range': torch.ones(1, dtype=torch.int64),
+        'temperature': torch.ones(1, dtype=torch.float32),
+        'top_k': torch.ones(1, dtype=torch.int64),
+        'top_p': torch.ones(1, dtype=torch.float32),
+        'repetition_penalty': torch.ones(1, dtype=torch.float32),
     }
 
     for strategy in DECODE_STRATEGIES:
@@ -1462,4 +1454,12 @@ with torch.inference_mode():
 
 if project_path in sys.path:
     sys.path.remove(project_path)
+
+print("\nStart running the IndexTTS demo via Inference_IndexTTS_ONNX.py ...")
+raise SystemExit(subprocess.call([
+    sys.executable,
+    str(script_dir / "Inference_IndexTTS_ONNX.py"),
+    "--onnx-folder",
+    str(onnx_folder),
+]))
 

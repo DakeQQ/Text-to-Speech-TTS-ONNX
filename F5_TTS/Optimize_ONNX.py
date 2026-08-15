@@ -28,10 +28,11 @@ if str(REPO_ROOT) not in sys.path:
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
-    resolve_plan,
     run_optimizer,
 )
 
+
+# ============================== USER CONFIG ==============================
 
 SOURCE_FOLDER = SCRIPT_DIR / "F5_ONNX"
 OUTPUT_FOLDER = SCRIPT_DIR / "F5_Optimized"
@@ -39,6 +40,8 @@ OUTPUT_FOLDER = SCRIPT_DIR / "F5_Optimized"
 # The DiT transformer uses 16 heads / hidden_size 1024; the same values feed the attention-fusion
 # optimizer for every module (harmless for the non-attention Preprocess / Decode graphs).
 # F5_Preprocess carries dynamic STFT shapes, so its onnxslim passes skip shape inference.
+# ============================== MODEL PLANS ==============================
+
 MODEL_PLANS: dict[str, Plan] = {
     "F5_Metadata": Plan(
         method="F32",
@@ -48,6 +51,7 @@ MODEL_PLANS: dict[str, Plan] = {
         method="F32",
         num_heads=0,
         hidden_size=0,
+        transformer=False,
         opt_level=2,
     ),
     "F5_Transformer": Plan(
@@ -61,9 +65,12 @@ MODEL_PLANS: dict[str, Plan] = {
         method="F32",
         num_heads=0,
         hidden_size=0,
+        transformer=False,
         opt_level=2,
     ),
 }
+
+# ============================== PIPELINE ================================
 
 CONFIG = OptimizerConfig(
     original_folder_path=str(SOURCE_FOLDER),
@@ -78,17 +85,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_plans():
-    resolved_plans = {}
-    for name, plan in MODEL_PLANS.items():
-        resolved = resolve_plan(plan, CONFIG)
-        resolved_plans[name] = resolved
-    return resolved_plans
-
-
 def main() -> None:
-    args = parse_args()
-    resolved_plans = resolve_plans()
+    parse_args()
     run_optimizer(CONFIG)
 
 

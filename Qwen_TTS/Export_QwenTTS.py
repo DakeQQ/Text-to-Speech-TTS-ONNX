@@ -2,6 +2,8 @@ import gc
 import json
 import math
 import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import torch
@@ -1133,6 +1135,10 @@ class TTS_DECODER(torch.nn.Module):
         self.num_code_groups = self.tts.model.talker.code_predictor.model.config.num_code_groups
         self.scale           = output_sample_rate / model_output_sample_rate
         self.upsample_rate   = self.tts.model.speech_tokenizer.model.decode_upsample_rate
+        self.static_conv_fusion_count = sum(
+            isinstance(module, Qwen3TTSTokenizerV2CausalConvNet) and module.padding > 0
+            for module in self.decoder.modules()
+        )
         for param in self.tts.model.parameters():
             param.requires_grad = False
         for param in self.decoder.parameters():
@@ -2735,5 +2741,11 @@ def run_compact_strategy_export():
 
 if DO_EXPORT:
     run_compact_strategy_export()
-print('\nStart running the TTS by ONNXRuntime via Inference_QwenTTS_ONNX.py.\nNow loading . . . it could cost minutes.')
+    print('\nStart running the TTS by ONNXRuntime via Inference_QwenTTS_ONNX.py.\nNow loading . . . it could cost minutes.')
+    raise SystemExit(subprocess.call([
+        sys.executable,
+        str(script_dir / "Inference_QwenTTS_ONNX.py"),
+        "--onnx-folder",
+        str(onnx_folder),
+    ]))
 pass

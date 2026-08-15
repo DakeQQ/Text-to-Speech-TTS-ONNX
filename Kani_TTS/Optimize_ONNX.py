@@ -17,13 +17,13 @@ import onnx
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 for candidate in (SCRIPT_DIR, *SCRIPT_DIR.parents):
     if (candidate / "Optimize_ONNX_Common.py").is_file():
         if str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
         break
-else:
-    pass
 from Optimize_ONNX_Common import (  # noqa: E402
     OptimizerConfig,
     Plan,
@@ -38,20 +38,23 @@ from Optimize_ONNX_Common import (  # noqa: E402
 from Shared_Weights import bundle_shared_initializers  # noqa: E402
 
 
+# User configuration
 SOURCE_FOLDER = SCRIPT_DIR / "KaniTTS_ONNX"
 OUTPUT_FOLDER = SCRIPT_DIR / "KaniTTS_Optimized"
 QUANTIZATION_TEMPLATE = "KaniTTS_DecodeStep_greedy"
 QUANTIZATION_CACHE_NAME = ".KaniTTS_QuantizedWeights.onnx"
 WEIGHT_ONLY_BITS = {"Q2": 2, "Q4": 4, "Q8": 8}
 
+# Quantization and optimization defaults
 DYNAMIC_WEIGHT_TYPE = "QInt8"    # QInt8 (Int8) | QUInt8 (Uint8)
 DYNAMIC_PER_CHANNEL = True
-MATMUL_ALGORITHM = "k_quant"
+MATMUL_ALGORITHM = "AFFINE_REFINE_V2"
 BLOCK_SIZE = 32
 MAIN_NUM_HEADS = 16
 MAIN_HIDDEN_SIZE = 1024
 ACCURACY_LEVEL = 4              # 0=default. 1=fp32, 2=fp16, 3=bf16, 4=int8
 
+# Per-graph quantization and optimization plan
 MODEL_PLANS: dict[str, Plan] = {
     "KaniTTS_MainPrefill_greedy": Plan(
         method="Q4",
@@ -138,7 +141,7 @@ MODEL_PLANS: dict[str, Plan] = {
         first_slim_no_shape_infer=True,
     ),
     "KaniTTS_Codec": Plan(
-        method="F32",
+        method="F16",
         optimize=True,
         transformer=False,
         external=True,
