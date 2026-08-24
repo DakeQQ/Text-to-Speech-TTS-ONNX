@@ -67,14 +67,11 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 | Text-to-speech<br>语音合成 | KaniTTS | Text → 22.05 kHz | No<br>否 | [`Kani_TTS`](./Kani_TTS) | [GitHub](https://github.com/nineninesix-ai/kani-tts) |
 | Voice cloning · continuation<br>声音克隆 · 续写 | MOSS-TTS Nano | 48 → 48 kHz | Mode-dependent<br>取决于模式 | [`MOSS_TTS`](./MOSS_TTS) | [GitHub](https://github.com/OpenMOSS/MOSS-TTS) |
 | Clone · custom voice · voice design<br>克隆 · 定制音色 · 声音设计 | Qwen3-TTS | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`Qwen_TTS`](./Qwen_TTS) | [GitHub](https://github.com/QwenLM/Qwen3-TTS) |
+| Clone · voice design · speech editing<br>克隆 · 声音设计 · 语音编辑 | FireRedTTS3 | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`FireRedTTS/v3`](./FireRedTTS/v3) | [GitHub](https://github.com/FireRedTeam/FireRedTTS3) |
 | Voice cloning<br>声音克隆 | VoxCPM 1.5 | 44.1 → 44.1 kHz | Supported<br>支持 | [`VoxCPM/v1.5`](./VoxCPM/v1.5) | [ModelScope](https://www.modelscope.cn/models/OpenBMB/VoxCPM1.5) |
 | Clone · continuation · voice design<br>克隆 · 续写 · 声音设计 | VoxCPM 2 | 16 → 48 kHz | Mode-dependent<br>取决于模式 | [`VoxCPM/v2`](./VoxCPM/v2) | [ModelScope](https://www.modelscope.cn/models/OpenBMB/VoxCPM2) |
 | Neural vocoder<br>神经声码器 | BigVGAN V2 | Mel → 24 kHz | No<br>否 | [`BigVGAN`](./BigVGAN) | [GitHub](https://github.com/NVIDIA/BigVGAN) |
 | Text-to-speech<br>语音合成 | Inflect | Text → 24 kHz | No<br>否 | [`Inflect`](./Inflect) | [GitHub](https://github.com/owenawsong/Inflect) |
-
-IndexTTS 2 and 2.5 share the [`Index_TTS/v2`](./Index_TTS/v2) scripts. Set their `MODEL_VERSION` configuration to `"2"` or `"2.5"` in the exporter, optimizer, and inference runtime; v2.5 is the default.
-
-IndexTTS 2 与 2.5 共用 [`Index_TTS/v2`](./Index_TTS/v2) 脚本。在导出、优化和推理脚本中将 `MODEL_VERSION` 设置为 `"2"` 或 `"2.5"`；默认值为 v2.5。
 
 
 ---
@@ -95,6 +92,7 @@ IndexTTS 2 与 2.5 共用 [`Index_TTS/v2`](./Index_TTS/v2) 脚本。在导出、
 | Ubuntu 24.04 | Intel Core i3-12300 | CPU | Qwen3-TTS-0.6B-Base | q8f32 | 19 | 3.1 |
 | Ubuntu 24.04 | Intel Core i3-12300 | CPU | VoxCPM 2 | q8f32 | 23 | 3.8 |
 | Ubuntu 24.04 | NVIDIA GeForce RTX 5060 Ti | GPU | VoxCPM 2 | f16 | 2.05 | 0.34 |
+| Ubuntu 24.04 | Intel Core i7-1165G7 | CPU | FireRedTTS3 | q8f32 | 31.1 | 5.2 |
 
 ---
 
