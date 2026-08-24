@@ -31,6 +31,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 - Resampling runs inside the ONNX graph with `torch.nn.functional.interpolate`.
 - `Metadata.onnx` stores the fixed package contract; runtime controls remain in the inference script. Inference validates metadata, graph layout, and referenced files.
 - Streaming exporters require each codec or latent frame to map to a whole number of output samples.
+- Raon-OpenTTS is English-only in this package and requires reference audio with matching reference text.
 
 ---
 
@@ -52,6 +53,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 - 重采样通过 `torch.nn.functional.interpolate` 在 ONNX 图内完成。
 - `Metadata.onnx` 保存固定模型包约定，运行时配置保留在推理脚本中。推理时会校验元数据、图布局与引用文件。
 - 流式导出要求每个编解码器帧或潜变量帧对应整数个输出采样点。
+- 本项目中的 Raon-OpenTTS 仅支持英文，并且需要带有匹配文本的参考音频。
 
 ---
 
@@ -62,6 +64,8 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 | --- | --- | :---: | :---: | --- | --- |
 | Neural vocoder<br>神经声码器 | BigVGAN V2 | Mel → 24 kHz | No<br>否 | [`BigVGAN`](./BigVGAN) | [GitHub](https://github.com/NVIDIA/BigVGAN) |
 | Voice cloning<br>声音克隆 | F5-TTS | 24 → 24 kHz | Required<br>必需 | [`F5_TTS`](./F5_TTS) | [GitHub](https://github.com/SWivid/F5-TTS) |
+| English voice cloning<br>英文声音克隆 | Raon-OpenTTS-0.3B | 16 → 16 kHz | Required<br>必需 | [`Raon_OpenTTS`](./Raon_OpenTTS) | [GitHub](https://github.com/krafton-ai/Raon-OpenTTS) |
+| English voice cloning<br>英文声音克隆 | Raon-OpenTTS-1B | 16 → 16 kHz | Required<br>必需 | [`Raon_OpenTTS`](./Raon_OpenTTS) | [GitHub](https://github.com/krafton-ai/Raon-OpenTTS) |
 | Clone · voice design · speech editing<br>克隆 · 声音设计 · 语音编辑 | FireRedTTS3 | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`FireRedTTS/v3`](./FireRedTTS/v3) | [GitHub](https://github.com/FireRedTeam/FireRedTTS3) |
 | Voice cloning<br>声音克隆 | IndexTTS 1.5 | 24 → 24 kHz | Supported<br>支持 | [`Index_TTS/v1.5`](./Index_TTS/v1.5) | [GitHub](https://github.com/index-tts/index-tts) |
 | Voice cloning · emotion control<br>声音克隆 · 情感控制 | IndexTTS 2 | 22.05 → 22.05 kHz | Supported<br>支持 | [`Index_TTS/v2`](./Index_TTS/v2) | [GitHub](https://github.com/index-tts/index-tts) |

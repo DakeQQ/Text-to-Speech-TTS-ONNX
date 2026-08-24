@@ -321,20 +321,40 @@ def validate_plan(name: str, rp: ResolvedPlan) -> None:
             )
 
 
+def _model_size_bytes(model_path: str) -> int:
+    model_file = Path(model_path).resolve()
+    data_files = {model_file}
+    conventional_data_file = Path(model_path + ".data").resolve()
+    if conventional_data_file.is_file():
+        data_files.add(conventional_data_file)
+
+    known_size = sum(path.stat().st_size for path in data_files)
+    if model_file.stat().st_size > 2 * 1024**3:
+        return known_size
+
+    model = onnx.load(model_path, load_external_data=False)
+    for tensor in _iter_all_data_tensors(model.graph):
+        if tensor.data_location != TensorProto.EXTERNAL:
+            continue
+        location = next(
+            (entry.value for entry in tensor.external_data if entry.key == "location"),
+            None,
+        )
+        if location:
+            data_file = (model_file.parent / location).resolve()
+            if data_file.is_file():
+                data_files.add(data_file)
+    del model
+    gc.collect()
+    return sum(path.stat().st_size for path in data_files)
+
+
 def model_exceeds_2gb(model_path: str) -> bool:
-    total = os.path.getsize(model_path)
-    data_path = model_path + ".data"
-    if os.path.exists(data_path):
-        total += os.path.getsize(data_path)
-    return total > 2 * 1024**3
+    return _model_size_bytes(model_path) > 2 * 1024**3
 
 
 def model_size_mb(model_path: str) -> float:
-    total = os.path.getsize(model_path)
-    data_path = model_path + ".data"
-    if os.path.exists(data_path):
-        total += os.path.getsize(data_path)
-    return total / (1024 * 1024)
+    return _model_size_bytes(model_path) / (1024 * 1024)
 
 
 def _remove_external_files(model_path: str) -> None:
