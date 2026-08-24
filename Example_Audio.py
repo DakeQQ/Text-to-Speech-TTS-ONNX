@@ -1,8 +1,8 @@
 """Shared voice-clone reference audio catalog for the TTS inference scripts.
 
-Every voice-cloning demo in this repo points at the same Chinese reference clip stored under
-``example/`` together with its transcript, so the per-model ``example/`` folders were consolidated
-here. Inference scripts add the repo root to ``sys.path`` and import the helper they need::
+Voice-cloning demos use a compatible reference clip stored under ``Example_Audio/`` together
+with its transcript, so the per-model example folders are consolidated here. Inference scripts
+add the repo root to ``sys.path`` and import the helper they need::
 
     from Example_Audio import model_reference
     prompt_audio_path, prompt_text = model_reference("qwen_tts")
@@ -20,13 +20,17 @@ EXAMPLE_AUDIO_ROOT = Path(__file__).resolve().parent / "Example_Audio"
 
 # Transcript that matches basic_ref_zh.wav.
 _BASIC_REF_ZH_TEXT = "对，这就是我，万人敬仰的太乙真人。"
+# Transcript that matches basic_ref_en.wav.
+_BASIC_REF_EN_TEXT = "Some call me nature, others call me mother nature."
 
 # model name -> (reference audio filename under EXAMPLE_AUDIO_ROOT, transcript of that audio)
 _MODEL_REFERENCES = {
     "indextts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "qwen_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "moss_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
+    "raon_opentts": ("basic_ref_en.wav", _BASIC_REF_EN_TEXT),
     "voxcpm":   ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
+    "fireredtts3": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
 }
 
 
