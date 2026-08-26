@@ -1409,7 +1409,7 @@ def optimize_onnx_model(model_path: str, rp: ResolvedPlan, config: OptimizerConf
         hidden_size=_resolve_int(rp.hidden_size, src_path),
         optimization_options=build_fusion_options(config),
         model_type=config.optimizer_model_type,
-        only_onnxruntime=config.optimizer_only_onnxruntime,
+        only_onnxruntime=(config.optimizer_only_onnxruntime or not rp.transformer),
         verbose=False,
     )
     if config.optimizer_provider is not None:

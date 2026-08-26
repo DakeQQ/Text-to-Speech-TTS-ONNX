@@ -29,6 +29,8 @@ _MODEL_REFERENCES = {
     "qwen_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "moss_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "raon_opentts": ("basic_ref_en.wav", _BASIC_REF_EN_TEXT),
+    "zipvoice": ("basic_ref_en.wav", _BASIC_REF_EN_TEXT),
+    "zipvoice_dialog_speaker_2": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "voxcpm":   ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "fireredtts3": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
 }
