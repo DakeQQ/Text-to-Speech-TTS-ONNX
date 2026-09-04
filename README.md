@@ -64,6 +64,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 | Capability<br>能力 | Model<br>模型 | Audio I/O<br>音频输入输出 | Prompt Audio<br>提示音频 | Code<br>代码 | Source<br>来源 |
 | --- | --- | :---: | :---: | --- | --- |
 | Neural vocoder<br>神经声码器 | BigVGAN V2 | Mel → 24 kHz | No<br>否 | [`BigVGAN`](./BigVGAN) | [GitHub](https://github.com/NVIDIA/BigVGAN) |
+| Voice cloning · voice design · voice direction<br>声音克隆 · 声音设计 · 语音指导 | Breeze TTS 2 | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`Breeze_TTS/v2`](./Breeze_TTS/v2) | [GitHub](https://github.com/breezeblue-ai/breeze-tts) |
 | Voice cloning<br>声音克隆 | F5-TTS | 24 → 24 kHz | Required<br>必需 | [`F5_TTS`](./F5_TTS) | [GitHub](https://github.com/SWivid/F5-TTS) |
 | Clone · voice design · speech editing<br>克隆 · 声音设计 · 语音编辑 | FireRedTTS3 | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`FireRedTTS/v3`](./FireRedTTS/v3) | [GitHub](https://github.com/FireRedTeam/FireRedTTS3) |
 | Voice cloning<br>声音克隆 | IndexTTS 1.5 | 24 → 24 kHz | Supported<br>支持 | [`Index_TTS/v1.5`](./Index_TTS/v1.5) | [GitHub](https://github.com/index-tts/index-tts) |

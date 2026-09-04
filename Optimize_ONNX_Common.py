@@ -2384,6 +2384,39 @@ def strip_stale_matmul_nbits_attributes(model_path: str | Path) -> int:
     return removed
 
 
+def _remove_undefined_tensor_value_info_graph(graph) -> int:
+    removed = 0
+    retained = []
+    for value in graph.value_info:
+        tensor_type = value.type.tensor_type
+        if value.type.HasField("tensor_type") and tensor_type.elem_type == TensorProto.UNDEFINED:
+            removed += 1
+        else:
+            retained.append(value)
+    if removed:
+        graph.ClearField("value_info")
+        graph.value_info.extend(retained)
+    for node in graph.node:
+        for attribute in node.attribute:
+            if attribute.HasField("g"):
+                removed += _remove_undefined_tensor_value_info_graph(attribute.g)
+            for subgraph in attribute.graphs:
+                removed += _remove_undefined_tensor_value_info_graph(subgraph)
+    return removed
+
+
+def remove_undefined_tensor_value_info(model_path: str | Path) -> int:
+    """Remove optional intermediate annotations with no concrete tensor element type."""
+    path = str(model_path)
+    model = onnx.load(path, load_external_data=False)
+    removed = _remove_undefined_tensor_value_info_graph(model.graph)
+    if removed:
+        onnx.save(model, path)
+    del model
+    gc.collect()
+    return removed
+
+
 def _ensure_ms_domain_opset(model: onnx.ModelProto) -> None:
     for opset in model.opset_import:
         if opset.domain == "com.microsoft":
@@ -4101,6 +4134,12 @@ def process_model(
     if removed_stale_attributes:
         print(
             f"  Removed {removed_stale_attributes} stale MatMulNBits weight_prepacked attribute(s)."
+        )
+
+    removed_undefined_value_info = remove_undefined_tensor_value_info(dst_path)
+    if removed_undefined_value_info:
+        print(
+            f"  Removed {removed_undefined_value_info} undefined intermediate tensor annotation(s)."
         )
 
     if not external and os.path.exists(dst_path + ".data"):

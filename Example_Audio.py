@@ -25,6 +25,8 @@ _BASIC_REF_EN_TEXT = "Some call me nature, others call me mother nature."
 
 # model name -> (reference audio filename under EXAMPLE_AUDIO_ROOT, transcript of that audio)
 _MODEL_REFERENCES = {
+    "breeze_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
+    "breeze_tts_zh": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "indextts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "qwen_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "moss_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
