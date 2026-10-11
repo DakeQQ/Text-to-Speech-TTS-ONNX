@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 from Shared_Weights import attach_shared_initializers
 
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from Example_Audio import reference_audio_path
@@ -34,7 +34,7 @@ TARGET_TTS = [
     "Hello everyone, I'm currently experiencing DakeQQ's AI technology.",
 ]
 
-MODE = "continuation"             # continuation | voice_clone
+MODE = "continuation"              # continuation | voice_clone
 PROMPT_TEXT = None                # Continuation requires both text and audio, or neither.
 PROMPT_AUDIO_PATH = None          # None uses the bundled reference in voice_clone mode.
 DECODE_STRATEGY = "sampling"      # greedy | penalty_greedy | sampling
@@ -42,12 +42,12 @@ MAX_FRAMES = 375                  # Maximum generated frames; 0 uses graph capac
 MIN_FRAMES = 0                    # Minimum frames before accepting a stop decision.
 
 # MOSS keeps text and audio sampling controls separate.
-TEXT_TEMPERATURE = 0.8
-TEXT_TOP_P = 0.9
-TEXT_TOP_K = 20
-AUDIO_TEMPERATURE = 0.8
-AUDIO_TOP_P = 0.9
-AUDIO_TOP_K = 10
+TEXT_TEMPERATURE = 1.5
+TEXT_TOP_P = 1.0
+TEXT_TOP_K = 50
+AUDIO_TEMPERATURE = 1.7
+AUDIO_TOP_P = 0.8
+AUDIO_TOP_K = 25
 AUDIO_REPETITION_PENALTY = 1.05
 
 ORT_LOG = False                   # Enable ONNX Runtime logging.
@@ -334,7 +334,7 @@ def unpack_waveform(output_spec, decoder_input_spec, array):
 def load_prompt_audio(path, sample_rate, input_spec):
     _, _, channel_axis = rank3_axes(input_spec)
     channels = int(input_spec.shape[channel_axis])
-    samples = np.array(
+    samples = np.asarray(
         AudioSegment.from_file(path)
         .set_channels(channels)
         .set_frame_rate(sample_rate)
@@ -342,13 +342,12 @@ def load_prompt_audio(path, sample_rate, input_spec):
         .get_array_of_samples(),
         dtype=np.int16,
     )
+    data = samples.reshape(-1, channels)
     if np.issubdtype(input_spec.dtype, np.floating):
-        samples = (samples.astype(np.float32) * (1.0 / 32768.0)).astype(
-            input_spec.dtype
-        )
+        data = (data.astype(np.float32) * (1.0 / 32768.0)).astype(input_spec.dtype)
     else:
-        samples = samples.astype(input_spec.dtype, copy=False)
-    return pack_rank3(input_spec, samples.reshape(-1, channels))
+        data = data.astype(input_spec.dtype, copy=False)
+    return pack_rank3(input_spec, data)
 
 
 session_options = onnxruntime.SessionOptions()
@@ -908,13 +907,17 @@ if generated_waveforms:
     print_progress(f"Writing generated audio: {GENERATED_AUDIO_PATH}")
     if final_waveform.dtype == np.float16:
         final_waveform = final_waveform.astype(np.float32)
+    if np.issubdtype(final_waveform.dtype, np.floating):
+        peak = float(np.abs(final_waveform).max())
+        if peak > 1.0:
+            final_waveform = final_waveform / peak
     output_subtype = "PCM_16" if np.issubdtype(final_waveform.dtype, np.integer) else "FLOAT"
     sf.write(
         GENERATED_AUDIO_PATH,
         final_waveform,
         OUT_SAMPLE_RATE,
         subtype=output_subtype,
-        format="WAVEX",
+        format="WAV",
     )
     print(
         f"Saved {final_waveform.shape} {final_waveform.dtype} waveform to "

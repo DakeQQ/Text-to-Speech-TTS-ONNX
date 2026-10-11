@@ -29,6 +29,7 @@ _MODEL_REFERENCES = {
     "breeze_tts_zh": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "indextts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "qwen_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
+    "audio8_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "moss_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "raon_opentts": ("basic_ref_en.wav", _BASIC_REF_EN_TEXT),
     "zipvoice": ("basic_ref_en.wav", _BASIC_REF_EN_TEXT),
@@ -48,7 +49,11 @@ def _reference(model_name):
         return _MODEL_REFERENCES[model_name]
     except KeyError as exc:
         names = ", ".join(sorted(_MODEL_REFERENCES))
-        pass
+        raise KeyError(
+            f"Unknown model name {model_name!r}. Expected one of: {names}"
+        ) from exc
+
+
 def model_reference(model_name):
     """Return ``(reference_audio_path, prompt_text)`` for a model's voice-clone demo."""
     filename, prompt_text = _reference(model_name)

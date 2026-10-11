@@ -75,10 +75,14 @@ def load_moss_model(model_dir):
     # transformers 5.13 crashes on the remote class's list-valued ignore keys.
     model_cls._keys_to_ignore_on_load_unexpected = None
     model = model_cls.from_pretrained(
-        model_dir, dtype=torch.float32, attn_implementation="eager"
-    ).eval()
+        model_dir, attn_implementation="eager"
+    ).float().eval()
     if hasattr(model, "_set_attention_implementation"):
         model._set_attention_implementation("eager")
+    for b in model.local_transformer.h:
+        b.attn.attn_implementation = "eager"
+    for b in model.transformer.h:
+        b.attn.attn_implementation = "eager"
     return model
 
 
@@ -88,7 +92,7 @@ def load_audio_tokenizer(model_dir):
     model_cls = get_class_from_dynamic_module(
         "modeling_moss_audio_tokenizer.MossAudioTokenizerModel", model_dir
     )
-    model = model_cls.from_pretrained(model_dir, dtype=torch.float32).eval()
+    model = model_cls.from_pretrained(model_dir).float().eval()
     model.set_attention_implementation("sdpa")
     return model
 
@@ -463,7 +467,6 @@ class AUDIO_DECODER(torch.nn.Module):
                 audio, lengths = _codec_patched_decode(decoder_module, audio, lengths)
             else:
                 audio, lengths = _codec_projected_transformer(decoder_module, audio, lengths)
-        audio = audio.clamp(min=-1.0, max=1.0)
         if self.output_resample_scale != 1.0:
             audio = F.interpolate(
                 audio,
@@ -1315,13 +1318,13 @@ def run_compact_strategy_export():
         frame_codec_ids = torch.zeros(1, n_vq, dtype=torch.int32)
         generated_codec = torch.zeros(1, 2, n_vq, dtype=torch.int32)
         kv_seq_len = torch.tensor([trace_prompt_len], dtype=torch.int64)
-        text_temperature = torch.tensor([0.8], dtype=torch.float32)
-        text_top_k = torch.tensor([2], dtype=torch.int32)
-        text_top_p = torch.tensor([0.95], dtype=torch.float32)
-        audio_temperature = torch.tensor([0.8], dtype=torch.float32)
+        text_temperature = torch.tensor([1.5], dtype=torch.float32)
+        text_top_k = torch.tensor([50], dtype=torch.int32)
+        text_top_p = torch.tensor([1.0], dtype=torch.float32)
+        audio_temperature = torch.tensor([1.7], dtype=torch.float32)
         audio_top_k = torch.tensor([min(25, audio_vocab)], dtype=torch.int32)
-        audio_top_p = torch.tensor([0.95], dtype=torch.float32)
-        audio_repetition_penalty = torch.tensor([1.2], dtype=torch.float32)
+        audio_top_p = torch.tensor([0.8], dtype=torch.float32)
+        audio_repetition_penalty = torch.tensor([1.0], dtype=torch.float32)
 
         from Rewrite_MOSS_Sampler_TopK import rewrite_sampler_dynamic_topk
 
@@ -1549,11 +1552,13 @@ def run_compact_strategy_export():
 
     print('\nCompact strategy export done!')
 
-run_compact_strategy_export()
-print('\nStart running the MOSS-TTS Nano demo via Inference_MOSS_TTS_Nano_ONNX.py ...')
-raise SystemExit(subprocess.call([
-    sys.executable,
-    str(script_dir / "Inference_MOSS_TTS_Nano_ONNX.py"),
-    "--onnx-folder",
-    str(onnx_folder),
-]))
+
+if __name__ == "__main__":
+    run_compact_strategy_export()
+    print('\nStart running the MOSS-TTS Nano demo via Inference_MOSS_TTS_Nano_ONNX.py ...')
+    raise SystemExit(subprocess.call([
+        sys.executable,
+        str(script_dir / "Inference_MOSS_TTS_Nano_ONNX.py"),
+        "--onnx-folder",
+        str(onnx_folder),
+    ]))

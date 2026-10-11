@@ -119,37 +119,25 @@ OUTPUT_FOLDER = SCRIPT_DIR / f"{VARIANT.package_stem}_ONNX"
 COMPONENT_FOLDER = SCRIPT_DIR / f"{VARIANT.package_stem}_ONNX_Raw"
 
 
-class VocosAdaLayerNorm(nn.Module):
-    def __init__(self, num_embeddings: int, embedding_dim: int, eps: float = 1e-6):
+class VocosChannelLayerNorm(nn.Module):
+    """LayerNorm over dim 1 of [N, C, T]; affine kept as [C, 1] so it broadcasts without reshapes."""
+
+    def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()
         self.eps = eps
-        self.embedding_dim = embedding_dim
-        self.scale = nn.Embedding(num_embeddings, embedding_dim)
-        self.shift = nn.Embedding(num_embeddings, embedding_dim)
-        nn.init.ones_(self.scale.weight)
-        nn.init.zeros_(self.shift.weight)
+        self.weight = nn.Parameter(torch.ones(dim, 1))
+        self.bias = nn.Parameter(torch.zeros(dim, 1))
 
-    def forward(self, inputs: Tensor, condition: Tensor) -> Tensor:
-        scale = F.embedding(
-            condition,
-            self.scale.weight,
-            self.scale.padding_idx,
-            self.scale.max_norm,
-            self.scale.norm_type,
-            self.scale.scale_grad_by_freq,
-            self.scale.sparse,
+    def forward(self, inputs: Tensor) -> Tensor:
+        centered = inputs - inputs.mean(dim=1, keepdim=True)
+        normalized = centered * torch.rsqrt(
+            centered.square().mean(dim=1, keepdim=True) + self.eps
         )
-        shift = F.embedding(
-            condition,
-            self.shift.weight,
-            self.shift.padding_idx,
-            self.shift.max_norm,
-            self.shift.norm_type,
-            self.shift.scale_grad_by_freq,
-            self.shift.sparse,
-        )
-        normalized = F.layer_norm(inputs, (self.embedding_dim,), eps=self.eps)
-        return normalized * scale + shift
+        if self.weight is not None:
+            normalized = normalized * self.weight
+        if self.bias is not None:
+            normalized = normalized + self.bias
+        return normalized
 
 
 class VocosConvNeXtBlock(nn.Module):
@@ -158,35 +146,22 @@ class VocosConvNeXtBlock(nn.Module):
         dim: int,
         intermediate_dim: int,
         layer_scale_init_value: float,
-        adanorm_num_embeddings: int | None = None,
     ) -> None:
         super().__init__()
         self.dwconv = nn.Conv1d(dim, dim, 7, padding=3, groups=dim)
-        self.adaptive_norm = adanorm_num_embeddings is not None
-        self.norm = (
-            VocosAdaLayerNorm(adanorm_num_embeddings, dim)
-            if adanorm_num_embeddings is not None
-            else nn.LayerNorm(dim, eps=1e-6)
-        )
-        self.pwconv1 = nn.Linear(dim, intermediate_dim)
+        self.norm = VocosChannelLayerNorm(dim)
+        self.pwconv1 = nn.Conv1d(dim, intermediate_dim, 1)
         self.act = nn.GELU()
-        self.pwconv2 = nn.Linear(intermediate_dim, dim)
-        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim))
+        self.pwconv2 = nn.Conv1d(intermediate_dim, dim, 1)
+        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim, 1))
 
-    def forward(
-        self,
-        inputs: Tensor,
-        condition: Tensor | None = None,
-    ) -> Tensor:
-        residual = inputs
-        hidden = _conv1d(inputs, self.dwconv).transpose(1, 2)
-        hidden = _vocos_norm(hidden, self.norm, condition)
-        hidden = _linear(hidden, self.pwconv1)
-        hidden = F.gelu(hidden, approximate=self.act.approximate)
-        hidden = _linear(hidden, self.pwconv2)
-        if not getattr(self, "_onnx_gamma_folded", False):
+    def forward(self, inputs: Tensor) -> Tensor:
+        hidden = self.norm(_conv1d(inputs, self.dwconv))
+        hidden = self.act(_conv1d(hidden, self.pwconv1))
+        hidden = _conv1d(hidden, self.pwconv2)
+        if self.gamma is not None:
             hidden = self.gamma * hidden
-        return residual + hidden.transpose(1, 2)
+        return inputs + hidden
 
 
 class VocosBackbone(nn.Module):
@@ -200,49 +175,22 @@ class VocosBackbone(nn.Module):
         adanorm_num_embeddings: int | None = None,
     ) -> None:
         super().__init__()
+        if adanorm_num_embeddings is not None:
+            raise ValueError("Adaptive-norm Vocos checkpoints are not supported")
         self.embed = nn.Conv1d(input_channels, dim, 7, padding=3)
-        self.adaptive_norm = adanorm_num_embeddings is not None
-        self.norm = (
-            VocosAdaLayerNorm(adanorm_num_embeddings, dim)
-            if adanorm_num_embeddings is not None
-            else nn.LayerNorm(dim, eps=1e-6)
-        )
+        self.norm = VocosChannelLayerNorm(dim)
         layer_scale = layer_scale_init_value or 1.0 / num_layers
         self.convnext = nn.ModuleList(
-            VocosConvNeXtBlock(
-                dim,
-                intermediate_dim,
-                layer_scale,
-                adanorm_num_embeddings,
-            )
+            VocosConvNeXtBlock(dim, intermediate_dim, layer_scale)
             for _ in range(num_layers)
         )
-        self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6)
-        self.apply(self._initialize_weights)
-
-    @staticmethod
-    def _initialize_weights(module: nn.Module) -> None:
-        if isinstance(module, (nn.Conv1d, nn.Linear)):
-            nn.init.trunc_normal_(module.weight, std=0.02)
-            nn.init.constant_(module.bias, 0)
+        self.final_layer_norm = VocosChannelLayerNorm(dim)
 
     def forward(self, inputs: Tensor) -> Tensor:
-        hidden = _conv1d(inputs, self.embed).transpose(1, 2)
-        hidden = _vocos_norm(hidden, self.norm).transpose(1, 2)
+        hidden = self.norm(_conv1d(inputs, self.embed))
         for block in self.convnext:
-            residual = hidden
-            block_hidden = _conv1d(hidden, block.dwconv).transpose(1, 2)
-            block_hidden = _vocos_norm(block_hidden, block.norm)
-            block_hidden = _linear(block_hidden, block.pwconv1)
-            block_hidden = F.gelu(
-                block_hidden,
-                approximate=block.act.approximate,
-            )
-            block_hidden = _linear(block_hidden, block.pwconv2)
-            if not getattr(block, "_onnx_gamma_folded", False):
-                block_hidden = block.gamma * block_hidden
-            hidden = residual + block_hidden.transpose(1, 2)
-        return _vocos_norm(hidden.transpose(1, 2), self.final_layer_norm)
+            hidden = block(hidden)
+        return self.final_layer_norm(hidden)
 
 
 class UnusedISTFTPlaceholder(nn.Module):
@@ -262,12 +210,11 @@ class VocosISTFTHead(nn.Module):
         super().__init__()
         del hop_length, padding
         self.num_bins = n_fft // 2 + 1
-        self.out = nn.Linear(dim, n_fft + 2)
+        self.out = nn.Conv1d(dim, n_fft + 2, 1)
         self.istft = UnusedISTFTPlaceholder(n_fft)
 
     def forward(self, inputs: Tensor) -> tuple[Tensor, Tensor]:
-        spectral = _linear(inputs, self.out).transpose(1, 2)
-        magnitude, phase = spectral.split(self.num_bins, dim=1)
+        magnitude, phase = _conv1d(inputs, self.out).split(self.num_bins, dim=1)
         return torch.exp(magnitude).clamp(max=1e2), phase
 
 
@@ -278,7 +225,7 @@ class VocosSpectralDecoder(nn.Module):
         self.head = head
 
     def forward(self, features: Tensor) -> tuple[Tensor, Tensor]:
-        return _vocos_forward(self, features)
+        return self.head(self.backbone(features))
 
 
 def _linear(inputs: Tensor, layer: Any) -> Tensor:
@@ -295,93 +242,6 @@ def _conv1d(inputs: Tensor, layer: nn.Conv1d) -> Tensor:
         layer.dilation,
         layer.groups,
     )
-
-
-def _linear_as_conv1d(inputs: Tensor, layer: nn.Linear) -> Tensor:
-    return F.conv1d(inputs, layer.weight.unsqueeze(-1), layer.bias)
-
-
-def _channel_layer_norm(inputs: Tensor, norm: nn.LayerNorm) -> Tensor:
-    centered = inputs - inputs.mean(dim=1, keepdim=True)
-    normalized = centered * torch.rsqrt(
-        centered.square().mean(dim=1, keepdim=True) + norm.eps
-    )
-    if not getattr(norm, "_onnx_affine_folded", False):
-        if norm.weight is not None:
-            normalized = normalized * norm.weight.reshape(1, -1, 1)
-        if norm.bias is not None:
-            normalized = normalized + norm.bias.reshape(1, -1, 1)
-    return normalized
-
-
-def _vocos_norm(
-    inputs: Tensor,
-    norm: nn.Module,
-    condition: Tensor | None = None,
-) -> Tensor:
-    if isinstance(norm, VocosAdaLayerNorm):
-        if condition is None:
-            raise ValueError("Adaptive Vocos normalization requires a condition")
-        scale = F.embedding(
-            condition,
-            norm.scale.weight,
-            norm.scale.padding_idx,
-            norm.scale.max_norm,
-            norm.scale.norm_type,
-            norm.scale.scale_grad_by_freq,
-            norm.scale.sparse,
-        )
-        shift = F.embedding(
-            condition,
-            norm.shift.weight,
-            norm.shift.padding_idx,
-            norm.shift.max_norm,
-            norm.shift.norm_type,
-            norm.shift.scale_grad_by_freq,
-            norm.shift.sparse,
-        )
-        normalized = F.layer_norm(inputs, (norm.embedding_dim,), eps=norm.eps)
-        return normalized * scale + shift
-
-    if not isinstance(norm, nn.LayerNorm):
-        raise TypeError(f"Unsupported Vocos normalization: {type(norm).__name__}")
-    affine_folded = getattr(norm, "_onnx_affine_folded", False)
-    return F.layer_norm(
-        inputs,
-        norm.normalized_shape,
-        None if affine_folded else norm.weight,
-        None if affine_folded else norm.bias,
-        norm.eps,
-    )
-
-
-def _vocos_forward(
-    decoder: VocosSpectralDecoder,
-    features: Tensor,
-) -> tuple[Tensor, Tensor]:
-    backbone = decoder.backbone
-    if not isinstance(backbone.norm, nn.LayerNorm):
-        raise TypeError("Channel-first Vocos export requires LayerNorm")
-    hidden = _conv1d(features, backbone.embed)
-    hidden = _channel_layer_norm(hidden, backbone.norm)
-
-    for block in backbone.convnext:
-        if not isinstance(block.norm, nn.LayerNorm):
-            raise TypeError("Channel-first Vocos export requires LayerNorm")
-        residual = hidden
-        block_hidden = _conv1d(hidden, block.dwconv)
-        block_hidden = _channel_layer_norm(block_hidden, block.norm)
-        block_hidden = _linear_as_conv1d(block_hidden, block.pwconv1)
-        block_hidden = F.gelu(block_hidden, approximate=block.act.approximate)
-        block_hidden = _linear_as_conv1d(block_hidden, block.pwconv2)
-        if not getattr(block, "_onnx_gamma_folded", False):
-            block_hidden = block.gamma.reshape(1, -1, 1) * block_hidden
-        hidden = residual + block_hidden
-
-    hidden = _channel_layer_norm(hidden, backbone.final_layer_norm)
-    spectral = _linear_as_conv1d(hidden, decoder.head.out)
-    magnitude, phase = spectral.split(decoder.head.num_bins, dim=1)
-    return torch.exp(magnitude).clamp(max=1e2), phase
 
 
 def _swoosh_forward(inputs: Tensor, offset: float, constant: float) -> Tensor:
@@ -412,8 +272,8 @@ def _compact_rel_positional_encoding(inputs: Tensor, module: Any) -> Tensor:
             - math.log(compression_length)
         )
     )
-    length_scale = module.length_factor * module.embed_dim / (2.0 * math.pi)
-    angles = compressed / length_scale
+    length_scale = (math.pi + math.pi) / (module.length_factor * module.embed_dim)
+    angles = compressed * length_scale
     angles = angles.atan() * frequencies
     positional = torch.stack((angles.cos(), angles.sin()), dim=-1).flatten(1)
     positional = torch.cat(
@@ -1457,29 +1317,16 @@ class ZipVoiceDecode(nn.Module):
         prompt_features_len: Tensor,
         rms_scale: Tensor,
     ) -> Tensor:
-        generated = final_features[:, prompt_features_len:]
-        batch_size, generated_frames, _ = generated.shape
-        decoder_input = generated.reshape(
-            batch_size,
-            generated_frames,
-            self.output_channels,
-            N_MELS,
-        ).permute(0, 2, 3, 1)
-        decoder_input = decoder_input.reshape(
-            batch_size * self.output_channels,
-            N_MELS,
-            generated_frames,
-        )
+        # Batch is 1: [1, T, C*M] -> [C, M, T] with one Transpose and a constant-shape Reshape.
+        decoder_input = final_features[:, prompt_features_len:].transpose(1, 2)
+        if self.output_channels != 1:
+            decoder_input = decoder_input.reshape(self.output_channels, N_MELS, -1)
         if not getattr(self.decoder, "_onnx_input_scale_folded", False):
             decoder_input = decoder_input / FEATURE_SCALE
-        magnitude, phase = _vocos_forward(self.decoder, decoder_input)
-        audio = self.istft(magnitude, phase).reshape(
-            batch_size,
-            self.output_channels,
-            -1,
-        )
+        magnitude, phase = self.decoder(decoder_input)
+        audio = self.istft(magnitude, phase)
         audio = audio.clamp(min=-1.0, max=1.0)
-        audio = audio * rms_scale.reshape(1, 1, 1)
+        audio = audio * rms_scale
         if self.output_resample_scale != 1.0:
             audio = F.interpolate(
                 audio,
@@ -1488,7 +1335,7 @@ class ZipVoiceDecode(nn.Module):
                 align_corners=False,
                 recompute_scale_factor=False,
             )
-        return audio[0]
+        return audio.reshape(self.output_channels, -1)
 
 
 class MetadataCarrier(nn.Module):
@@ -1665,13 +1512,29 @@ def _load_vocos() -> VocosSpectralDecoder:
         map_location="cpu",
         weights_only=True,
     )
-    decoder_state = {
-        key: value
-        for key, value in state.items()
-        if key.startswith(("backbone.", "head."))
-    }
+    target_shapes = {key: value.shape for key, value in decoder.state_dict().items()}
+    decoder_state = {}
+    for key, value in state.items():
+        if not key.startswith(("backbone.", "head.")):
+            continue
+        # Linear [out, in] -> 1x1 Conv [out, in, 1]; norm/gamma [C] -> [C, 1].
+        if key in target_shapes and value.shape != target_shapes[key]:
+            if value.unsqueeze(-1).shape != target_shapes[key]:
+                raise ValueError(
+                    f"Vocos weight {key}: {tuple(value.shape)} cannot map to "
+                    f"{tuple(target_shapes[key])}"
+                )
+            value = value.unsqueeze(-1)
+        decoder_state[key] = value
     decoder.load_state_dict(decoder_state, strict=True)
     return decoder.eval()
+
+
+def _fold_norm_into_pointwise(norm: VocosChannelLayerNorm, conv: nn.Conv1d) -> None:
+    conv.bias.add_(conv.weight[..., 0] @ norm.bias[:, 0])
+    conv.weight.mul_(norm.weight.reshape(1, -1, 1))
+    norm.register_parameter("weight", None)
+    norm.register_parameter("bias", None)
 
 
 def _prepare_vocos_for_export(
@@ -1682,41 +1545,14 @@ def _prepare_vocos_for_export(
     with torch.no_grad():
         decoder.backbone.embed.weight.div_(FEATURE_SCALE)
         for block in decoder.backbone.convnext:
-            norm = block.norm
-            if not isinstance(norm, nn.LayerNorm):
-                raise TypeError("Vocos affine folding requires LayerNorm")
-            if norm.bias is not None:
-                folded_bias = F.linear(
-                    norm.bias,
-                    block.pwconv1.weight,
-                    block.pwconv1.bias,
-                )
-                if block.pwconv1.bias is None:
-                    block.pwconv1.bias = nn.Parameter(folded_bias)
-                else:
-                    block.pwconv1.bias.copy_(folded_bias)
-            if norm.weight is not None:
-                block.pwconv1.weight.mul_(norm.weight.unsqueeze(0))
-            norm._onnx_affine_folded = True
-
-            block.pwconv2.weight.mul_(block.gamma[:, None])
-            block.pwconv2.bias.mul_(block.gamma)
-            block._onnx_gamma_folded = True
-
-        final_norm = decoder.backbone.final_layer_norm
-        if final_norm.bias is not None:
-            folded_bias = F.linear(
-                final_norm.bias,
-                decoder.head.out.weight,
-                decoder.head.out.bias,
-            )
-            if decoder.head.out.bias is None:
-                decoder.head.out.bias = nn.Parameter(folded_bias)
-            else:
-                decoder.head.out.bias.copy_(folded_bias)
-        if final_norm.weight is not None:
-            decoder.head.out.weight.mul_(final_norm.weight.unsqueeze(0))
-        final_norm._onnx_affine_folded = True
+            _fold_norm_into_pointwise(block.norm, block.pwconv1)
+            block.pwconv2.weight.mul_(block.gamma.unsqueeze(-1))
+            block.pwconv2.bias.mul_(block.gamma[:, 0])
+            block.register_parameter("gamma", None)
+        _fold_norm_into_pointwise(
+            decoder.backbone.final_layer_norm,
+            decoder.head.out,
+        )
     decoder._onnx_input_scale_folded = True
     return decoder
 
