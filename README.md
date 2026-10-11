@@ -32,6 +32,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 - `Metadata.onnx` stores the fixed package contract; runtime controls remain in the inference script. Inference validates metadata, graph layout, and referenced files.
 - Streaming exporters require each codec or latent frame to map to a whole number of output samples.
 - Raon-OpenTTS is English-only in this package and requires reference audio with matching reference text.
+- Audio8-TTS-Preview-0.1B voice cloning requires reference text that matches the reference audio. The prompt and the generated codec frames share a 2048-token context. The weights use the [Audio8 Community License v1.0](https://huggingface.co/Audio8/Audio8-TTS-Preview-0.1b/blob/main/LICENSE) (revenue-capped) and are not included in this repository. Streaming requires a whole number of output samples per codec frame, so use an `OUT_SAMPLE_RATE` that is a multiple of 11025 Hz (44.1 kHz or 22.05 kHz).
 
 ---
 
@@ -54,6 +55,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 - `Metadata.onnx` 保存固定模型包约定，运行时配置保留在推理脚本中。推理时会校验元数据、图布局与引用文件。
 - 流式导出要求每个编解码器帧或潜变量帧对应整数个输出采样点。
 - 本项目中的 Raon-OpenTTS 仅支持英文，并且需要带有匹配文本的参考音频。
+- Audio8-TTS-Preview-0.1B 的声音克隆需要与参考音频匹配的参考文本。提示词与生成的编解码器帧共享 2048 个 token 的上下文。模型权重适用 [Audio8 Community License v1.0](https://huggingface.co/Audio8/Audio8-TTS-Preview-0.1b/blob/main/LICENSE)（设有营收上限），本仓库不包含权重。流式解码要求每个编解码器帧对应整数个输出采样点，因此 `OUT_SAMPLE_RATE` 应为 11025 Hz 的整数倍（44.1 kHz 或 22.05 kHz）。
 
 
 ---
@@ -63,6 +65,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 
 | Capability<br>能力 | Model<br>模型 | Audio I/O<br>音频输入输出 | Prompt Audio<br>提示音频 | Code<br>代码 | Source<br>来源 |
 | --- | --- | :---: | :---: | --- | --- |
+| Text-to-speech · voice cloning<br>语音合成 · 声音克隆 | Audio8-TTS-Preview-0.1B | 44.1 → 44.1 kHz | Mode-dependent<br>取决于模式 | [`Audio8_TTS`](./Audio8_TTS) | [GitHub](https://github.com/Audio8-AI/Audio8_TTS) |
 | Neural vocoder<br>神经声码器 | BigVGAN V2 | Mel → 24 kHz | No<br>否 | [`BigVGAN`](./BigVGAN) | [GitHub](https://github.com/NVIDIA/BigVGAN) |
 | Voice cloning · voice design · voice direction<br>声音克隆 · 声音设计 · 语音指导 | Breeze TTS 2 | 24 → 24 kHz | Mode-dependent<br>取决于模式 | [`Breeze_TTS/v2`](./Breeze_TTS/v2) | [GitHub](https://github.com/breezeblue-ai/breeze-tts) |
 | Voice cloning<br>声音克隆 | F5-TTS | 24 → 24 kHz | Required<br>必需 | [`F5_TTS`](./F5_TTS) | [GitHub](https://github.com/SWivid/F5-TTS) |
@@ -100,6 +103,7 @@ The [shared performance table](#performance) reports RTF, calculated as synthesi
 | Ubuntu 24.04 | Intel Core i3-12300 | CPU | VoxCPM 2 | q8f32 | 23 | 3.8 |
 | Ubuntu 24.04 | NVIDIA GeForce RTX 5060 Ti | GPU | VoxCPM 2 | f16 | 2.05 | 0.34 |
 | Ubuntu 24.04 | Intel Core i7-1165G7 | CPU | FireRedTTS3 | q8f32 | 31.1 | 5.2 |
+| Ubuntu 24.04 | Intel Core i7-1165G7 | CPU | Audio8-TTS-Preview-0.1B | q8f32 · f16 KV | 21.5 | 2.7 |
 
 ---
 
