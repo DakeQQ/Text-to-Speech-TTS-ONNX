@@ -36,6 +36,7 @@ _MODEL_REFERENCES = {
     "zipvoice_dialog_speaker_2": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "voxcpm":   ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
     "fireredtts3": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
+    "hojo_tts": ("basic_ref_zh.wav", _BASIC_REF_ZH_TEXT),
 }
 
 
